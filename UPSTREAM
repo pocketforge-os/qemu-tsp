@@ -1,0 +1,6 @@
+# Pinned upstream qemu for qemu-tsp (reproducibility anchor).
+repo   = https://gitlab.com/qemu-project/qemu.git
+tag    = v8.2.2
+commit = 11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea
+# Chosen to match the qemu-aarch64-static (8.2.2) on the PocketForge sim/CI hosts.
+# The PocketForge change is a single patch on top: pocketforge/0001-linux-user-evdev-uinput-ioctl-passthrough.patch

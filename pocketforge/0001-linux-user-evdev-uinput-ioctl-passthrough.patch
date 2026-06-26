@@ -1,0 +1,104 @@
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index e384e14..c05fec5 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -5571,6 +5571,84 @@ IOCTLEntry ioctl_entries[] = {
+ 
+ /* ??? Implement proper locking for ioctls.  */
+ /* do_ioctl() Must return target values and target errnos. */
++/*
++ * qemu-tsp: generic raw pass-through for evdev ('E') and uinput ('U') ioctls.
++ *
++ * Stock qemu linux-user has no translation-table entry for any evdev (EVIOC*)
++ * or uinput (UI_*) ioctl, so do_ioctl() returns -TARGET_ENOTTY and an aarch64
++ * guest cannot probe
++ * an input/uinput device.  This breaks the off-hardware device simulator
++ * (pocketforge-os/sim), whose whole premise is running the IDENTICAL aarch64
++ * app binary against a host-synthesized uinput device.
++ *
++ * aarch64 and x86_64 share the asm-generic ioctl encoding AND every relevant
++ * payload struct (input_id / input_absinfo / input_event / uinput_setup /
++ * uinput_abs_setup / ...) is byte-identical between the two LP64 little-endian
++ * ABIs, so a raw copy driven by the command's own _IOC_DIR/_IOC_SIZE is a
++ * faithful translation.  The guest cmd value equals the host cmd value
++ * bit-for-bit, so it is handed to the host ioctl() unchanged.  Command fields
++ * are decoded with qemu's TARGET_IOC_* macros (identical encoding to the host).
++ *
++ * SCOPE / LIMITATIONS (honest about what this does NOT do):
++ *   - This serves the read-probe path the simulator needs (EVIOCG* reads, plus
++ *     pointer-argument writes such as UI_DEV_SETUP / UI_ABS_SETUP).
++ *   - Value-argument WRITE ioctls that pass an int BY VALUE despite an
++ *     _IOW(...,int) encoding (UI_SET_EVBIT/KEYBIT/ABSBIT/..., EVIOCGRAB,
++ *     EVIOCREVOKE) are NOT handled by a pointer copy and are out of scope: in
++ *     the simulator the virtual device is created HOST-NATIVELY by the VDB, so
++ *     those never traverse qemu-tsp.
++ *   - Force-feedback uploads (EVIOCSFF / UI_*_FF_UPLOAD) embed a guest pointer
++ *     (ff_periodic_effect.custom_data) the host kernel cannot dereference; raw
++ *     pass-through of custom periodic effects is unsafe and out of scope.
++ *     FF_RUMBLE itself carries no pointer.
++ */
++static abi_long do_ioctl_pf_evdev_uinput(int fd, int cmd, abi_long arg)
++{
++    unsigned int dir  = ((unsigned int)cmd >> TARGET_IOC_DIRSHIFT)
++                        & TARGET_IOC_DIRMASK;
++    unsigned int size = ((unsigned int)cmd >> TARGET_IOC_SIZESHIFT)
++                        & TARGET_IOC_SIZEMASK;
++    void *hbuf;
++    abi_long ret;
++
++    /* No payload, or direction-less: hand the arg straight to the host. */
++    if (size == 0 || dir == TARGET_IOC_NONE) {
++        return get_errno(safe_ioctl(fd, cmd, arg));
++    }
++
++    /* Heap buffer sized to the command -- EVIOCGNAME/EVIOCGBIT can exceed
++     * MAX_STRUCT_SIZE (_IOC_SIZE is 14 bits, so <= 16383).  Zeroed so the guest
++     * never sees stale bytes past what the kernel actually writes. */
++    hbuf = g_malloc0(size);
++
++    if (dir & TARGET_IOC_WRITE) {       /* guest -> kernel: copy in */
++        void *p = lock_user(VERIFY_READ, arg, size, 1);
++        if (!p) {
++            g_free(hbuf);
++            return -TARGET_EFAULT;
++        }
++        memcpy(hbuf, p, size);
++        unlock_user(p, arg, 0);
++    }
++
++    ret = get_errno(safe_ioctl(fd, cmd, hbuf));
++
++    /* kernel -> guest: copy back.  The host ioctl's positive return value (e.g.
++     * the EVIOCGNAME / EVIOCGBIT byte count) flows back to the guest unchanged. */
++    if (!is_error(ret) && (dir & TARGET_IOC_READ)) {
++        void *p = lock_user(VERIFY_WRITE, arg, size, 0);
++        if (!p) {
++            g_free(hbuf);
++            return -TARGET_EFAULT;
++        }
++        memcpy(p, hbuf, size);
++        unlock_user(p, arg, size);
++    }
++
++    g_free(hbuf);
++    return ret;
++}
++
+ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+ {
+     const IOCTLEntry *ie;
+@@ -5583,6 +5661,14 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+     ie = ioctl_entries;
+     for(;;) {
+         if (ie->target_cmd == 0) {
++            /* qemu-tsp: before giving up, try a generic raw pass-through for
++             * evdev ('E') and uinput ('U') ioctls -- see
++             * do_ioctl_pf_evdev_uinput() above. */
++            unsigned int pf_type =
++                ((unsigned int)cmd >> TARGET_IOC_TYPESHIFT) & TARGET_IOC_TYPEMASK;
++            if (pf_type == 'E' || pf_type == 'U') {
++                return do_ioctl_pf_evdev_uinput(fd, cmd, arg);
++            }
+             qemu_log_mask(
+                 LOG_UNIMP, "Unsupported ioctl: cmd=0x%04lx\n", (long)cmd);
+             return -TARGET_ENOTTY;
