@@ -45,6 +45,11 @@ if [ ! -f hw/misc/pocketforge_a133_mmio_stub.c ]; then
   git apply "$ROOT/pocketforge/0003-hw-arm-pocketforge_a133-peripheral-stubs.patch"
 fi
 
+echo "== apply PocketForge patch: -M pocketforge-a133 Phase C stubs + virtio-gpu graft =="
+if ! grep -q pocketforge_a133_create_virtio_mmio hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0004-hw-arm-pocketforge_a133-phase-c-stubs-and-virtio-gpu.patch"
+fi
+
 mkdir -p "$OUT"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
@@ -62,7 +67,11 @@ fi
 echo "== configure + build: aarch64-softmmu (-M pocketforge-a133) =="
 rm -rf build-softmmu
 mkdir -p build-softmmu
-(cd build-softmmu && ../configure --target-list=aarch64-softmmu --without-default-features)
+# -Dpixman=enabled: needed for the QMP `screendump` command (used by the Phase C UI
+# harness, scripts/qemu-pocketforge-a133-ui.sh, to capture render evidence) -- without it
+# --without-default-features strips pixman along with every other UI backend and
+# `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
+(cd build-softmmu && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled)
 ninja -C build-softmmu qemu-system-aarch64
 cp build-softmmu/qemu-system-aarch64 "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
