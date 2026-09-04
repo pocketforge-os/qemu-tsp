@@ -1,0 +1,695 @@
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 3ada335..7b549dc 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -270,6 +270,13 @@ config SBSA_REF
+     select WDT_SBSA
+     select BOCHS_DISPLAY
+ 
++config POCKETFORGE_A133
++    bool
++    default y
++    depends on TCG && AARCH64
++    select ARM_GIC
++    select DW_APB_UART
++
+ config SABRELITE
+     bool
+     default y
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index 68245d3..7a6ce2b 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -20,6 +20,7 @@ arm_ss.add(when: 'CONFIG_GUMSTIX', if_true: files('gumstix.c'))
+ arm_ss.add(when: 'CONFIG_SPITZ', if_true: files('spitz.c'))
+ arm_ss.add(when: 'CONFIG_Z2', if_true: files('z2.c'))
+ arm_ss.add(when: 'CONFIG_REALVIEW', if_true: files('realview.c'))
++arm_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133.c'))
+ arm_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa-ref.c'))
+ arm_ss.add(when: 'CONFIG_STELLARIS', if_true: files('stellaris.c'))
+ arm_ss.add(when: 'CONFIG_STM32VLDISCOVERY', if_true: files('stm32vldiscovery.c'))
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+new file mode 100644
+index 0000000..aa1d63c
+--- /dev/null
++++ b/hw/arm/pocketforge_a133.c
+@@ -0,0 +1,196 @@
++/*
++ * PocketForge OS -M pocketforge-a133 QEMU softmmu machine
++ *
++ * From-scratch board model for the Allwinner A133 (sun50i-a100 family, as
++ * used on the TrimUI Smart Pro base unit) added to qemu-tsp, PocketForge's
++ * fork of upstream qemu-user (v8.2.2 pin). Phase A of Odyssey L3 deliverable
++ * -2 (tsp-mc9m.41.925.2.1): the KEYSTONE piece that boots our real kernel +
++ * real committed device tree to earlycon output. Upstream QEMU has never
++ * carried a sun50i (64-bit Allwinner) board -- only the 32-bit A10/H3/R40
++ * families -- so this is a genuinely new machine model, not an extension of
++ * an existing one.
++ *
++ * Modeled (generic, already correct in QEMU): 4x Cortex-A53, GIC-400
++ * (GICv2 + virtualization extensions, exactly matching the real DT's 4
++ * register regions), the ARM generic architected timer, and QEMU's internal
++ * PSCI/SMC conduit (brings up secondary CPUs and absorbs vendor SiP SMC
++ * calls with no firmware image required).
++ *
++ * Modeled (new work, the keystone): the DW-APB UART0 console
++ * (hw/char/dw_apb_uart.c) at the exact address/IRQ the real DT declares.
++ *
++ * Deliberately NOT modeled in Phase A (later phases, see
++ * tsp-mc9m.41.925.2's phased plan): CCU/R-CCU/pinctrl/watchdog stubs
++ * (Phase B), virtio-gpu/input graft (Phase C), CI wiring (Phase D). A boot
++ * that reaches earlycon output and then hangs at clock/pinctrl probe is the
++ * EXPECTED and CORRECT Phase-A outcome -- that hang is Phase B's job.
++ *
++ * The real, unmodified sun50i-a133-pocketforge-tsp.dtb is loaded verbatim
++ * via -dtb; this machine does not synthesize or auto-generate a device
++ * tree (unlike -M virt). QEMU's own arm_load_kernel()/load_dtb() still
++ * performs the same routine /memory + /chosen(bootargs, initrd) fixups any
++ * real bootloader (e.g. our U-Boot) would apply -- that is not DT
++ * synthesis, it is standard boot-time DT preparation.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/units.h"
++#include "qapi/error.h"
++#include "cpu.h"
++#include "hw/arm/boot.h"
++#include "hw/arm/bsa.h"
++#include "hw/boards.h"
++#include "hw/char/dw_apb_uart.h"
++#include "hw/intc/arm_gic.h"
++#include "hw/intc/arm_gic_common.h"
++#include "hw/qdev-properties.h"
++#include "hw/sysbus.h"
++#include "exec/address-spaces.h"
++#include "sysemu/sysemu.h"
++#include "qemu/module.h"
++#include "chardev/char.h"
++
++/*
++ * Addresses/IRQ taken verbatim from the real device tree
++ * (arch/arm64/boot/dts/allwinner/sun50i-a100.dtsi, kernel-sunxi-6.x
++ * @ device/a133): the "gic" and "uart0" nodes.
++ */
++#define PF_A133_GIC_DIST_BASE   0x03021000
++#define PF_A133_GIC_CPU_BASE    0x03022000
++#define PF_A133_GIC_HYP_BASE    0x03024000
++#define PF_A133_GIC_VCPU_BASE   0x03026000
++
++#define PF_A133_UART0_BASE      0x05000000
++#define PF_A133_UART0_IRQ       0 /* GIC_SPI 0 */
++
++#define PF_A133_RAM_BASE        0x40000000
++
++#define PF_A133_NUM_CPUS        4
++#define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
++
++static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
++{
++    DeviceState *gicdev;
++    SysBusDevice *gicbusdev;
++    int i;
++
++    gicdev = qdev_new(gic_class_name());
++    qdev_prop_set_uint32(gicdev, "revision", 2);
++    qdev_prop_set_uint32(gicdev, "num-cpu", PF_A133_NUM_CPUS);
++    qdev_prop_set_uint32(gicdev, "num-irq", PF_A133_NUM_SPI + 32);
++    qdev_prop_set_bit(gicdev, "has-security-extensions", false);
++    qdev_prop_set_bit(gicdev, "has-virtualization-extensions", true);
++
++    gicbusdev = SYS_BUS_DEVICE(gicdev);
++    sysbus_realize_and_unref(gicbusdev, &error_fatal);
++    sysbus_mmio_map(gicbusdev, 0, PF_A133_GIC_DIST_BASE);
++    sysbus_mmio_map(gicbusdev, 1, PF_A133_GIC_CPU_BASE);
++    sysbus_mmio_map(gicbusdev, 2, PF_A133_GIC_HYP_BASE);
++    sysbus_mmio_map(gicbusdev, 3, PF_A133_GIC_VCPU_BASE);
++
++    /*
++     * Wire each CPU's architected-timer outputs to its banked GIC PPI
++     * inputs. The PPI numbers below (13/14/11/10, i.e. the BSA constants)
++     * are the ARM-architecture-mandated assignment -- they are what the
++     * real DT's "timer" node uses too, so this wiring matches real
++     * hardware exactly, not just -M virt convention.
++     */
++    for (i = 0; i < PF_A133_NUM_CPUS; i++) {
++        DeviceState *cpudev = DEVICE(qemu_get_cpu(i));
++        int intidbase = PF_A133_NUM_SPI + i * GIC_INTERNAL;
++        const int timer_irq[] = {
++            [GTIMER_PHYS] = ARCH_TIMER_NS_EL1_IRQ,
++            [GTIMER_VIRT] = ARCH_TIMER_VIRT_IRQ,
++            [GTIMER_HYP]  = ARCH_TIMER_NS_EL2_IRQ,
++            [GTIMER_SEC]  = ARCH_TIMER_S_EL1_IRQ,
++        };
++        unsigned irq;
++
++        for (irq = 0; irq < ARRAY_SIZE(timer_irq); irq++) {
++            qdev_connect_gpio_out(cpudev, irq,
++                                  qdev_get_gpio_in(gicdev,
++                                                   intidbase + timer_irq[irq]));
++        }
++
++        sysbus_connect_irq(gicbusdev, i,
++                           qdev_get_gpio_in(cpudev, ARM_CPU_IRQ));
++        sysbus_connect_irq(gicbusdev, i + PF_A133_NUM_CPUS,
++                           qdev_get_gpio_in(cpudev, ARM_CPU_FIQ));
++        sysbus_connect_irq(gicbusdev, i + 2 * PF_A133_NUM_CPUS,
++                           qdev_get_gpio_in(cpudev, ARM_CPU_VIRQ));
++        sysbus_connect_irq(gicbusdev, i + 3 * PF_A133_NUM_CPUS,
++                           qdev_get_gpio_in(cpudev, ARM_CPU_VFIQ));
++    }
++
++    for (i = 0; i < PF_A133_NUM_SPI; i++) {
++        pic[i] = qdev_get_gpio_in(gicdev, i);
++    }
++}
++
++static void pocketforge_a133_init(MachineState *machine)
++{
++    MemoryRegion *sysmem = get_system_memory();
++    qemu_irq pic[PF_A133_NUM_SPI];
++    struct arm_boot_info *binfo = g_new0(struct arm_boot_info, 1);
++    int n;
++
++    for (n = 0; n < PF_A133_NUM_CPUS; n++) {
++        Object *cpuobj = object_new(machine->cpu_type);
++
++        /*
++         * No EL3 firmware exists in this boot flow: QEMU's own PSCI/SMC
++         * conduit (armed below via binfo->psci_conduit) intercepts SMC
++         * calls directly instead, which requires EL3 NOT be modeled.
++         */
++        object_property_set_bool(cpuobj, "has_el3", false, &error_fatal);
++
++        qdev_realize(DEVICE(cpuobj), NULL, &error_fatal);
++        object_unref(cpuobj);
++    }
++
++    /*
++     * machine->ram is already allocated by generic machine-core init from
++     * mc->default_ram_size/default_ram_id (or -m); do NOT also call
++     * memory_region_init_ram() here, or the reused default_ram_id string
++     * collides ("RAMBlock ... already registered, abort!").
++     */
++    memory_region_add_subregion(sysmem, PF_A133_RAM_BASE, machine->ram);
++
++    pocketforge_a133_create_gic(machine, pic);
++
++    dw_apb_uart_create(PF_A133_UART0_BASE, pic[PF_A133_UART0_IRQ],
++                       serial_hd(0));
++
++    binfo->ram_size = machine->ram_size;
++    binfo->board_id = -1; /* device-tree boot only, no ATAGS board id */
++    binfo->loader_start = PF_A133_RAM_BASE;
++    binfo->dtb_filename = machine->dtb;
++    binfo->psci_conduit = QEMU_PSCI_CONDUIT_SMC;
++    arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
++}
++
++static void pocketforge_a133_machine_init(MachineClass *mc)
++{
++    static const char * const valid_cpu_types[] = {
++        ARM_CPU_TYPE_NAME("cortex-a53"),
++        NULL
++    };
++
++    mc->desc = "PocketForge OS A133 fidelity-CI machine "
++               "(real kernel + real DT, DW-APB UART earlycon)";
++    mc->init = pocketforge_a133_init;
++    mc->max_cpus = PF_A133_NUM_CPUS;
++    mc->min_cpus = PF_A133_NUM_CPUS;
++    mc->default_cpus = PF_A133_NUM_CPUS;
++    mc->valid_cpu_types = valid_cpu_types;
++    mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a53");
++    mc->default_ram_size = 1 * GiB;
++    mc->default_ram_id = "pocketforge-a133.ram";
++    mc->no_cdrom = true;
++    mc->no_floppy = true;
++    mc->no_parallel = true;
++}
++
++DEFINE_MACHINE("pocketforge-a133", pocketforge_a133_machine_init)
+diff --git a/hw/char/Kconfig b/hw/char/Kconfig
+index 6b6cf2f..d607382 100644
+--- a/hw/char/Kconfig
++++ b/hw/char/Kconfig
+@@ -1,3 +1,6 @@
++config DW_APB_UART
++    bool
++
+ config ESCC
+     bool
+ 
+diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
+new file mode 100644
+index 0000000..34e8631
+--- /dev/null
++++ b/hw/char/dw_apb_uart.c
+@@ -0,0 +1,360 @@
++/*
++ * Synopsys DesignWare APB UART ("snps,dw-apb-uart") emulation
++ *
++ * PocketForge OS addition (qemu-tsp fork), tsp-mc9m.41.925.2.1.
++ *
++ * Register-compatible with a 16550A for the first 8 (DLAB-banked) registers;
++ * this model adds the DesignWare UART Status Register (USR) at register
++ * index 0x1f, byte offset 0x7c with reg-shift=2/reg-io-width=4 (matching the
++ * real sun50i-a100.dtsi uart0 node exactly). USR is what the upstream
++ * 8250_dw driver polls for busy/FIFO status; the TX path here is modeled as
++ * an instantaneous sink (each THR write is flushed straight to the chardev
++ * backend, like hw/char/pl011.c's UARTDR write), so USR always reports
++ * "not busy, TX FIFO empty" -- this is deliberately conservative: readers
++ * that spin on USR bit1 (TFNF) or bit2 (TFE) before writing/reconfiguring
++ * see them permanently set rather than the unbounded silent hang infra-104
++ * named as this bring-up's #1 footgun.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/char/dw_apb_uart.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "migration/vmstate.h"
++#include "chardev/char-fe.h"
++#include "qapi/error.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++
++DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr)
++{
++    DeviceState *dev;
++    SysBusDevice *s;
++
++    dev = qdev_new(TYPE_DW_APB_UART);
++    s = SYS_BUS_DEVICE(dev);
++    qdev_prop_set_chr(dev, "chardev", chr);
++    sysbus_realize_and_unref(s, &error_fatal);
++    sysbus_mmio_map(s, 0, addr);
++    sysbus_connect_irq(s, 0, irq);
++
++    return dev;
++}
++
++/* 8250-compatible register indices (offset = index << 2, reg-shift=2). */
++#define DW_UART_REG_RBR_THR_DLL  0x00
++#define DW_UART_REG_IER_DLM      0x01
++#define DW_UART_REG_IIR_FCR      0x02
++#define DW_UART_REG_LCR          0x03
++#define DW_UART_REG_MCR          0x04
++#define DW_UART_REG_LSR          0x05
++#define DW_UART_REG_MSR          0x06
++#define DW_UART_REG_SCR          0x07
++#define DW_UART_REG_USR          0x1f  /* DesignWare-specific */
++
++#define DW_UART_MMIO_SIZE        0x100 /* covers every DT-declared offset */
++
++/* LCR */
++#define UART_LCR_DLAB   0x80
++
++/* IER */
++#define UART_IER_RDI    0x01 /* enable "receiver data available" irq */
++#define UART_IER_THRI   0x02 /* enable "THR empty" irq */
++
++/* IIR */
++#define UART_IIR_NO_INT 0x01
++#define UART_IIR_THRI   0x02
++#define UART_IIR_RDI    0x04
++
++/* LSR */
++#define UART_LSR_DR     0x01 /* receiver data ready */
++#define UART_LSR_THRE   0x20 /* transmit holding register empty */
++#define UART_LSR_TEMT   0x40 /* transmitter (+shift reg) empty */
++
++/* MSR -- report a permanently "cable connected" loopback-free link so
++ * nothing that gates on modem status (CTS/DSR/DCD) wedges waiting for it. */
++#define UART_MSR_DEFAULT (0x80 | 0x20 | 0x10) /* DCD | DSR | CTS */
++
++/* USR (UART Status Register) -- the offset-0x7c register infra-104 flagged.
++ * bit0 UART_BUSY, bit1 TFNF (TX FIFO not full), bit2 TFE (TX FIFO empty),
++ * bit3 RFNE (RX FIFO not empty), bit4 RFF (RX FIFO full). */
++#define DW_UART_USR_BUSY 0x01
++#define DW_UART_USR_TFNF 0x02
++#define DW_UART_USR_TFE  0x04
++#define DW_UART_USR_RFNE 0x08
++#define DW_UART_USR_RFF  0x10
++
++static void dw_apb_uart_update_irq(DWApbUartState *s)
++{
++    bool pending = false;
++
++    if ((s->ier & UART_IER_RDI) && (s->lsr & UART_LSR_DR)) {
++        pending = true;
++    }
++    if ((s->ier & UART_IER_THRI) && (s->lsr & UART_LSR_THRE)) {
++        pending = true;
++    }
++
++    s->iir = pending
++        ? ((s->ier & UART_IER_RDI) && (s->lsr & UART_LSR_DR)
++           ? UART_IIR_RDI : UART_IIR_THRI)
++        : UART_IIR_NO_INT;
++
++    qemu_set_irq(s->irq, pending);
++}
++
++static void dw_apb_uart_update_lsr(DWApbUartState *s)
++{
++    /* TX is modeled as an instantaneous sink -- always empty. */
++    s->lsr = UART_LSR_THRE | UART_LSR_TEMT;
++    if (s->read_count > 0) {
++        s->lsr |= UART_LSR_DR;
++    }
++}
++
++static uint64_t dw_apb_uart_read(void *opaque, hwaddr offset, unsigned size)
++{
++    DWApbUartState *s = opaque;
++    uint64_t r = 0;
++
++    switch (offset >> 2) {
++    case DW_UART_REG_RBR_THR_DLL:
++        if (s->lcr & UART_LCR_DLAB) {
++            r = s->dll;
++            break;
++        }
++        if (s->read_count > 0) {
++            r = s->read_fifo[s->read_pos];
++            s->read_pos = (s->read_pos + 1) % DW_APB_UART_FIFO_DEPTH;
++            s->read_count--;
++            dw_apb_uart_update_lsr(s);
++            dw_apb_uart_update_irq(s);
++            qemu_chr_fe_accept_input(&s->chr);
++        }
++        break;
++    case DW_UART_REG_IER_DLM:
++        r = (s->lcr & UART_LCR_DLAB) ? s->dlm : s->ier;
++        break;
++    case DW_UART_REG_IIR_FCR:
++        r = s->iir | 0xc0; /* report FIFOs enabled/functioning */
++        break;
++    case DW_UART_REG_LCR:
++        r = s->lcr;
++        break;
++    case DW_UART_REG_MCR:
++        r = s->mcr;
++        break;
++    case DW_UART_REG_LSR:
++        r = s->lsr;
++        break;
++    case DW_UART_REG_MSR:
++        r = s->msr;
++        break;
++    case DW_UART_REG_SCR:
++        r = s->scr;
++        break;
++    case DW_UART_REG_USR:
++        r = DW_UART_USR_TFNF | DW_UART_USR_TFE;
++        if (s->read_count > 0) {
++            r |= DW_UART_USR_RFNE;
++        }
++        break;
++    default:
++        qemu_log_mask(LOG_UNIMP,
++                      "dw-apb-uart: unimplemented read reg 0x%02x\n",
++                      (unsigned)(offset >> 2));
++        break;
++    }
++
++    return r;
++}
++
++static void dw_apb_uart_write(void *opaque, hwaddr offset,
++                              uint64_t value, unsigned size)
++{
++    DWApbUartState *s = opaque;
++    unsigned char ch;
++
++    switch (offset >> 2) {
++    case DW_UART_REG_RBR_THR_DLL:
++        if (s->lcr & UART_LCR_DLAB) {
++            s->dll = value;
++            break;
++        }
++        ch = value;
++        /* Synchronous flush, matching hw/char/pl011.c's UARTDR write. */
++        qemu_chr_fe_write_all(&s->chr, &ch, 1);
++        dw_apb_uart_update_lsr(s);
++        dw_apb_uart_update_irq(s);
++        break;
++    case DW_UART_REG_IER_DLM:
++        if (s->lcr & UART_LCR_DLAB) {
++            s->dlm = value;
++        } else {
++            s->ier = value & 0x0f;
++            dw_apb_uart_update_irq(s);
++        }
++        break;
++    case DW_UART_REG_IIR_FCR:
++        s->fcr = value;
++        if (value & 0x02) { /* XFR: reset xmit FIFO -- nothing buffered */
++        }
++        if (value & 0x04) { /* RFR: reset recv FIFO */
++            s->read_pos = 0;
++            s->read_count = 0;
++            dw_apb_uart_update_lsr(s);
++        }
++        break;
++    case DW_UART_REG_LCR:
++        s->lcr = value;
++        break;
++    case DW_UART_REG_MCR:
++        s->mcr = value;
++        break;
++    case DW_UART_REG_LSR:
++    case DW_UART_REG_MSR:
++        /* Read-only in the real IP; writes are ignored. */
++        break;
++    case DW_UART_REG_SCR:
++        s->scr = value;
++        break;
++    case DW_UART_REG_USR:
++        /* Read-only status register; writes are ignored. */
++        break;
++    default:
++        qemu_log_mask(LOG_UNIMP,
++                      "dw-apb-uart: unimplemented write reg 0x%02x\n",
++                      (unsigned)(offset >> 2));
++        break;
++    }
++}
++
++static int dw_apb_uart_can_receive(void *opaque)
++{
++    DWApbUartState *s = opaque;
++
++    return s->read_count < DW_APB_UART_FIFO_DEPTH;
++}
++
++static void dw_apb_uart_receive(void *opaque, const uint8_t *buf, int size)
++{
++    DWApbUartState *s = opaque;
++    int slot;
++
++    if (s->read_count >= DW_APB_UART_FIFO_DEPTH) {
++        return;
++    }
++    slot = (s->read_pos + s->read_count) % DW_APB_UART_FIFO_DEPTH;
++    s->read_fifo[slot] = buf[0];
++    s->read_count++;
++    dw_apb_uart_update_lsr(s);
++    dw_apb_uart_update_irq(s);
++}
++
++static void dw_apb_uart_event(void *opaque, QEMUChrEvent event)
++{
++    /* Break/other chardev events: nothing DW-specific to model for boot. */
++}
++
++static const MemoryRegionOps dw_apb_uart_ops = {
++    .read = dw_apb_uart_read,
++    .write = dw_apb_uart_write,
++    .endianness = DEVICE_NATIVE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++    .impl.min_access_size = 4,
++    .impl.max_access_size = 4,
++};
++
++static void dw_apb_uart_reset(DeviceState *dev)
++{
++    DWApbUartState *s = DW_APB_UART(dev);
++
++    s->ier = 0;
++    s->iir = UART_IIR_NO_INT;
++    s->fcr = 0;
++    s->lcr = 0;
++    s->mcr = 0;
++    s->msr = UART_MSR_DEFAULT;
++    s->scr = 0;
++    s->dll = 0;
++    s->dlm = 0;
++    s->read_pos = 0;
++    s->read_count = 0;
++    dw_apb_uart_update_lsr(s);
++}
++
++static void dw_apb_uart_realize(DeviceState *dev, Error **errp)
++{
++    DWApbUartState *s = DW_APB_UART(dev);
++
++    qemu_chr_fe_set_handlers(&s->chr, dw_apb_uart_can_receive,
++                             dw_apb_uart_receive, dw_apb_uart_event,
++                             NULL, s, NULL, true);
++}
++
++static void dw_apb_uart_init(Object *obj)
++{
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++    DWApbUartState *s = DW_APB_UART(obj);
++
++    memory_region_init_io(&s->iomem, OBJECT(s), &dw_apb_uart_ops, s,
++                          TYPE_DW_APB_UART, DW_UART_MMIO_SIZE);
++    sysbus_init_mmio(sbd, &s->iomem);
++    sysbus_init_irq(sbd, &s->irq);
++}
++
++static const VMStateDescription vmstate_dw_apb_uart = {
++    .name = TYPE_DW_APB_UART,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (VMStateField[]) {
++        VMSTATE_UINT8(ier, DWApbUartState),
++        VMSTATE_UINT8(iir, DWApbUartState),
++        VMSTATE_UINT8(fcr, DWApbUartState),
++        VMSTATE_UINT8(lcr, DWApbUartState),
++        VMSTATE_UINT8(mcr, DWApbUartState),
++        VMSTATE_UINT8(lsr, DWApbUartState),
++        VMSTATE_UINT8(msr, DWApbUartState),
++        VMSTATE_UINT8(scr, DWApbUartState),
++        VMSTATE_UINT8(dll, DWApbUartState),
++        VMSTATE_UINT8(dlm, DWApbUartState),
++        VMSTATE_UINT8_ARRAY(read_fifo, DWApbUartState, DW_APB_UART_FIFO_DEPTH),
++        VMSTATE_INT32(read_pos, DWApbUartState),
++        VMSTATE_INT32(read_count, DWApbUartState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static Property dw_apb_uart_properties[] = {
++    DEFINE_PROP_CHR("chardev", DWApbUartState, chr),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void dw_apb_uart_class_init(ObjectClass *oc, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++
++    dc->realize = dw_apb_uart_realize;
++    dc->reset = dw_apb_uart_reset;
++    dc->vmsd = &vmstate_dw_apb_uart;
++    device_class_set_props(dc, dw_apb_uart_properties);
++}
++
++static const TypeInfo dw_apb_uart_info = {
++    .name          = TYPE_DW_APB_UART,
++    .parent        = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(DWApbUartState),
++    .instance_init = dw_apb_uart_init,
++    .class_init    = dw_apb_uart_class_init,
++};
++
++static void dw_apb_uart_register_types(void)
++{
++    type_register_static(&dw_apb_uart_info);
++}
++
++type_init(dw_apb_uart_register_types)
+diff --git a/hw/char/meson.build b/hw/char/meson.build
+index 006d20f..761428b 100644
+--- a/hw/char/meson.build
++++ b/hw/char/meson.build
+@@ -1,5 +1,6 @@
+ system_ss.add(when: 'CONFIG_CADENCE', if_true: files('cadence_uart.c'))
+ system_ss.add(when: 'CONFIG_CMSDK_APB_UART', if_true: files('cmsdk-apb-uart.c'))
++system_ss.add(when: 'CONFIG_DW_APB_UART', if_true: files('dw_apb_uart.c'))
+ system_ss.add(when: 'CONFIG_ESCC', if_true: files('escc.c'))
+ system_ss.add(when: 'CONFIG_ETRAXFS', if_true: files('etraxfs_ser.c'))
+ system_ss.add(when: 'CONFIG_GRLIB', if_true: files('grlib_apbuart.c'))
+diff --git a/include/hw/char/dw_apb_uart.h b/include/hw/char/dw_apb_uart.h
+new file mode 100644
+index 0000000..0d91852
+--- /dev/null
++++ b/include/hw/char/dw_apb_uart.h
+@@ -0,0 +1,69 @@
++/*
++ * Synopsys DesignWare APB UART ("snps,dw-apb-uart") emulation
++ *
++ * PocketForge OS addition (qemu-tsp fork): this IP is the real console UART
++ * on the Allwinner A133 (sun50i-a100 family) -- NOT PL011. It is register-
++ * compatible with a 16550A for the first 8 registers (index 0-7, DLAB-banked
++ * like any 8250 clone) but adds DesignWare-specific status/control registers
++ * above that, most importantly the UART Status Register (USR) at register
++ * index 0x1f (byte offset 0x7c when reg-shift=2 / reg-io-width=4, exactly as
++ * the real device tree declares it). USR bit1 (UART_USR_TFNF, "transmit FIFO
++ * not full") and bit2 (UART_USR_TFE, "transmit FIFO empty") are read by the
++ * upstream 8250_dw runtime driver (drivers/tty/serial/8250/8250_dw.c) during
++ * probe/IRQ handling; leaving USR unbacked is the exact silent-hang footgun
++ * infra-104's 2026-07-26 scoping pass flagged for this bring-up.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2 or later, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef HW_DW_APB_UART_H
++#define HW_DW_APB_UART_H
++
++#include "hw/sysbus.h"
++#include "chardev/char-fe.h"
++#include "qom/object.h"
++
++#define TYPE_DW_APB_UART "dw-apb-uart"
++OBJECT_DECLARE_SIMPLE_TYPE(DWApbUartState, DW_APB_UART)
++
++/* Depth of the emulated receive FIFO (real IP is usually 16 or 64 deep). */
++#define DW_APB_UART_FIFO_DEPTH 16
++
++struct DWApbUartState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++
++    /* 8250-compatible core registers (register index, not byte offset). */
++    uint8_t ier;
++    uint8_t iir;
++    uint8_t fcr;
++    uint8_t lcr;
++    uint8_t mcr;
++    uint8_t lsr;
++    uint8_t msr;
++    uint8_t scr;
++    uint8_t dll;
++    uint8_t dlm;
++
++    uint8_t read_fifo[DW_APB_UART_FIFO_DEPTH];
++    int read_pos;
++    int read_count;
++
++    CharBackend chr;
++    qemu_irq irq;
++};
++
++DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr);
++
++#endif /* HW_DW_APB_UART_H */

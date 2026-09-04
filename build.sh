@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# qemu-tsp build: clone the pinned upstream qemu, apply the PocketForge patch, build the
-# static aarch64-linux-user target. Reproducible from the pin in ./UPSTREAM.
+# qemu-tsp build: clone the pinned upstream qemu, apply the PocketForge patches, and build:
+#   - the static aarch64-linux-user target (evdev/uinput ioctl pass-through, patch 0001)
+#   - the aarch64-softmmu target carrying the -M pocketforge-a133 machine (patch 0002)
+# Both targets are built from the SAME pinned upstream checkout (./UPSTREAM) in separate
+# out-of-tree build directories, so neither build's configure options interfere with the
+# other's (the linux-user target wants --static --disable-system; the softmmu target is a
+# normal dynamically-linked system emulator and cannot be built --static on most hosts).
 #   Build deps (Ubuntu 24.04): git meson ninja-build pkg-config python3 gcc \
-#                              libglib2.0-dev zlib1g-dev
+#                              libglib2.0-dev zlib1g-dev libpixman-1-dev flex bison
+# Set QEMU_TSP_SKIP_LINUX_USER=1 to skip the linux-user leg (faster iteration on the
+# softmmu machine only); it is NOT skipped by default so a plain ./build.sh still produces
+# both targets.
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
@@ -20,17 +28,38 @@ fi
 cd "$SRC"
 got=$(git rev-parse HEAD)
 [ "$got" = "$COMMIT" ] || { echo "FATAL: upstream HEAD $got != pinned $COMMIT"; exit 1; }
-echo "== apply PocketForge patch =="
+
+echo "== apply PocketForge patch: linux-user evdev/uinput ioctl pass-through =="
 git checkout -- linux-user/syscall.c 2>/dev/null || true
 if ! grep -q do_ioctl_pf_evdev_uinput linux-user/syscall.c; then
   git apply "$ROOT/pocketforge/0001-linux-user-evdev-uinput-ioctl-passthrough.patch"
 fi
-echo "== configure (aarch64-linux-user, static) =="
-rm -rf build
-./configure --target-list=aarch64-linux-user --static --disable-system --without-default-features
-echo "== build =="
-ninja -C build qemu-aarch64
+
+echo "== apply PocketForge patch: -M pocketforge-a133 softmmu machine =="
+if [ ! -f hw/arm/pocketforge_a133.c ]; then
+  git apply "$ROOT/pocketforge/0002-hw-arm-pocketforge_a133-softmmu-machine.patch"
+fi
+
 mkdir -p "$OUT"
-cp build/qemu-aarch64 "$OUT/qemu-aarch64"
-echo "== done: $OUT/qemu-aarch64 =="
-"$OUT/qemu-aarch64" --version | head -1
+
+if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
+  echo "== configure + build: aarch64-linux-user (static) =="
+  rm -rf build
+  ./configure --target-list=aarch64-linux-user --static --disable-system --without-default-features
+  ninja -C build qemu-aarch64
+  cp build/qemu-aarch64 "$OUT/qemu-aarch64"
+  echo "== done: $OUT/qemu-aarch64 =="
+  "$OUT/qemu-aarch64" --version | head -1
+else
+  echo "== QEMU_TSP_SKIP_LINUX_USER=1: skipping the linux-user leg =="
+fi
+
+echo "== configure + build: aarch64-softmmu (-M pocketforge-a133) =="
+rm -rf build-softmmu
+mkdir -p build-softmmu
+(cd build-softmmu && ../configure --target-list=aarch64-softmmu --without-default-features)
+ninja -C build-softmmu qemu-system-aarch64
+cp build-softmmu/qemu-system-aarch64 "$OUT/qemu-system-aarch64"
+echo "== done: $OUT/qemu-system-aarch64 =="
+"$OUT/qemu-system-aarch64" --version | head -1
+"$OUT/qemu-system-aarch64" -M help | grep pocketforge-a133
