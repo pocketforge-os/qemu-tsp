@@ -1,3 +1,58 @@
+diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
+new file mode 100644
+index 0000000..3c907e0
+--- /dev/null
++++ b/docs/pocketforge-a133-peripheral-stubs.md
+@@ -0,0 +1,49 @@
++# `-M pocketforge-a133` peripheral register audit (Phase B)
++
++Phase B of Odyssey L3 deliverable-2 (tsp-mc9m.41.925.2.2) adds
++`hw/misc/pocketforge_a133_mmio_stub.c` -- a single reusable RAM-backed
++register-file device -- and instantiates it for six peripherals so our real
++A133 kernel can boot our real, unmodified device tree past their probe
++without a hard MMIO external abort. This doc is the per-device audit that
++justifies "plain RAM suffices" for each one: for every stub below, the real
++Linux driver (source-read against `kernel-sunxi-6.x` @ `device/a133`) was
++checked for any busy-poll on a hardware-set status/lock bit during probe. If
++a driver only ever WRITEs a register, or reads back a value it just wrote
++itself (never a value only real hardware would set), a stub that behaves
++like plain memory -- write stores, read returns the last write, default 0 --
++is indistinguishable to that driver from working hardware, for the narrow
++purpose of getting past `probe()`.
++
++| Peripheral | DT node / compatible | MMIO base (size) | Driver | Why plain RAM suffices |
++|---|---|---|---|---|
++| r_intc / NMI | `interrupt-controller@7010320`, `allwinner,sun50i-a100-nmi` / `allwinner,sun9i-a80-nmi` | `0x07010320` (`0xc`) | `drivers/irqchip/irq-sunxi-nmi.c`, `sunxi_sc_nmi_irq_init()` | Called once from early `irqchip_init()` (before `do_initcalls()`). Maps the region via `of_io_request_and_map()`, then does exactly two unconditional `writel()`s (disable all interrupts; clear pending) and registers a chained IRQ handler consuming the real GIC's `GIC_SPI 103` as an INPUT. No register is ever read back. This was Phase A's boot-blocking panic: with the region entirely unbacked, the first write faulted as a synchronous external abort. |
++| main CCU | `clock@3001000`, `allwinner,sun50i-a100-ccu` | `0x03001000` (`0x1000`) | `drivers/clk/sunxi-ng/ccu-sun50i-a100.c` | `CONFIG_SUN50I_A100_CCU` is **not set** in `arch/arm64/configs/a133_defconfig` (per infra-104's 2026-07-26 scoping pass: "CONFIG_SUNXI_CCU is off ... DT software clocks over raw MMIO"). With the driver not compiled in, nothing in this kernel build ever binds to the `ccu` node or touches its register file's content at all -- the stub exists purely so the DT's declared `reg` range resolves to memory rather than an abort if anything ever reads/writes it (e.g. a future consumer, or a generic `syscon` lookup), not because any current driver polls a PLL-lock bit here. |
++| R-CCU | `clock@7010000`, `allwinner,sun50i-a100-r-ccu` | `0x07010000` (`0x300`) | same driver family as main CCU (also gated off) | Same reasoning as main CCU -- no bound driver in this kernel build. |
++| main pinctrl (`&pio`) | `pinctrl@300b000`, `allwinner,sun50i-a100-pinctrl` | `0x0300b000` (`0x400`) | `drivers/pinctrl/sunxi/pinctrl-sunxi.c` | `PINCTRL_SUN50I_A100` is `default ARM64 && ARCH_SUNXI` (on for this build), so this driver DOES probe. Its register accesses (audited across `sunxi_pmx_set()`, `sunxi_pconf_set()`, IRQ mask/unmask/ack, the `PINCTRL_SUN50I_A100` group-config path) are all plain `readl()`-modify-`writel()` on registers the driver itself owns, or writes with no readback (e.g. clearing an IRQ-status bit by writing `1 << idx`). No `udelay`/`usleep`/poll loop was found anywhere in the file. A stub loses cross-pin bitfield state on a read-modify-write to an unwritten register (reads 0 instead of a real prior value), which is harmless for boot -- it is not a functional pin-mux/IRQ-routing model, only a probe-order unblocker. |
++| watchdog | `watchdog@30090a0`, `allwinner,sun50i-a100-wdt` | `0x030090a0` (`0x20`) | `drivers/watchdog/sunxi_wdt.c` | `CONFIG_SUNXI_WATCHDOG=y`, so this driver probes and (per infra-104's scoping) auto-starts. Every register access in the file is a plain `readl()`/`writel()`; no poll loop. Since the stub implements no actual countdown/reset logic, "auto-start" is a no-op write that is silently absorbed -- the watchdog can never fire, matching the "inert register stub" design intent exactly. |
++| DMA controller | `dma-controller@3002000`, `allwinner,sun50i-a100-dma` | `0x03002000` (`0x1000`) | `drivers/dma/sun6i-dma.c`, `sun6i_dma_probe()` -> `sun6i_enable_clock_autogate_h3()` | **Not in the sub-epic's named stub list** (it was classified DT-SKIP -- "not needed for boot/DT fidelity"). Discovered necessary the same way Phase A discovered `r_intc`: once the boot advanced past `r_intc`, it panicked here instead, in `sun6i_enable_clock_autogate_h3()`'s single unconditional `writel(SUNXI_H3_DMA_GATE_ENABLE, sdev->base + SUNXI_H3_DMA_GATE)` -- a write to the DMA controller's own MMIO base, unrelated to any clock/CCU register, with no readback and no poll. The "DT-SKIP -> not needed for boot" classification was correct for what the DMA *engine itself* is needed for (nothing, at this boot depth) but did not account for its driver's unconditional probe-time register touch against completely unbacked memory. |
++
++## What this doc does NOT cover
++
++The GPU power domain (`gpu-power-domain@7001000`, `pd_gpu`,
++`allwinner,sun50i-a100-ppu`) is the boot's new stopping point after these six
++stubs land (see the Phase B evidence README,
++`pocketforge-automation` `scripts/qemu-pocketforge-a133-boot-evidence/phase-b/`).
++It is deliberately **not** audited or stubbed here: it is GPU-adjacent power
++management, explicitly named SKIP in the sub-epic design ("GPU/PowerVR
++`img,gpu` + IOMMU + GPU power-domain (blob; replaced by virtio-gpu)"), and
++per that same design a later, still-unmodeled peripheral is an acceptable
++Phase B stopping point. Whoever designs Phase C should re-run this same
++per-driver audit method (source-read the real driver, look for polls) before
++deciding whether `pd_gpu` also gets a plain-RAM stub or needs different
++handling.
++
++`r_pio` (`0x07022000`) and `r_i2c0` (`0x07081400`, the AXP717 PMIC's bus)
++were similarly left un-stubbed: their drivers were not source-audited in
++depth here because the current boot never reaches their initcalls (the
++`gpu_domain_probe` panic above stops it first). A stub for both was
++prototyped during Phase B's investigation to try to reach the AXP717 driver
++and observe its PMIC-absence handling directly, but since the boot never got
++there to exercise it, that prototype was deliberately not shipped as
++unverified scope. The next phase to reach that far should audit both drivers
++properly before stubbing.
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
 index 7b549dc..92fae69 100644
 --- a/hw/arm/Kconfig
