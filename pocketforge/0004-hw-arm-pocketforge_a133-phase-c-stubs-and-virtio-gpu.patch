@@ -67,7 +67,7 @@ index 3c907e0..9aace6c 100644
 +now independently reproduced under `-M pocketforge-a133`. Full transcript:
 +`pocketforge-automation` `scripts/qemu-pocketforge-a133-ui-evidence/serial.txt`.
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index eb89470..54b7861 100644
+index eb89470..3d24bf3 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -38,18 +38,46 @@
@@ -136,7 +136,7 @@ index eb89470..54b7861 100644
  #include "sysemu/sysemu.h"
  #include "qemu/module.h"
  #include "chardev/char.h"
-@@ -120,8 +150,240 @@
+@@ -120,8 +150,244 @@
  #define PF_A133_DMA_BASE         0x03002000
  #define PF_A133_DMA_SIZE         0x1000
  
@@ -364,10 +364,14 @@ index eb89470..54b7861 100644
 + * DT's highest declared reg end is well under 0x08000000; highest GIC_SPI
 + * is 143) -- these are QEMU-only synthetic devices with no real-hardware
 + * counterpart, matching -M virt's own slot size (0x200) and node shape.
-+ * Reused verbatim from deliverable-1's proven `-M virt` recipe (see
-+ * pocketforge-automation scripts/qemu-a133-virt.sh): the modern
-+ * VIRTIO_F_VERSION_1 transport (force-legacy=false on the CLI) is required
-+ * for drivers/gpu/drm/virtio/virtgpu_kms.c to bind at all.
++ * The modern VIRTIO_F_VERSION_1 transport is required for
++ * drivers/gpu/drm/virtio/virtgpu_kms.c to bind at all, so each transport's
++ * force-legacy property is set to false explicitly BEFORE realization (see
++ * pocketforge_a133_create_virtio_mmio() below) -- the machine provides the
++ * modern transport on its own; it does not depend on an out-of-tree
++ * `-global virtio-mmio.force-legacy=false` CLI override the way
++ * deliverable-1's `-M virt` recipe (pocketforge-automation
++ * scripts/qemu-a133-virt.sh) does.
 + */
 +#define PF_A133_VIRTIO_MMIO_BASE   0x0a000000
 +#define PF_A133_VIRTIO_MMIO_SIZE   0x200
@@ -377,7 +381,7 @@ index eb89470..54b7861 100644
  #define PF_A133_NUM_CPUS        4
  #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
  
-@@ -184,6 +446,51 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+@@ -184,6 +450,65 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
      }
  }
  
@@ -389,8 +393,22 @@ index eb89470..54b7861 100644
 +    for (i = 0; i < PF_A133_VIRTIO_MMIO_COUNT; i++) {
 +        hwaddr base = PF_A133_VIRTIO_MMIO_BASE + i * PF_A133_VIRTIO_MMIO_SIZE;
 +        int irq = PF_A133_VIRTIO_MMIO_IRQ0 + i;
++        DeviceState *dev = qdev_new("virtio-mmio");
 +
-+        sysbus_create_simple("virtio-mmio", base, pic[irq]);
++        /*
++         * Set force-legacy=false BEFORE realization: virtio-mmio's
++         * force-legacy property defaults to true (pre-VIRTIO_F_VERSION_1
++         * legacy virtio), and sysbus_create_simple() realizes the device
++         * with no way to set a property first. Doing it this way makes the
++         * machine self-contained -- it supplies the modern transport
++         * virtio-gpu-device/virtio-keyboard-device require on its own,
++         * with no external CLI override needed.
++         */
++        object_property_set_bool(OBJECT(dev), "force-legacy", false,
++                                   &error_fatal);
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
++        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
++        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, pic[irq]);
 +    }
 +}
 +
@@ -429,7 +447,7 @@ index eb89470..54b7861 100644
  static void pocketforge_a133_init(MachineState *machine)
  {
      MemoryRegion *sysmem = get_system_memory();
-@@ -242,12 +549,61 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -242,12 +567,61 @@ static void pocketforge_a133_init(MachineState *machine)
                                        PF_A133_R_INTC_SIZE);
      pocketforge_a133_mmio_stub_create("pocketforge-a133.dma",
                                        PF_A133_DMA_BASE, PF_A133_DMA_SIZE);
@@ -491,7 +509,7 @@ index eb89470..54b7861 100644
      arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
  }
  
-@@ -259,7 +615,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+@@ -259,7 +633,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
      };
  
      mc->desc = "PocketForge OS A133 fidelity-CI machine "
