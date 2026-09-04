@@ -243,10 +243,10 @@ index 6b6cf2f..d607382 100644
  
 diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
 new file mode 100644
-index 0000000..34e8631
+index 0000000..2f69f17
 --- /dev/null
 +++ b/hw/char/dw_apb_uart.c
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,374 @@
 +/*
 + * Synopsys DesignWare APB UART ("snps,dw-apb-uart") emulation
 + *
@@ -455,6 +455,13 @@ index 0000000..34e8631
 +            s->read_pos = 0;
 +            s->read_count = 0;
 +            dw_apb_uart_update_lsr(s);
++            /*
++             * If an RDI interrupt was asserted before the reset, LSR.DR
++             * just cleared but iir/the physical IRQ line were never
++             * recomputed -- recompute here or a pending RDI would latch
++             * high forever (Codex review, tsp-mc9m.41.925.2.1 round 1).
++             */
++            dw_apb_uart_update_irq(s);
 +        }
 +        break;
 +    case DW_UART_REG_LCR:
@@ -534,6 +541,13 @@ index 0000000..34e8631
 +    s->read_pos = 0;
 +    s->read_count = 0;
 +    dw_apb_uart_update_lsr(s);
++    /*
++     * ier is cleared above, so this recomputes pending=false and drives
++     * the GIC input low -- without it, a reset while RDI/THRI was
++     * asserted would leave the physical IRQ line stuck high (Codex
++     * review, tsp-mc9m.41.925.2.1 round 1).
++     */
++    dw_apb_uart_update_irq(s);
 +}
 +
 +static void dw_apb_uart_realize(DeviceState *dev, Error **errp)
