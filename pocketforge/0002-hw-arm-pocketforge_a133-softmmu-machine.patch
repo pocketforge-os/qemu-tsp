@@ -243,10 +243,10 @@ index 6b6cf2f..d607382 100644
  
 diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
 new file mode 100644
-index 0000000..2f69f17
+index 0000000..d8b0b09
 --- /dev/null
 +++ b/hw/char/dw_apb_uart.c
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,382 @@
 +/*
 + * Synopsys DesignWare APB UART ("snps,dw-apb-uart") emulation
 + *
@@ -449,9 +449,15 @@ index 0000000..2f69f17
 +        break;
 +    case DW_UART_REG_IIR_FCR:
 +        s->fcr = value;
-+        if (value & 0x02) { /* XFR: reset xmit FIFO -- nothing buffered */
-+        }
-+        if (value & 0x04) { /* RFR: reset recv FIFO */
++        /*
++         * Per the 16550 / DW_apb_uart spec: bit1 (0x02, RFIFOR) clears the
++         * RECEIVE FIFO, bit2 (0x04, XFIFOR) clears the TRANSMIT FIFO --
++         * these were SWAPPED in round 1 (Codex review round 2,
++         * tsp-mc9m.41.925.2.1): a guest clearing only the RX FIFO (0x02)
++         * hit the no-op branch and left queued input, and a TX-only clear
++         * (0x04) wrongly dropped received bytes.
++         */
++        if (value & 0x02) { /* RFIFOR: reset receive FIFO */
 +            s->read_pos = 0;
 +            s->read_count = 0;
 +            dw_apb_uart_update_lsr(s);
@@ -462,6 +468,8 @@ index 0000000..2f69f17
 +             * high forever (Codex review, tsp-mc9m.41.925.2.1 round 1).
 +             */
 +            dw_apb_uart_update_irq(s);
++        }
++        if (value & 0x04) { /* XFIFOR: reset transmit FIFO -- nothing buffered */
 +        }
 +        break;
 +    case DW_UART_REG_LCR:
