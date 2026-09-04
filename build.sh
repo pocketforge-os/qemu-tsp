@@ -40,6 +40,11 @@ if [ ! -f hw/arm/pocketforge_a133.c ]; then
   git apply "$ROOT/pocketforge/0002-hw-arm-pocketforge_a133-softmmu-machine.patch"
 fi
 
+echo "== apply PocketForge patch: -M pocketforge-a133 peripheral stubs =="
+if [ ! -f hw/misc/pocketforge_a133_mmio_stub.c ]; then
+  git apply "$ROOT/pocketforge/0003-hw-arm-pocketforge_a133-peripheral-stubs.patch"
+fi
+
 mkdir -p "$OUT"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
