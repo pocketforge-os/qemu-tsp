@@ -70,14 +70,10 @@ diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
 index 92fae69..054f591 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -276,6 +276,7 @@ config POCKETFORGE_A133
-     depends on TCG && AARCH64
-     select ARM_GIC
+@@ -278,2 +278,3 @@ config POCKETFORGE_A133
      select DW_APB_UART
 +    select POCKETFORGE_A100_RTC
      select POCKETFORGE_A133_MMIO_STUB
- 
- config SABRELITE
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index 3d24bf3..23e1826 100644
 --- a/hw/arm/pocketforge_a133.c
@@ -90,20 +86,14 @@ index 3d24bf3..23e1826 100644
  #include "hw/sysbus.h"
  #include "exec/address-spaces.h"
  #include "sysemu/device_tree.h"
-@@ -115,6 +116,9 @@
- #define PF_A133_UART0_BASE      0x05000000
- #define PF_A133_UART0_IRQ       0 /* GIC_SPI 0 */
- 
+@@ -118,3 +119,6 @@
 +/* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
 +#define PF_A133_RTC_BASE        0x07000000
 +
  /*
   * Phase B (tsp-mc9m.41.925.2.2) RAM-backed register-file stubs -- addresses
   * and sizes taken verbatim from sun50i-a100.dtsi's "ccu", "watchdog", "pio",
-@@ -543,6 +547,8 @@ static void pocketforge_a133_init(MachineState *machine)
-     dw_apb_uart_create(PF_A133_UART0_BASE, pic[PF_A133_UART0_IRQ],
-                        serial_hd(0));
- 
+@@ -546,3 +550,5 @@ static void pocketforge_a133_init(MachineState *machine)
 +    pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
 +
      /*
@@ -113,8 +103,7 @@ diff --git a/hw/rtc/Kconfig b/hw/rtc/Kconfig
 index d0d8dda..3af1aaf 100644
 --- a/hw/rtc/Kconfig
 +++ b/hw/rtc/Kconfig
-@@ -30,3 +30,6 @@ config GOLDFISH_RTC
- 
+@@ -31,2 +31,5 @@ config GOLDFISH_RTC
  config LS7A_RTC
      bool
 +
@@ -428,6 +417,3 @@ index 0000000..6e22c95
 +
 +    return g_test_run();
 +}
--- 
-2.43.0
-
