@@ -36,7 +36,7 @@ prepare_owned_build_dir() {
         exit 1
       fi
       ;;
-    build-linux-user-*|build-softmmu-rtc-*)
+    build-linux-user-*|build-softmmu-rtc-*|build-softmmu-mmio-*)
       [ ! -e "$dir" ] || {
         echo "FATAL: refusing collision with unique build path: $dir"
         exit 1
@@ -82,6 +82,11 @@ if [ ! -f hw/rtc/pocketforge_a100_rtc.c ]; then
   git apply "$ROOT/pocketforge/0005-hw-rtc-add-PocketForge-A100-RTC-model.patch"
 fi
 
+echo "== apply PocketForge patch: pinned-DTB MMIO coverage =="
+if [ ! -f tests/qtest/pocketforge-a133-mmio-map-test.c ]; then
+  git apply "$ROOT/pocketforge/0006-hw-arm-pocketforge-a133-complete-mmio-coverage.patch"
+fi
+
 mkdir -p "$OUT"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
@@ -103,8 +108,12 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # --without-default-features strips pixman along with every other UI backend and
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
 (cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled)
-ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 tests/qtest/pocketforge-a100-rtc-test
-meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs qtest-aarch64/pocketforge-a100-rtc-test
+ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
+  tests/qtest/pocketforge-a100-rtc-test \
+  tests/qtest/pocketforge-a133-mmio-map-test
+meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
+  qtest-aarch64/pocketforge-a100-rtc-test \
+  qtest-aarch64/pocketforge-a133-mmio-map-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1

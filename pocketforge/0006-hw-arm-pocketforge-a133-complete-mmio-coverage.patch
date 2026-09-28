@@ -1,0 +1,467 @@
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 23e1826..1523f1e 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -49,8 +49,9 @@
+  * real DT even though rendering is replaced by the virtio-gpu graft
+  * below), SID/eFuse, R-domain pinctrl + I2C0 (the AXP717 PMIC bus -- see
+  * (3) below), PWM, the thermal sensor, and the full USB stack (MUSB/PHY/
+- * EHCI0-1/OHCI0-1 -- D10's original deferred cost, never functionally
+- * modeled, only register-backed so probe doesn't hard-abort). Full
++ * enabled EHCI1/OHCI1 -- D10's original deferred cost, never functionally
++ * modeled, only register-backed so probe doesn't hard-abort; the disabled
++ * EHCI0/OHCI0 nodes are deliberately absent). Full
+  * per-peripheral audit: docs/pocketforge-a133-peripheral-stubs.md. (2) a
+  * virtio-gpu + virtio-input graft, reusing deliverable-1's exact proven
+  * device set (virtio-gpu-device + virtio-keyboard-device, modern
+@@ -115,6 +116,12 @@
+
+ #define PF_A133_UART0_BASE      0x05000000
+ #define PF_A133_UART0_IRQ       0 /* GIC_SPI 0 */
++#define PF_A133_UART1_BASE      0x05000400
++#define PF_A133_UART1_IRQ       1 /* GIC_SPI 1 */
++#define PF_A133_UART3_BASE      0x05000c00
++#define PF_A133_UART3_IRQ       3 /* GIC_SPI 3 */
++#define PF_A133_UART4_BASE      0x05001000
++#define PF_A133_UART4_IRQ       4 /* GIC_SPI 4 */
+
+ /* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
+ #define PF_A133_RTC_BASE        0x07000000
+@@ -352,8 +359,8 @@
+ #define PF_A133_USBPHY_PMU1_SIZE  0x100
+
+ /*
+- * EHCI0/OHCI0/EHCI1/OHCI1 host controllers (usb@5101000, usb@5101400,
+- * usb@5200000, usb@5200400). Same USB-SKIP class as MUSB/PHY above: the
++ * Enabled EHCI1/OHCI1 host controllers (usb@5200000 and usb@5200400).
++ * Same USB-SKIP class as MUSB/PHY above: the
+  * generic EHCI/OHCI core (drivers/usb/host/ehci-hcd.c, ohci-hcd.c) does
+  * plain register init/reset writes with its own bounded jiffies-based
+  * timeouts for any hardware-completion wait, so a RAM-backed stub lets
+@@ -361,10 +368,6 @@
+  * instead of hard-aborting -- confirmed via the panic call trace
+  * (ehci_setup/ohci_init, both plain readl/writel, no unbounded poll).
+  */
+-#define PF_A133_EHCI0_BASE        0x05101000
+-#define PF_A133_EHCI0_SIZE        0x100
+-#define PF_A133_OHCI0_BASE        0x05101400
+-#define PF_A133_OHCI0_SIZE        0x100
+ #define PF_A133_EHCI1_BASE        0x05200000
+ #define PF_A133_EHCI1_SIZE        0x100
+ #define PF_A133_OHCI1_BASE        0x05200400
+@@ -395,6 +398,85 @@
+ #define PF_A133_NUM_CPUS        4
+ #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
+
++typedef struct PfA133StubRegion {
++    const char *name;
++    hwaddr base;
++    uint32_t size;
++} PfA133StubRegion;
++
++/*
++ * Exact enabled register apertures derived from the pinned Odyssey DTB.
++ * Each entry is source-owned in pocketforge/a133-mmio-coverage.json; keep
++ * this table byte-for-byte congruent with that manifest.  A single entry may
++ * cover translated child registers when the DT enables the containing bus
++ * aperture (notably DE2's 4 MiB window).
++ */
++static const PfA133StubRegion pf_a133_stub_regions[] = {
++    { "pocketforge-a133.sram_a1",          0x00020000, 0x4000 },
++    { "pocketforge-a133.sram_c",           0x00024000, 0x21000 },
++    { "pocketforge-a133.sram_a2",          0x00100000, 0x14000 },
++    { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
++    { "pocketforge-a133.crypto",           0x01904000, 0x800 },
++    { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
++    { "pocketforge-a133.sram_c1",          0x01d00000, 0x100000 },
++    { "pocketforge-a133.syscon",           0x03000000, 0x1000 },
++    { "pocketforge-a133.ccu",              0x03001000, 0x1000 },
++    { "pocketforge-a133.dma",              0x03002000, 0x1000 },
++    { "pocketforge-a133.sid",              0x03006000, 0x1000 },
++    { "pocketforge-a133.watchdog",         0x030090a0, 0x20 },
++    { "pocketforge-a133.pwm",              0x0300a000, 0x400 },
++    { "pocketforge-a133.pio",              0x0300b000, 0x400 },
++    { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
++    { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
++    { "pocketforge-a133.mmc0",             0x04020000, 0x1000 },
++    { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
++    { "pocketforge-a133.ledc",             0x05018000, 0x400 },
++    { "pocketforge-a133.ths",              0x05070400, 0x100 },
++    { "pocketforge-a133.codec",            0x05096000, 0x31c },
++    { "pocketforge-a133.musb",             0x05100000, 0x400 },
++    { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
++    { "pocketforge-a133.usbphy_pmu0",      0x05101800, 0x100 },
++    { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
++    { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
++    { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
++    { "pocketforge-a133.de2",              0x06000000, 0x400000 },
++    { "pocketforge-a133.dsi",              0x06504000, 0x1000 },
++    { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
++    { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
++    { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
++    { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
++    { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
++    { "pocketforge-a133.r_intc",           0x07010320, 0xc },
++    { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
++    { "pocketforge-a133.ir",               0x07040000, 0x400 },
++    { "pocketforge-a133.r_i2c0",           0x07081400, 0x400 },
++};
++
++typedef struct PfA133UartRegion {
++    hwaddr base;
++    int irq;
++    unsigned int serial_index;
++} PfA133UartRegion;
++
++static const PfA133UartRegion pf_a133_uart_regions[] = {
++    { PF_A133_UART0_BASE, PF_A133_UART0_IRQ, 0 },
++    { PF_A133_UART1_BASE, PF_A133_UART1_IRQ, 1 },
++    { PF_A133_UART3_BASE, PF_A133_UART3_IRQ, 2 },
++    { PF_A133_UART4_BASE, PF_A133_UART4_IRQ, 3 },
++};
++
++static void pocketforge_a133_create_mmio_stubs(void)
++{
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(pf_a133_stub_regions); i++) {
++        const PfA133StubRegion *region = &pf_a133_stub_regions[i];
++
++        pocketforge_a133_mmio_stub_create(region->name, region->base,
++                                          region->size);
++    }
++}
++
+ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+ {
+     DeviceState *gicdev;
+@@ -519,6 +601,7 @@ static void pocketforge_a133_init(MachineState *machine)
+     qemu_irq pic[PF_A133_NUM_SPI];
+     struct arm_boot_info *binfo = g_new0(struct arm_boot_info, 1);
+     int n;
++    unsigned int i;
+
+     for (n = 0; n < PF_A133_NUM_CPUS; n++) {
+         Object *cpuobj = object_new(machine->cpu_type);
+@@ -544,81 +627,16 @@ static void pocketforge_a133_init(MachineState *machine)
+
+     pocketforge_a133_create_gic(machine, pic);
+
+-    dw_apb_uart_create(PF_A133_UART0_BASE, pic[PF_A133_UART0_IRQ],
+-                       serial_hd(0));
++    for (i = 0; i < ARRAY_SIZE(pf_a133_uart_regions); i++) {
++        const PfA133UartRegion *uart = &pf_a133_uart_regions[i];
++
++        dw_apb_uart_create(uart->base, pic[uart->irq],
++                           serial_hd(uart->serial_index));
++    }
+
+     pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
+
+-    /*
+-     * Phase B RAM-backed peripheral stubs -- see the file header comment
+-     * for the per-driver register audit that justifies plain RAM
+-     * semantics. No IRQ output is wired for any of these: r_intc's own
+-     * chained handler consumes GIC_SPI 103 as an INPUT from the real GIC
+-     * (already modeled above), not from this stub, and none of
+-     * CCU/R-CCU/pinctrl/watchdog need to actively assert an interrupt for
+-     * boot to proceed past their probe.
+-     */
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.ccu",
+-                                      PF_A133_CCU_BASE, PF_A133_CCU_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.r_ccu",
+-                                      PF_A133_R_CCU_BASE,
+-                                      PF_A133_R_CCU_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.pio",
+-                                      PF_A133_PIO_BASE, PF_A133_PIO_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.watchdog",
+-                                      PF_A133_WATCHDOG_BASE,
+-                                      PF_A133_WATCHDOG_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.r_intc",
+-                                      PF_A133_R_INTC_BASE,
+-                                      PF_A133_R_INTC_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.dma",
+-                                      PF_A133_DMA_BASE, PF_A133_DMA_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.gpu_power_domain",
+-                                      PF_A133_GPU_POWER_DOMAIN_BASE,
+-                                      PF_A133_GPU_POWER_DOMAIN_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.syscon",
+-                                      PF_A133_SYSCON_BASE, PF_A133_SYSCON_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.iommu",
+-                                      PF_A133_IOMMU_BASE, PF_A133_IOMMU_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.tcon_top",
+-                                      PF_A133_TCON_TOP_BASE, PF_A133_TCON_TOP_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.sid",
+-                                      PF_A133_SID_BASE, PF_A133_SID_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.de2_clk",
+-                                      PF_A133_DE2_CLK_BASE, PF_A133_DE2_CLK_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.r_pio",
+-                                      PF_A133_R_PIO_BASE, PF_A133_R_PIO_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.pwm",
+-                                      PF_A133_PWM_BASE, PF_A133_PWM_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.mixer0",
+-                                      PF_A133_MIXER0_BASE, PF_A133_MIXER0_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.tcon_lcd0",
+-                                      PF_A133_TCON_LCD0_BASE,
+-                                      PF_A133_TCON_LCD0_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.r_i2c0",
+-                                      PF_A133_R_I2C0_BASE,
+-                                      PF_A133_R_I2C0_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.ths",
+-                                      PF_A133_THS_BASE, PF_A133_THS_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.musb",
+-                                      PF_A133_MUSB_BASE, PF_A133_MUSB_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.usbphy_ctrl",
+-                                      PF_A133_USBPHY_CTRL_BASE,
+-                                      PF_A133_USBPHY_CTRL_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.usbphy_pmu0",
+-                                      PF_A133_USBPHY_PMU0_BASE,
+-                                      PF_A133_USBPHY_PMU0_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.usbphy_pmu1",
+-                                      PF_A133_USBPHY_PMU1_BASE,
+-                                      PF_A133_USBPHY_PMU1_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.ehci0",
+-                                      PF_A133_EHCI0_BASE, PF_A133_EHCI0_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.ohci0",
+-                                      PF_A133_OHCI0_BASE, PF_A133_OHCI0_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.ehci1",
+-                                      PF_A133_EHCI1_BASE, PF_A133_EHCI1_SIZE);
+-    pocketforge_a133_mmio_stub_create("pocketforge-a133.ohci1",
+-                                      PF_A133_OHCI1_BASE, PF_A133_OHCI1_SIZE);
++    pocketforge_a133_create_mmio_stubs();
+
+     pocketforge_a133_create_virtio_mmio(machine, pic);
+
+diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
+index d8b0b09..b507f07 100644
+--- a/hw/char/dw_apb_uart.c
++++ b/hw/char/dw_apb_uart.c
+@@ -55,7 +55,7 @@ DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr)
+ #define DW_UART_REG_SCR          0x07
+ #define DW_UART_REG_USR          0x1f  /* DesignWare-specific */
+
+-#define DW_UART_MMIO_SIZE        0x100 /* covers every DT-declared offset */
++#define DW_UART_MMIO_SIZE        0x400 /* exact sun50i-a100.dtsi aperture */
+
+ /* LCR */
+ #define UART_LCR_DLAB   0x80
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index bc59f14..97a3a2a 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -222,7 +222,7 @@ qtests_aarch64 = \
+   (config_all.has_key('CONFIG_TCG') and                                            \
+    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
+-    ['pocketforge-a100-rtc-test'] : []) +                                          \
++    ['pocketforge-a100-rtc-test', 'pocketforge-a133-mmio-map-test'] : []) +         \
+   ['arm-cpu-features',
+    'numa-test',
+    'boot-serial-test',
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+new file mode 100644
+index 0000000..e939756
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -0,0 +1,201 @@
++/*
++ * QTest coverage for the PocketForge A133 enabled-DT MMIO contract
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest.h"
++
++typedef struct ExpectedRegion {
++    const char *name;
++    uint64_t base;
++    uint64_t size;
++} ExpectedRegion;
++
++/* Keep congruent with pocketforge/a133-mmio-coverage.json. */
++static const ExpectedRegion expected_regions[] = {
++    { "pocketforge-a133.sram_a1",          0x00020000, 0x4000 },
++    { "pocketforge-a133.sram_c",           0x00024000, 0x21000 },
++    { "pocketforge-a133.sram_a2",          0x00100000, 0x14000 },
++    { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
++    { "pocketforge-a133.crypto",           0x01904000, 0x800 },
++    { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
++    { "pocketforge-a133.sram_c1",          0x01d00000, 0x100000 },
++    { "pocketforge-a133.syscon",           0x03000000, 0x1000 },
++    { "pocketforge-a133.ccu",              0x03001000, 0x1000 },
++    { "pocketforge-a133.dma",              0x03002000, 0x1000 },
++    { "pocketforge-a133.sid",              0x03006000, 0x1000 },
++    { "pocketforge-a133.watchdog",         0x030090a0, 0x20 },
++    { "pocketforge-a133.pwm",              0x0300a000, 0x400 },
++    { "pocketforge-a133.pio",              0x0300b000, 0x400 },
++    { "gic_dist",                          0x03021000, 0x1000 },
++    { "gic_cpu",                           0x03022000, 0x2000 },
++    { "gic_viface",                        0x03024000, 0x1000 },
++    { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
++    { "gic_vcpu",                          0x03026000, 0x2000 },
++    { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
++    { "pocketforge-a133.mmc0",             0x04020000, 0x1000 },
++    { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
++    { "dw-apb-uart",                       0x05000000, 0x400 },
++    { "dw-apb-uart",                       0x05000400, 0x400 },
++    { "dw-apb-uart",                       0x05000c00, 0x400 },
++    { "dw-apb-uart",                       0x05001000, 0x400 },
++    { "pocketforge-a133.ledc",             0x05018000, 0x400 },
++    { "pocketforge-a133.ths",              0x05070400, 0x100 },
++    { "pocketforge-a133.codec",            0x05096000, 0x31c },
++    { "pocketforge-a133.musb",             0x05100000, 0x400 },
++    { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
++    { "pocketforge-a133.usbphy_pmu0",      0x05101800, 0x100 },
++    { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
++    { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
++    { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
++    { "pocketforge-a133.de2",              0x06000000, 0x400000 },
++    { "pocketforge-a133.dsi",              0x06504000, 0x1000 },
++    { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
++    { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
++    { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
++    { "pocketforge-a100-rtc",              0x07000000, 0x400 },
++    { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
++    { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
++    { "pocketforge-a133.r_intc",           0x07010320, 0xc },
++    { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
++    { "pocketforge-a133.ir",               0x07040000, 0x400 },
++    { "pocketforge-a133.r_i2c0",           0x07081400, 0x400 },
++    { "virtio-mmio",                       0x0a000000, 0x200 },
++    { "virtio-mmio",                       0x0a000200, 0x200 },
++};
++
++static const ExpectedRegion stub_regions[] = {
++    { "pocketforge-a133.sram_a1",          0x00020000, 0x4000 },
++    { "pocketforge-a133.sram_c",           0x00024000, 0x21000 },
++    { "pocketforge-a133.sram_a2",          0x00100000, 0x14000 },
++    { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
++    { "pocketforge-a133.crypto",           0x01904000, 0x800 },
++    { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
++    { "pocketforge-a133.sram_c1",          0x01d00000, 0x100000 },
++    { "pocketforge-a133.syscon",           0x03000000, 0x1000 },
++    { "pocketforge-a133.ccu",              0x03001000, 0x1000 },
++    { "pocketforge-a133.dma",              0x03002000, 0x1000 },
++    { "pocketforge-a133.sid",              0x03006000, 0x1000 },
++    { "pocketforge-a133.watchdog",         0x030090a0, 0x20 },
++    { "pocketforge-a133.pwm",              0x0300a000, 0x400 },
++    { "pocketforge-a133.pio",              0x0300b000, 0x400 },
++    { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
++    { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
++    { "pocketforge-a133.mmc0",             0x04020000, 0x1000 },
++    { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
++    { "pocketforge-a133.ledc",             0x05018000, 0x400 },
++    { "pocketforge-a133.ths",              0x05070400, 0x100 },
++    { "pocketforge-a133.codec",            0x05096000, 0x31c },
++    { "pocketforge-a133.musb",             0x05100000, 0x400 },
++    { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
++    { "pocketforge-a133.usbphy_pmu0",      0x05101800, 0x100 },
++    { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
++    { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
++    { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
++    { "pocketforge-a133.de2",              0x06000000, 0x400000 },
++    { "pocketforge-a133.dsi",              0x06504000, 0x1000 },
++    { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
++    { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
++    { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
++    { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
++    { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
++    { "pocketforge-a133.r_intc",           0x07010320, 0xc },
++    { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
++    { "pocketforge-a133.ir",               0x07040000, 0x400 },
++    { "pocketforge-a133.r_i2c0",           0x07081400, 0x400 },
++};
++
++static QTestState *mmio_start(void)
++{
++    return qtest_init("-machine pocketforge-a133 -nodefaults");
++}
++
++static void assert_region_line(const char *map, const ExpectedRegion *region)
++{
++    g_autofree char *line = g_strdup_printf(
++        "  %016" PRIx64 "-%016" PRIx64 " (prio 0, i/o): %s",
++        region->base, region->base + region->size - 1, region->name);
++
++    g_assert_nonnull(strstr(map, line));
++}
++
++static void test_exact_live_map(void)
++{
++    QTestState *qts = mmio_start();
++    g_autofree char *map = qtest_hmp(qts, "info mtree -f");
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(expected_regions); i++) {
++        assert_region_line(map, &expected_regions[i]);
++    }
++
++    /* These controller nodes are disabled in the pinned effective DT. */
++    g_assert_null(strstr(map, "0000000005101000-"));
++    g_assert_null(strstr(map, "0000000005101400-"));
++    g_assert_null(strstr(map, "pocketforge-a133.de2_clk"));
++    g_assert_null(strstr(map, "pocketforge-a133.mixer0"));
++
++    qtest_quit(qts);
++}
++
++static void test_stub_storage_and_reset(void)
++{
++    QTestState *qts = mmio_start();
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(stub_regions); i++) {
++        const ExpectedRegion *region = &stub_regions[i];
++        uint64_t last = region->base + region->size - 1;
++
++        g_assert_cmphex(qtest_readb(qts, region->base), ==, 0);
++        g_assert_cmphex(qtest_readb(qts, last), ==, 0);
++        qtest_writeb(qts, region->base, 0xa5);
++        qtest_writeb(qts, last, 0x5a);
++        g_assert_cmphex(qtest_readb(qts, region->base), ==, 0xa5);
++        g_assert_cmphex(qtest_readb(qts, last), ==, 0x5a);
++    }
++
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++
++    for (i = 0; i < ARRAY_SIZE(stub_regions); i++) {
++        const ExpectedRegion *region = &stub_regions[i];
++
++        g_assert_cmphex(qtest_readb(qts, region->base), ==, 0);
++        g_assert_cmphex(qtest_readb(qts, region->base + region->size - 1),
++                        ==, 0);
++    }
++
++    qtest_quit(qts);
++}
++
++static void test_uart_model_contract(void)
++{
++    static const uint64_t uart_bases[] = {
++        0x05000000, 0x05000400, 0x05000c00, 0x05001000,
++    };
++    QTestState *qts = mmio_start();
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(uart_bases); i++) {
++        /* USR: TX FIFO not full and empty; controller is not busy. */
++        g_assert_cmphex(qtest_readl(qts, uart_bases[i] + 0x7c), ==, 0x6);
++    }
++
++    qtest_quit(qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/pocketforge-a133-mmio/exact-live-map",
++                   test_exact_live_map);
++    qtest_add_func("/pocketforge-a133-mmio/stub-storage-and-reset",
++                   test_stub_storage_and_reset);
++    qtest_add_func("/pocketforge-a133-mmio/uart-model-contract",
++                   test_uart_model_contract);
++
++    return g_test_run();
++}
