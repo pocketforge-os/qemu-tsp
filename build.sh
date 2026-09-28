@@ -19,6 +19,33 @@ TAG=$(sed -n  's/^tag *= *//p'    UPSTREAM)
 COMMIT=$(sed -n 's/^commit *= *//p' UPSTREAM)
 SRC="${QEMU_TSP_SRC:-$ROOT/build/qemu-src}"
 OUT="$ROOT/build/qemu-tsp"
+LINUX_USER_BUILD_DIR="${QEMU_TSP_LINUX_USER_BUILD_DIR:-build}"
+SYSTEM_BUILD_DIR="${QEMU_TSP_SYSTEM_BUILD_DIR:-build-softmmu}"
+
+prepare_owned_build_dir() {
+  local dir=$1
+
+  case "$dir" in
+    build|build-softmmu)
+      [ ! -L "$dir" ] || { echo "FATAL: refusing to clean symlink: $dir"; exit 1; }
+      if [ -d "$dir" ]; then
+        find "$dir" -mindepth 1 -delete
+        rmdir "$dir"
+      elif [ -e "$dir" ]; then
+        echo "FATAL: build path exists and is not a directory: $dir"
+        exit 1
+      fi
+      ;;
+    build-linux-user-*|build-softmmu-rtc-*|build-softmmu-mmio-*)
+      [ ! -e "$dir" ] || {
+        echo "FATAL: refusing collision with unique build path: $dir"
+        exit 1
+      }
+      ;;
+    *) echo "FATAL: refusing to clean unexpected build directory: $dir"; exit 1 ;;
+  esac
+  mkdir "$dir"
+}
 
 mkdir -p "$ROOT/build"
 if [ ! -d "$SRC/.git" ]; then
@@ -50,14 +77,24 @@ if ! grep -q pocketforge_a133_create_virtio_mmio hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0004-hw-arm-pocketforge_a133-phase-c-stubs-and-virtio-gpu.patch"
 fi
 
+echo "== apply PocketForge patch: exact A100 RTC clock-control model =="
+if [ ! -f hw/rtc/pocketforge_a100_rtc.c ]; then
+  git apply "$ROOT/pocketforge/0005-hw-rtc-add-PocketForge-A100-RTC-model.patch"
+fi
+
+echo "== apply PocketForge patch: pinned-DTB MMIO coverage =="
+if [ ! -f tests/qtest/pocketforge-a133-mmio-map-test.c ]; then
+  git apply "$ROOT/pocketforge/0006-hw-arm-pocketforge-a133-complete-mmio-coverage.patch"
+fi
+
 mkdir -p "$OUT"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
   echo "== configure + build: aarch64-linux-user (static) =="
-  rm -rf build
-  ./configure --target-list=aarch64-linux-user --static --disable-system --without-default-features
-  ninja -C build qemu-aarch64
-  cp build/qemu-aarch64 "$OUT/qemu-aarch64"
+  prepare_owned_build_dir "$LINUX_USER_BUILD_DIR"
+  (cd "$LINUX_USER_BUILD_DIR" && ../configure --target-list=aarch64-linux-user --static --disable-system --without-default-features)
+  ninja -C "$LINUX_USER_BUILD_DIR" qemu-aarch64
+  cp "$LINUX_USER_BUILD_DIR/qemu-aarch64" "$OUT/qemu-aarch64"
   echo "== done: $OUT/qemu-aarch64 =="
   "$OUT/qemu-aarch64" --version | head -1
 else
@@ -65,15 +102,19 @@ else
 fi
 
 echo "== configure + build: aarch64-softmmu (-M pocketforge-a133) =="
-rm -rf build-softmmu
-mkdir -p build-softmmu
+prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # -Dpixman=enabled: needed for the QMP `screendump` command (used by the Phase C UI
 # harness, scripts/qemu-pocketforge-a133-ui.sh, to capture render evidence) -- without it
 # --without-default-features strips pixman along with every other UI backend and
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
-(cd build-softmmu && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled)
-ninja -C build-softmmu qemu-system-aarch64
-cp build-softmmu/qemu-system-aarch64 "$OUT/qemu-system-aarch64"
+(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled)
+ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
+  tests/qtest/pocketforge-a100-rtc-test \
+  tests/qtest/pocketforge-a133-mmio-map-test
+meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
+  qtest-aarch64/pocketforge-a100-rtc-test \
+  qtest-aarch64/pocketforge-a133-mmio-map-test
+cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1
 "$OUT/qemu-system-aarch64" -M help | grep pocketforge-a133

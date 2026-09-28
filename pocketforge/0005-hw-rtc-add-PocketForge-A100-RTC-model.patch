@@ -1,0 +1,419 @@
+From 2de8b0aa7065353be53a281538d22391f13776ae Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 10:39:49 -0400
+Subject: [PATCH] hw/rtc: add PocketForge A100 RTC model
+
+Assisted-by: LLM
+---
+ docs/pocketforge-a100-rtc.md            |  39 ++++++
+ hw/arm/Kconfig                          |   1 +
+ hw/arm/pocketforge_a133.c               |   6 +
+ hw/rtc/Kconfig                          |   3 +
+ hw/rtc/meson.build                      |   1 +
+ hw/rtc/pocketforge_a100_rtc.c           | 150 ++++++++++++++++++++++++
+ include/hw/rtc/pocketforge_a100_rtc.h   |  31 +++++
+ tests/qtest/meson.build                 |   2 +
+ tests/qtest/pocketforge-a100-rtc-test.c |  85 ++++++++++++++
+ 9 files changed, 318 insertions(+)
+ create mode 100644 docs/pocketforge-a100-rtc.md
+ create mode 100644 hw/rtc/pocketforge_a100_rtc.c
+ create mode 100644 include/hw/rtc/pocketforge_a100_rtc.h
+ create mode 100644 tests/qtest/pocketforge-a100-rtc-test.c
+
+diff --git a/docs/pocketforge-a100-rtc.md b/docs/pocketforge-a100-rtc.md
+new file mode 100644
+index 0000000..af0680b
+--- /dev/null
++++ b/docs/pocketforge-a100-rtc.md
+@@ -0,0 +1,39 @@
++# PocketForge A100/A133 RTC model
++
++The `pocketforge-a133` machine maps one dedicated RTC device at the exact
++`rtc@7000000` range in the pinned, unmodified A133 device tree:
++`0x07000000..0x070003ff`.  It does not use a generic or oversized catch-all.
++
++## Driver-backed contract
++
++The model is scoped to the probe-time accesses made by
++`drivers/clk/sunxi-ng/ccu-sun6i-rtc.c` and `drivers/rtc/rtc-sun6i.c` in
++`kernel-sunxi-6.x` commit `6ccb8790` (`device/a133`).  The former registers
++the A100/H616 RTC clock tree and immediately reads `LOSC_CTRL` while
++registering the critical `rtc-32k` mux.  With the whole RTC range absent,
++that first `readl()` caused the observed synchronous external abort in
++`ccu_mux_helper_get_parent()` during `sun6i_rtc_probe()`.
++
++The model provides reset-zero read/write state for the driver's clock-control
++surface:
++
++* `LOSC_CTRL` (`0x000`): oscillator/RTC mux and external-oscillator gate bits
++  0, 1, and 4.  Writes require the documented `0x16aa` key in bits 31:16;
++  the key always reads as zero, matching the driver's source comment.
++* `IOSC_32K_CLK_DIV` (`0x008`): low five divisor bits.
++* `IOSC_CLK_CALI` (`0x00c`): the calibration register value used by the
++  pinned driver's calibration source/divisor operations.
++* `LOSC_OUT_GATING` (`0x060`): fanout enable/mux bits 0..2 and the osc24M/32k
++  gate at bit 16.
++* `DCXO_CTRL` (`0x160`): the dcxo24M output gate at bit 0.
++
++All other aligned 32-bit locations in the exact 0x400-byte aperture are
++read-as-zero/write-ignored.  This is enough for the RTC driver's alarm-disable
++writes and date/time reads to proceed safely, but intentionally does **not**
++claim timekeeping, alarm, wakeup, NVMEM, or interrupt behavior.  No IRQ is
++wired.  Those semantics must be added only when a guest acceptance condition
++requires them and the corresponding hardware/driver behavior is audited.
++
++`tests/qtest/pocketforge-a100-rtc-test.c` is hermetic coverage for POR/reset,
++the keyed mux contract, masks, RAZ/WI behavior, and non-aliasing accesses just
++outside the exact extent.
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 92fae69..054f591 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -278,2 +278,3 @@ config POCKETFORGE_A133
+     select DW_APB_UART
++    select POCKETFORGE_A100_RTC
+     select POCKETFORGE_A133_MMIO_STUB
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 3d24bf3..23e1826 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -94,6 +94,7 @@
+ #include "hw/intc/arm_gic.h"
+ #include "hw/intc/arm_gic_common.h"
+ #include "hw/qdev-properties.h"
++#include "hw/rtc/pocketforge_a100_rtc.h"
+ #include "hw/sysbus.h"
+ #include "exec/address-spaces.h"
+ #include "sysemu/device_tree.h"
+@@ -118,3 +119,6 @@
++/* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
++#define PF_A133_RTC_BASE        0x07000000
++
+ /*
+  * Phase B (tsp-mc9m.41.925.2.2) RAM-backed register-file stubs -- addresses
+  * and sizes taken verbatim from sun50i-a100.dtsi's "ccu", "watchdog", "pio",
+@@ -546,3 +550,5 @@ static void pocketforge_a133_init(MachineState *machine)
++    pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
++
+     /*
+      * Phase B RAM-backed peripheral stubs -- see the file header comment
+      * for the per-driver register audit that justifies plain RAM
+diff --git a/hw/rtc/Kconfig b/hw/rtc/Kconfig
+index d0d8dda..3af1aaf 100644
+--- a/hw/rtc/Kconfig
++++ b/hw/rtc/Kconfig
+@@ -31,2 +31,5 @@ config GOLDFISH_RTC
+ config LS7A_RTC
+     bool
++
++config POCKETFORGE_A100_RTC
++    bool
+diff --git a/hw/rtc/meson.build b/hw/rtc/meson.build
+index 3ea2aff..b217ae8 100644
+--- a/hw/rtc/meson.build
++++ b/hw/rtc/meson.build
+@@ -12,5 +12,6 @@ system_ss.add(when: 'CONFIG_SUN4V_RTC', if_true: files('sun4v-rtc.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_rtc.c'))
+ system_ss.add(when: 'CONFIG_GOLDFISH_RTC', if_true: files('goldfish_rtc.c'))
+ system_ss.add(when: 'CONFIG_LS7A_RTC', if_true: files('ls7a_rtc.c'))
++system_ss.add(when: 'CONFIG_POCKETFORGE_A100_RTC', if_true: files('pocketforge_a100_rtc.c'))
+ system_ss.add(when: 'CONFIG_ALLWINNER_H3', if_true: files('allwinner-rtc.c'))
+ system_ss.add(when: 'CONFIG_MC146818RTC', if_true: files('mc146818rtc.c'))
+diff --git a/hw/rtc/pocketforge_a100_rtc.c b/hw/rtc/pocketforge_a100_rtc.c
+new file mode 100644
+index 0000000..587a4f3
+--- /dev/null
++++ b/hw/rtc/pocketforge_a100_rtc.c
+@@ -0,0 +1,150 @@
++/*
++ * PocketForge A100/A133 RTC clock-control model
++ *
++ * This intentionally models only the clock-control registers used by the
++ * pinned Linux sun6i RTC CCU driver.  The rest of the exact 0x400-byte RTC
++ * aperture is read-as-zero/write-ignored.  In particular, this is not a
++ * timekeeping or alarm implementation.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "hw/rtc/pocketforge_a100_rtc.h"
++#include "qapi/error.h"
++#include "qemu/bitops.h"
++#include "qemu/module.h"
++
++#define RTC_LOSC_CTRL          0x000
++#define RTC_IOSC_32K_CLK_DIV   0x008
++#define RTC_IOSC_CLK_CALI      0x00c
++#define RTC_LOSC_OUT_GATING    0x060
++#define RTC_DCXO_CTRL          0x160
++
++#define RTC_LOSC_CTRL_KEY      0x16aa0000
++#define RTC_LOSC_CTRL_KEY_MASK 0xffff0000
++#define RTC_LOSC_CTRL_MASK     (BIT(0) | BIT(1) | BIT(4))
++#define RTC_IOSC_DIV_MASK      0x1f
++#define RTC_LOSC_OUT_MASK      (BIT(0) | (0x3 << 1) | BIT(16))
++#define RTC_DCXO_CTRL_MASK     BIT(0)
++
++DeviceState *pocketforge_a100_rtc_create(hwaddr addr)
++{
++    DeviceState *dev = qdev_new(TYPE_POCKETFORGE_A100_RTC);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, addr);
++
++    return dev;
++}
++
++static uint64_t pocketforge_a100_rtc_read(void *opaque, hwaddr offset,
++                                          unsigned size)
++{
++    PocketForgeA100RtcState *s = opaque;
++
++    (void)size;
++
++    switch (offset) {
++    case RTC_LOSC_CTRL:
++        /* The write key is never observable on reads. */
++        return s->losc_ctrl;
++    case RTC_IOSC_32K_CLK_DIV:
++        return s->iosc_32k_clk_div;
++    case RTC_IOSC_CLK_CALI:
++        return s->iosc_clk_cali;
++    case RTC_LOSC_OUT_GATING:
++        return s->losc_out_gating;
++    case RTC_DCXO_CTRL:
++        return s->dcxo_ctrl;
++    default:
++        return 0;
++    }
++}
++
++static void pocketforge_a100_rtc_write(void *opaque, hwaddr offset,
++                                       uint64_t value, unsigned size)
++{
++    PocketForgeA100RtcState *s = opaque;
++    uint32_t val = value;
++
++    (void)size;
++
++    switch (offset) {
++    case RTC_LOSC_CTRL:
++        if ((val & RTC_LOSC_CTRL_KEY_MASK) == RTC_LOSC_CTRL_KEY) {
++            s->losc_ctrl = val & RTC_LOSC_CTRL_MASK;
++        }
++        break;
++    case RTC_IOSC_32K_CLK_DIV:
++        s->iosc_32k_clk_div = val & RTC_IOSC_DIV_MASK;
++        break;
++    case RTC_IOSC_CLK_CALI:
++        s->iosc_clk_cali = val;
++        break;
++    case RTC_LOSC_OUT_GATING:
++        s->losc_out_gating = val & RTC_LOSC_OUT_MASK;
++        break;
++    case RTC_DCXO_CTRL:
++        s->dcxo_ctrl = val & RTC_DCXO_CTRL_MASK;
++        break;
++    default:
++        break;
++    }
++}
++
++static const MemoryRegionOps pocketforge_a100_rtc_ops = {
++    .read = pocketforge_a100_rtc_read,
++    .write = pocketforge_a100_rtc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++    .impl.min_access_size = 4,
++    .impl.max_access_size = 4,
++};
++
++static void pocketforge_a100_rtc_reset(DeviceState *dev)
++{
++    PocketForgeA100RtcState *s = POCKETFORGE_A100_RTC(dev);
++
++    s->losc_ctrl = 0;
++    s->iosc_32k_clk_div = 0;
++    s->iosc_clk_cali = 0;
++    s->losc_out_gating = 0;
++    s->dcxo_ctrl = 0;
++}
++
++static void pocketforge_a100_rtc_init(Object *obj)
++{
++    PocketForgeA100RtcState *s = POCKETFORGE_A100_RTC(obj);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++
++    memory_region_init_io(&s->iomem, obj, &pocketforge_a100_rtc_ops, s,
++                          TYPE_POCKETFORGE_A100_RTC,
++                          POCKETFORGE_A100_RTC_MMIO_SIZE);
++    sysbus_init_mmio(sbd, &s->iomem);
++}
++
++static void pocketforge_a100_rtc_class_init(ObjectClass *oc, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++
++    dc->reset = pocketforge_a100_rtc_reset;
++    dc->user_creatable = false;
++}
++
++static const TypeInfo pocketforge_a100_rtc_info = {
++    .name = TYPE_POCKETFORGE_A100_RTC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PocketForgeA100RtcState),
++    .instance_init = pocketforge_a100_rtc_init,
++    .class_init = pocketforge_a100_rtc_class_init,
++};
++
++static void pocketforge_a100_rtc_register_types(void)
++{
++    type_register_static(&pocketforge_a100_rtc_info);
++}
++
++type_init(pocketforge_a100_rtc_register_types)
+diff --git a/include/hw/rtc/pocketforge_a100_rtc.h b/include/hw/rtc/pocketforge_a100_rtc.h
+new file mode 100644
+index 0000000..aa80f9b
+--- /dev/null
++++ b/include/hw/rtc/pocketforge_a100_rtc.h
+@@ -0,0 +1,31 @@
++/*
++ * PocketForge A100/A133 RTC clock-control model
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef HW_RTC_POCKETFORGE_A100_RTC_H
++#define HW_RTC_POCKETFORGE_A100_RTC_H
++
++#include "hw/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_POCKETFORGE_A100_RTC "pocketforge-a100-rtc"
++OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA100RtcState, POCKETFORGE_A100_RTC)
++
++#define POCKETFORGE_A100_RTC_MMIO_SIZE 0x400
++
++struct PocketForgeA100RtcState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    uint32_t losc_ctrl;
++    uint32_t iosc_32k_clk_div;
++    uint32_t iosc_clk_cali;
++    uint32_t losc_out_gating;
++    uint32_t dcxo_ctrl;
++};
++
++DeviceState *pocketforge_a100_rtc_create(hwaddr addr);
++
++#endif /* HW_RTC_POCKETFORGE_A100_RTC_H */
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index f096cf3..bc59f14 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -221,6 +221,8 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_RASPI') ? ['bcm2835-dma-test'] : []) +  \
+   (config_all.has_key('CONFIG_TCG') and                                            \
+    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test'] : []) + \
++  (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
++    ['pocketforge-a100-rtc-test'] : []) +                                          \
+   ['arm-cpu-features',
+    'numa-test',
+    'boot-serial-test',
+diff --git a/tests/qtest/pocketforge-a100-rtc-test.c b/tests/qtest/pocketforge-a100-rtc-test.c
+new file mode 100644
+index 0000000..6e22c95
+--- /dev/null
++++ b/tests/qtest/pocketforge-a100-rtc-test.c
+@@ -0,0 +1,85 @@
++/*
++ * QTest coverage for the PocketForge A100/A133 RTC clock-control model
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest.h"
++
++#define RTC_BASE              0x07000000
++#define RTC_SIZE              0x400
++#define RTC_LOSC_CTRL         0x000
++#define RTC_IOSC_32K_CLK_DIV  0x008
++#define RTC_IOSC_CLK_CALI     0x00c
++#define RTC_ALARM_COUNTER     0x020
++#define RTC_LOSC_OUT_GATING   0x060
++#define RTC_DCXO_CTRL         0x160
++
++static QTestState *rtc_start(void)
++{
++    return qtest_init("-machine pocketforge-a133 -nodefaults");
++}
++
++static void test_register_contract(void)
++{
++    QTestState *qts = rtc_start();
++
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_LOSC_CTRL), ==, 0);
++
++    /* LOSC_CTRL ignores keyless writes and never exposes its write key. */
++    qtest_writel(qts, RTC_BASE + RTC_LOSC_CTRL, 0xffffffff);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_LOSC_CTRL), ==, 0);
++    qtest_writel(qts, RTC_BASE + RTC_LOSC_CTRL, 0x16aa0013);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_LOSC_CTRL), ==, 0x13);
++
++    qtest_writel(qts, RTC_BASE + RTC_IOSC_32K_CLK_DIV, 0xffffffff);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_IOSC_32K_CLK_DIV),
++                    ==, 0x1f);
++    qtest_writel(qts, RTC_BASE + RTC_IOSC_CLK_CALI, 0x81234567);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_IOSC_CLK_CALI),
++                    ==, 0x81234567);
++    qtest_writel(qts, RTC_BASE + RTC_LOSC_OUT_GATING, 0xffffffff);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_LOSC_OUT_GATING),
++                    ==, 0x00010007);
++    qtest_writel(qts, RTC_BASE + RTC_DCXO_CTRL, 0xffffffff);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_DCXO_CTRL), ==, 1);
++
++    /* Alarm and every other unmodeled register are explicitly RAZ/WI. */
++    qtest_writel(qts, RTC_BASE + RTC_ALARM_COUNTER, 0xdeadbeef);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_ALARM_COUNTER), ==, 0);
++    qtest_writel(qts, RTC_BASE + RTC_SIZE - 4, 0xdeadbeef);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_SIZE - 4), ==, 0);
++
++    qtest_quit(qts);
++}
++
++static void test_reset_and_exact_extent(void)
++{
++    QTestState *qts = rtc_start();
++
++    qtest_writel(qts, RTC_BASE + RTC_IOSC_CLK_CALI, 0xa5a55a5a);
++
++    /* Adjacent unmapped writes must not alias into the exact 0x400 region. */
++    qtest_writel(qts, RTC_BASE - 4, 0xffffffff);
++    qtest_writel(qts, RTC_BASE + RTC_SIZE, 0xffffffff);
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_IOSC_CLK_CALI),
++                    ==, 0xa5a55a5a);
++
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++    g_assert_cmphex(qtest_readl(qts, RTC_BASE + RTC_IOSC_CLK_CALI), ==, 0);
++
++    qtest_quit(qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/pocketforge-a100-rtc/register-contract",
++                   test_register_contract);
++    qtest_add_func("/pocketforge-a100-rtc/reset-and-exact-extent",
++                   test_reset_and_exact_extent);
++
++    return g_test_run();
++}
