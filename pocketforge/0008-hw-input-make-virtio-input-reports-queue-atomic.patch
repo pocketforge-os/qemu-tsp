@@ -1,0 +1,261 @@
+From cffd3b6475d1d6e6ef6f60245927431dd62d07bb Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 15:29:48 -0400
+Subject: [PATCH] hw/input: make virtio input reports queue-atomic
+
+Check the complete report fits before claiming guest buffers. This keeps
+a rejected input-plus-SYN report from transiently draining a one-buffer
+queue.
+
+Free elements on the defensive rollback path, and cover repeated
+one-buffer rejection followed by successful press and release reports.
+
+Assisted-by: LLM
+---
+ hw/input/virtio-input.c                   |  14 ++-
+ tests/qtest/pocketforge-a133-input-test.c | 141 ++++++++++++++++++++--
+ 2 files changed, 143 insertions(+), 12 deletions(-)
+
+diff --git a/hw/input/virtio-input.c b/hw/input/virtio-input.c
+index 0478b21..7fef399 100644
+--- a/hw/input/virtio-input.c
++++ b/hw/input/virtio-input.c
+@@ -43,12 +43,22 @@ bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
+         return true;
+     }
+ 
+-    /* ... then check available space ... */
++    /* ... then check available space without consuming guest buffers ... */
++    if (!virtqueue_avail_bytes(vinput->evt,
++                               vinput->qindex * sizeof(virtio_input_event),
++                               0)) {
++        vinput->qindex = 0;
++        trace_virtio_input_queue_full();
++        return false;
++    }
++
+     for (i = 0; i < vinput->qindex; i++) {
+         elem = virtqueue_pop(vinput->evt, sizeof(VirtQueueElement));
+         if (!elem) {
+             while (--i >= 0) {
+-                virtqueue_unpop(vinput->evt, vinput->queue[i].elem, 0);
++                elem = vinput->queue[i].elem;
++                virtqueue_unpop(vinput->evt, elem, 0);
++                g_free(elem);
+             }
+             vinput->qindex = 0;
+             trace_virtio_input_queue_full();
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index 424c022..a25a74e 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -33,6 +33,7 @@ typedef struct InputFixture {
+     QVirtioMMIODevice mmio;
+     QGuestAllocator alloc;
+     QVirtQueue *vq;
++    char *trace_path;
+ } InputFixture;
+ 
+ typedef struct EventBuffers {
+@@ -93,12 +94,29 @@ static QVirtQueue *setup_modern_queue(InputFixture *f, uint16_t index)
+     return vq;
+ }
+ 
+-static void input_fixture_init(InputFixture *f, bool setup_queue)
++static void input_fixture_init_common(InputFixture *f, bool setup_queue,
++                                      bool trace_queue)
+ {
++    GError *gerror = NULL;
++    char *args;
+     uint64_t features;
++    int fd;
+ 
+     memset(f, 0, sizeof(*f));
+-    f->qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    if (trace_queue) {
++        fd = g_file_open_tmp("pocketforge-input-XXXXXX.log",
++                             &f->trace_path, &gerror);
++        g_assert_no_error(gerror);
++        g_assert_cmpint(fd, >=, 0);
++        close(fd);
++        args = g_strdup_printf("-machine pocketforge-a133 -nodefaults "
++                               "-trace enable=virtqueue_pop,file=%s",
++                               f->trace_path);
++    } else {
++        args = g_strdup("-machine pocketforge-a133 -nodefaults");
++    }
++    f->qts = qtest_init(args);
++    g_free(args);
+     g_assert_cmphex(qtest_readl(f->qts, PF_A133_INPUT_MMIO_BASE +
+                                QVIRTIO_MMIO_DEVICE_ID), ==, VIRTIO_ID_INPUT);
+ 
+@@ -120,7 +138,12 @@ static void input_fixture_init(InputFixture *f, bool setup_queue)
+     }
+ }
+ 
+-static void input_fixture_destroy(InputFixture *f)
++static void input_fixture_init(InputFixture *f, bool setup_queue)
++{
++    input_fixture_init_common(f, setup_queue, false);
++}
++
++static void input_fixture_stop(InputFixture *f)
+ {
+     qvirtio_reset(&f->mmio.vdev);
+     if (f->vq) {
+@@ -130,6 +153,29 @@ static void input_fixture_destroy(InputFixture *f)
+     qtest_quit(f->qts);
+ }
+ 
++static void input_fixture_destroy(InputFixture *f)
++{
++    input_fixture_stop(f);
++    if (f->trace_path) {
++        g_assert_cmpint(g_remove(f->trace_path), ==, 0);
++        g_clear_pointer(&f->trace_path, g_free);
++    }
++}
++
++static char *input_fixture_take_trace(InputFixture *f)
++{
++    GError *gerror = NULL;
++    char *contents;
++
++    input_fixture_stop(f);
++    g_assert_true(g_file_get_contents(f->trace_path, &contents, NULL,
++                                      &gerror));
++    g_assert_no_error(gerror);
++    g_assert_cmpint(g_remove(f->trace_path), ==, 0);
++    g_clear_pointer(&f->trace_path, g_free);
++    return contents;
++}
++
+ static void select_config(InputFixture *f, uint8_t select, uint8_t subsel)
+ {
+     qtest_writeb(f->qts, PF_A133_INPUT_MMIO_BASE +
+@@ -197,18 +243,48 @@ static bool inject(InputFixture *f, const char *event)
+     return success;
+ }
+ 
+-static EventBuffers add_event_buffers(InputFixture *f)
++static void assert_queue_idle(InputFixture *f)
++{
++    QDict *response;
++    QDict *status;
++
++    response = qtest_qmp(f->qts,
++                         "{ 'execute': 'x-query-virtio-queue-status',"
++                         " 'arguments': { 'path': %s, 'queue': 0 } }",
++                         PF_A133_INPUT_PATH);
++    g_assert_true(qdict_haskey(response, "return"));
++    status = qdict_get_qdict(response, "return");
++    g_test_message("queue after rejection: last-avail=%" PRId64
++                   " inuse=%" PRId64,
++                   qdict_get_int(status, "last-avail-idx"),
++                   qdict_get_int(status, "inuse"));
++    g_assert_cmpint(qdict_get_int(status, "last-avail-idx"), ==, 0);
++    g_assert_cmpint(qdict_get_int(status, "inuse"), ==, 0);
++    qobject_unref(response);
++}
++
++static void add_event_buffer(InputFixture *f, EventBuffers *buffers,
++                             unsigned int index)
+ {
+-    EventBuffers buffers;
+     struct virtio_input_event zero = { 0 };
++
++    g_assert_cmpuint(index, <, ARRAY_SIZE(buffers->addr));
++    buffers->addr[index] = guest_alloc(&f->alloc, sizeof(zero));
++    qtest_memwrite(f->qts, buffers->addr[index], &zero, sizeof(zero));
++    buffers->head[index] = qvirtqueue_add(f->qts, f->vq,
++                                          buffers->addr[index],
++                                          sizeof(zero), true, false);
++    qvirtqueue_kick(f->qts, &f->mmio.vdev, f->vq,
++                    buffers->head[index]);
++}
++
++static EventBuffers add_event_buffers(InputFixture *f)
++{
++    EventBuffers buffers = { 0 };
+     int i;
+ 
+     for (i = 0; i < 2; i++) {
+-        buffers.addr[i] = guest_alloc(&f->alloc, sizeof(zero));
+-        qtest_memwrite(f->qts, buffers.addr[i], &zero, sizeof(zero));
+-        buffers.head[i] = qvirtqueue_add(f->qts, f->vq, buffers.addr[i],
+-                                         sizeof(zero), true, false);
+-        qvirtqueue_kick(f->qts, &f->mmio.vdev, f->vq, buffers.head[i]);
++        add_event_buffer(f, &buffers, i);
+     }
+     return buffers;
+ }
+@@ -237,6 +313,17 @@ static void assert_event_pair(InputFixture *f, const EventBuffers *buffers,
+     g_assert_cmpuint(le32_to_cpu(event.value), ==, 0);
+ }
+ 
++static unsigned int count_trace_events(const char *trace, const char *event)
++{
++    unsigned int count = 0;
++
++    while ((trace = strstr(trace, event))) {
++        count++;
++        trace += strlen(event);
++    }
++    return count;
++}
++
+ static void test_identity_and_capabilities(void)
+ {
+     const uint16_t keys[] = {
+@@ -358,6 +445,38 @@ static void test_reset_and_late_injection(void)
+     qtest_quit(f.qts);
+ }
+ 
++static void test_one_buffer_atomicity(void)
++{
++    InputFixture f;
++    EventBuffers buffers = { 0 };
++    char *trace;
++
++    input_fixture_init_common(&f, true, true);
++    add_event_buffer(&f, &buffers, 0);
++    g_assert_false(inject(&f, "menu:press"));
++    assert_queue_idle(&f);
++    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
++    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++
++    g_assert_false(inject(&f, "menu:press"));
++    assert_queue_idle(&f);
++    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
++    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++    add_event_buffer(&f, &buffers, 1);
++    g_assert_true(inject(&f, "menu:press"));
++    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 1);
++    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++
++    buffers = add_event_buffers(&f);
++    g_assert_true(inject(&f, "menu:release"));
++    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 0);
++    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++
++    trace = input_fixture_take_trace(&f);
++    g_assert_cmpuint(count_trace_events(trace, "virtqueue_pop"), ==, 4);
++    g_free(trace);
++}
++
+ static void test_no_device(void)
+ {
+     QTestState *qts;
+@@ -386,6 +505,8 @@ int main(int argc, char **argv)
+                    test_ordered_injection);
+     qtest_add_func("/aarch64/pocketforge-a133-input/reset-late-injection",
+                    test_reset_and_late_injection);
++    qtest_add_func("/aarch64/pocketforge-a133-input/one-buffer-atomicity",
++                   test_one_buffer_atomicity);
+     qtest_add_func("/aarch64/pocketforge-a133-input/no-device",
+                    test_no_device);
+ 
+-- 
+2.43.0
+

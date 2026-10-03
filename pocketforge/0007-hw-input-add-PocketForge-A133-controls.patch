@@ -1,0 +1,999 @@
+From 3ebe9a79415f394714dc04882135039d1e7b6371 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 14:10:12 -0400
+Subject: [PATCH] hw/input: add PocketForge A133 deterministic controls
+
+Attach a gamepad-compatible virtio-input device to the second modern
+virtio-mmio transport of the pocketforge-a133 machine.
+
+Expose ordered QOM press and release injection while rejecting malformed,
+late, or out-of-order transitions and queue exhaustion.
+
+Advertise the evdev identity and capabilities consumed by PocketForge.
+Cover identity, every navigation mapping, negative controls, reset, and the
+optional no-device machine setting with qtest.
+
+Assisted-by: LLM
+---
+ hw/arm/Kconfig                            |   2 +
+ hw/arm/pocketforge_a133.c                 |  74 +++-
+ hw/input/Kconfig                          |   4 +
+ hw/input/meson.build                      |   1 +
+ hw/input/pocketforge_a133_input.c         | 294 ++++++++++++++++
+ hw/input/virtio-input.c                   |   9 +-
+ include/hw/input/pocketforge_a133_input.h |  15 +
+ include/hw/virtio/virtio-input.h          |   2 +-
+ tests/qtest/meson.build                   |   3 +-
+ tests/qtest/pocketforge-a133-input-test.c | 393 ++++++++++++++++++++++
+ 10 files changed, 784 insertions(+), 13 deletions(-)
+ create mode 100644 hw/input/pocketforge_a133_input.c
+ create mode 100644 include/hw/input/pocketforge_a133_input.h
+ create mode 100644 tests/qtest/pocketforge-a133-input-test.c
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 054f591..78c500f 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -277,7 +277,9 @@ config POCKETFORGE_A133
+     select ARM_GIC
+     select DW_APB_UART
+     select POCKETFORGE_A100_RTC
++    select POCKETFORGE_A133_INPUT
+     select POCKETFORGE_A133_MMIO_STUB
++    select VIRTIO_INPUT
+ 
+ config SABRELITE
+     bool
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 1523f1e..1694550 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -53,9 +53,9 @@
+  * modeled, only register-backed so probe doesn't hard-abort; the disabled
+  * EHCI0/OHCI0 nodes are deliberately absent). Full
+  * per-peripheral audit: docs/pocketforge-a133-peripheral-stubs.md. (2) a
+- * virtio-gpu + virtio-input graft, reusing deliverable-1's exact proven
+- * device set (virtio-gpu-device + virtio-keyboard-device, modern
+- * VIRTIO_F_VERSION_1 virtio-mmio transport) -- see
++ * virtio-gpu + virtio-input graft. The input transport owns a deterministic
++ * gamepad-compatible device; the GPU transport remains available for the
++ * launcher to populate (both use modern VIRTIO_F_VERSION_1 virtio-mmio) -- see
+  * pocketforge_a133_create_virtio_mmio()/pocketforge_a133_modify_dtb()
+  * below for how a from-scratch machine loading a REAL, unmodified DT (no
+  * auto-generated FDT like -M virt has) still makes virtio-mmio
+@@ -91,12 +91,14 @@
+ #include "hw/arm/bsa.h"
+ #include "hw/boards.h"
+ #include "hw/char/dw_apb_uart.h"
++#include "hw/input/pocketforge_a133_input.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
+ #include "hw/intc/arm_gic.h"
+ #include "hw/intc/arm_gic_common.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/rtc/pocketforge_a100_rtc.h"
+ #include "hw/sysbus.h"
++#include "hw/virtio/virtio-mmio.h"
+ #include "exec/address-spaces.h"
+ #include "sysemu/device_tree.h"
+ #include "hw/arm/fdt.h"
+@@ -104,6 +106,15 @@
+ #include "qemu/module.h"
+ #include "chardev/char.h"
+ 
++#define TYPE_POCKETFORGE_A133_MACHINE MACHINE_TYPE_NAME("pocketforge-a133")
++OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133MachineState,
++                           POCKETFORGE_A133_MACHINE)
++
++struct PocketForgeA133MachineState {
++    MachineState parent_obj;
++    bool input;
++};
++
+ /*
+  * Addresses/IRQ taken verbatim from the real device tree
+  * (arch/arm64/boot/dts/allwinner/sun50i-a100.dtsi, kernel-sunxi-6.x
+@@ -539,6 +550,7 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+                                                 qemu_irq *pic)
+ {
++    PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(machine);
+     int i;
+ 
+     for (i = 0; i < PF_A133_VIRTIO_MMIO_COUNT; i++) {
+@@ -551,15 +563,23 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+          * force-legacy property defaults to true (pre-VIRTIO_F_VERSION_1
+          * legacy virtio), and sysbus_create_simple() realizes the device
+          * with no way to set a property first. Doing it this way makes the
+-         * machine self-contained -- it supplies the modern transport
+-         * virtio-gpu-device/virtio-keyboard-device require on its own,
+-         * with no external CLI override needed.
++         * machine self-contained -- it supplies modern transports without
++         * an external CLI override.
+          */
+         object_property_set_bool(OBJECT(dev), "force-legacy", false,
+                                    &error_fatal);
+         sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
+         sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, pic[irq]);
++
++        if (i == 1 && s->input) {
++            DeviceState *input = qdev_new(TYPE_POCKETFORGE_A133_INPUT);
++
++            object_property_add_child(OBJECT(machine), "pocketforge-input",
++                                      OBJECT(input));
++            qdev_realize(input, BUS(&VIRTIO_MMIO(dev)->bus), &error_fatal);
++            object_unref(OBJECT(input));
++        }
+     }
+ }
+ 
+@@ -671,4 +691,44 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+     mc->no_parallel = true;
+ }
+ 
+-DEFINE_MACHINE("pocketforge-a133", pocketforge_a133_machine_init)
++static void pocketforge_a133_machine_class_init(ObjectClass *oc, void *data)
++{
++    pocketforge_a133_machine_init(MACHINE_CLASS(oc));
++}
++
++static bool pocketforge_a133_get_input(Object *obj, Error **errp)
++{
++    return POCKETFORGE_A133_MACHINE(obj)->input;
++}
++
++static void pocketforge_a133_set_input(Object *obj, bool value, Error **errp)
++{
++    POCKETFORGE_A133_MACHINE(obj)->input = value;
++}
++
++static void pocketforge_a133_instance_init(Object *obj)
++{
++    PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(obj);
++
++    s->input = true;
++    object_property_add_bool(obj, "pocketforge-input-device",
++                             pocketforge_a133_get_input,
++                             pocketforge_a133_set_input);
++    object_property_set_description(obj, "pocketforge-input-device",
++                                    "Enable deterministic PocketForge controls");
++}
++
++static const TypeInfo pocketforge_a133_machine_info = {
++    .name = TYPE_POCKETFORGE_A133_MACHINE,
++    .parent = TYPE_MACHINE,
++    .instance_size = sizeof(PocketForgeA133MachineState),
++    .instance_init = pocketforge_a133_instance_init,
++    .class_init = pocketforge_a133_machine_class_init,
++};
++
++static void pocketforge_a133_machine_register_types(void)
++{
++    type_register_static(&pocketforge_a133_machine_info);
++}
++
++type_init(pocketforge_a133_machine_register_types)
+diff --git a/hw/input/Kconfig b/hw/input/Kconfig
+index f86e98c..83a7d46 100644
+--- a/hw/input/Kconfig
++++ b/hw/input/Kconfig
+@@ -36,6 +36,10 @@ config VIRTIO_INPUT_HOST
+     default y
+     depends on VIRTIO_INPUT && LINUX
+ 
++config POCKETFORGE_A133_INPUT
++    bool
++    depends on VIRTIO_INPUT
++
+ config VHOST_USER_INPUT
+     bool
+     default y
+diff --git a/hw/input/meson.build b/hw/input/meson.build
+index 640556b..7c8b881 100644
+--- a/hw/input/meson.build
++++ b/hw/input/meson.build
+@@ -11,6 +11,7 @@ system_ss.add(when: 'CONFIG_TSC2005', if_true: files('tsc2005.c'))
+ system_ss.add(when: 'CONFIG_VIRTIO_INPUT', if_true: files('virtio-input.c'))
+ system_ss.add(when: 'CONFIG_VIRTIO_INPUT', if_true: files('virtio-input-hid.c'))
+ system_ss.add(when: 'CONFIG_VIRTIO_INPUT_HOST', if_true: files('virtio-input-host.c'))
++system_ss.add(when: 'CONFIG_POCKETFORGE_A133_INPUT', if_true: files('pocketforge_a133_input.c'))
+ system_ss.add(when: 'CONFIG_VHOST_USER_INPUT', if_true: files('vhost-user-input.c'))
+ 
+ system_ss.add(when: 'CONFIG_PXA2XX', if_true: files('pxa2xx_keypad.c'))
+diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
+new file mode 100644
+index 0000000..41ff314
+--- /dev/null
++++ b/hw/input/pocketforge_a133_input.c
+@@ -0,0 +1,294 @@
++/*
++ * PocketForge A133 deterministic virtual controls
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++
++#include "hw/input/pocketforge_a133_input.h"
++#include "migration/vmstate.h"
++#include "standard-headers/linux/input.h"
++#include "standard-headers/linux/virtio_config.h"
++
++#define PF_A133_INPUT_NAME "TRIMUI Player1"
++#define PF_A133_INPUT_EVENT_MAX 32
++
++struct PocketForgeA133Input {
++    VirtIOInput parent_obj;
++    bool l1;
++    bool r1;
++    bool menu;
++    int8_t hat_x;
++    int8_t hat_y;
++};
++
++#define PF_A133_ABS_CONFIG(_code, _min, _max) { \
++    .select = VIRTIO_INPUT_CFG_ABS_INFO,       \
++    .subsel = (_code),                        \
++    .size = sizeof(virtio_input_absinfo),      \
++    .u.abs = {                                \
++        .min = const_le32((uint32_t)(_min)),   \
++        .max = const_le32((uint32_t)(_max)),   \
++    },                                        \
++}
++
++static virtio_input_config pocketforge_a133_input_config[] = {
++    {
++        .select = VIRTIO_INPUT_CFG_ID_NAME,
++        .size = sizeof(PF_A133_INPUT_NAME),
++        .u.string = PF_A133_INPUT_NAME,
++    }, {
++        .select = VIRTIO_INPUT_CFG_ID_DEVIDS,
++        .size = sizeof(struct virtio_input_devids),
++        .u.ids = {
++            .bustype = const_le16(BUS_USB),
++            .vendor = const_le16(0x045e),
++            .product = const_le16(0x028e),
++            .version = const_le16(0x0110),
++        },
++    }, {
++        .select = VIRTIO_INPUT_CFG_EV_BITS,
++        .subsel = EV_KEY,
++        .size = 40,
++        .u.bitmap = {
++            [BTN_SOUTH / 8] = 0xdb,
++            [BTN_SELECT / 8] = 0x1c,
++        },
++    }, {
++        .select = VIRTIO_INPUT_CFG_EV_BITS,
++        .subsel = EV_ABS,
++        .size = 3,
++        .u.bitmap = {
++            [0] = 0x3f,
++            [2] = 0x03,
++        },
++    },
++    PF_A133_ABS_CONFIG(ABS_X, 0, 4095),
++    PF_A133_ABS_CONFIG(ABS_Y, 0, 4095),
++    PF_A133_ABS_CONFIG(ABS_RX, 0, 4095),
++    PF_A133_ABS_CONFIG(ABS_RY, 0, 4095),
++    PF_A133_ABS_CONFIG(ABS_Z, 0, 255),
++    PF_A133_ABS_CONFIG(ABS_RZ, 0, 255),
++    PF_A133_ABS_CONFIG(ABS_HAT0X, -1, 1),
++    PF_A133_ABS_CONFIG(ABS_HAT0Y, -1, 1),
++    { /* end of list */ },
++};
++
++static void pocketforge_a133_input_clear(PocketForgeA133Input *s)
++{
++    s->l1 = false;
++    s->r1 = false;
++    s->menu = false;
++    s->hat_x = 0;
++    s->hat_y = 0;
++}
++
++static bool pocketforge_a133_input_held(Object *obj, Error **errp)
++{
++    PocketForgeA133Input *s = POCKETFORGE_A133_INPUT(obj);
++
++    return s->l1 || s->r1 || s->menu || s->hat_x || s->hat_y;
++}
++
++static bool pocketforge_a133_input_ready(Object *obj, Error **errp)
++{
++    VirtIOInput *vinput = VIRTIO_INPUT(obj);
++
++    return vinput->active;
++}
++
++static bool pocketforge_a133_input_emit(PocketForgeA133Input *s,
++                                        uint16_t type, uint16_t code,
++                                        int32_t value, Error **errp)
++{
++    VirtIOInput *vinput = VIRTIO_INPUT(s);
++    virtio_input_event event = {
++        .type = cpu_to_le16(type),
++        .code = cpu_to_le16(code),
++        .value = cpu_to_le32(value),
++    };
++    virtio_input_event sync = {
++        .type = cpu_to_le16(EV_SYN),
++        .code = cpu_to_le16(SYN_REPORT),
++    };
++
++    if (!pocketforge_a133_input_ready(OBJECT(s), NULL)) {
++        error_setg(errp, "PocketForge input driver is not ready");
++        return false;
++    }
++    if (!virtio_input_send(vinput, &event) ||
++        !virtio_input_send(vinput, &sync)) {
++        error_setg(errp, "PocketForge input event queue is unavailable");
++        return false;
++    }
++    return true;
++}
++
++static void pocketforge_a133_input_set_event(Object *obj, const char *value,
++                                             Error **errp)
++{
++    PocketForgeA133Input *s = POCKETFORGE_A133_INPUT(obj);
++    const char *separator;
++    const char *action;
++    char *control;
++    bool press;
++    bool *key_state = NULL;
++    int8_t *axis_state = NULL;
++    int8_t axis_value = 0;
++    uint16_t type;
++    uint16_t code;
++    int32_t event_value;
++
++    if (!value || strlen(value) > PF_A133_INPUT_EVENT_MAX) {
++        error_setg(errp, "PocketForge input event is empty or too long");
++        return;
++    }
++    separator = strchr(value, ':');
++    if (!separator || separator == value || separator[1] == '\0' ||
++        strchr(separator + 1, ':')) {
++        error_setg(errp, "PocketForge input event must be control:action");
++        return;
++    }
++
++    control = g_strndup(value, separator - value);
++    action = separator + 1;
++    if (!strcmp(action, "press")) {
++        press = true;
++    } else if (!strcmp(action, "release")) {
++        press = false;
++    } else {
++        error_setg(errp, "PocketForge input action must be press or release");
++        g_free(control);
++        return;
++    }
++
++    type = EV_KEY;
++    if (!strcmp(control, "l1")) {
++        key_state = &s->l1;
++        code = BTN_TL;
++    } else if (!strcmp(control, "r1")) {
++        key_state = &s->r1;
++        code = BTN_TR;
++    } else if (!strcmp(control, "menu")) {
++        key_state = &s->menu;
++        code = BTN_MODE;
++    } else if (!strcmp(control, "dpad-left")) {
++        axis_state = &s->hat_x;
++        axis_value = -1;
++        type = EV_ABS;
++        code = ABS_HAT0X;
++    } else if (!strcmp(control, "dpad-right")) {
++        axis_state = &s->hat_x;
++        axis_value = 1;
++        type = EV_ABS;
++        code = ABS_HAT0X;
++    } else if (!strcmp(control, "dpad-up")) {
++        axis_state = &s->hat_y;
++        axis_value = -1;
++        type = EV_ABS;
++        code = ABS_HAT0Y;
++    } else if (!strcmp(control, "dpad-down")) {
++        axis_state = &s->hat_y;
++        axis_value = 1;
++        type = EV_ABS;
++        code = ABS_HAT0Y;
++    } else {
++        error_setg(errp, "Unsupported PocketForge input control '%s'", control);
++        g_free(control);
++        return;
++    }
++
++    if ((key_state && *key_state == press) ||
++        (axis_state && ((press && *axis_state != 0) ||
++                        (!press && *axis_state != axis_value)))) {
++        error_setg(errp, "PocketForge input event is out of order: %s",
++                   value);
++        g_free(control);
++        return;
++    }
++
++    event_value = axis_state ? (press ? axis_value : 0) : press;
++    if (pocketforge_a133_input_emit(s, type, code, event_value, errp)) {
++        if (key_state) {
++            *key_state = press;
++        } else {
++            *axis_state = press ? axis_value : 0;
++        }
++    }
++    g_free(control);
++}
++
++static void pocketforge_a133_input_change_active(VirtIOInput *vinput)
++{
++    if (!vinput->active) {
++        pocketforge_a133_input_clear(POCKETFORGE_A133_INPUT(vinput));
++    }
++}
++
++static int pocketforge_a133_input_post_load(void *opaque, int version_id)
++{
++    PocketForgeA133Input *s = opaque;
++    VirtIOInput *vinput = VIRTIO_INPUT(s);
++    VirtIODevice *vdev = VIRTIO_DEVICE(s);
++
++    vinput->active = vdev->status & VIRTIO_CONFIG_S_DRIVER_OK;
++    if (!vinput->active) {
++        pocketforge_a133_input_clear(s);
++    }
++    return 0;
++}
++
++static const VMStateDescription vmstate_pocketforge_a133_input = {
++    .name = "virtio-input/pocketforge-a133",
++    .minimum_version_id = 1,
++    .version_id = 1,
++    .fields = (VMStateField[]) {
++        VMSTATE_VIRTIO_DEVICE,
++        VMSTATE_BOOL(l1, PocketForgeA133Input),
++        VMSTATE_BOOL(r1, PocketForgeA133Input),
++        VMSTATE_BOOL(menu, PocketForgeA133Input),
++        VMSTATE_INT8(hat_x, PocketForgeA133Input),
++        VMSTATE_INT8(hat_y, PocketForgeA133Input),
++        VMSTATE_END_OF_LIST()
++    },
++    .post_load = pocketforge_a133_input_post_load,
++};
++
++static void pocketforge_a133_input_init(Object *obj)
++{
++    VirtIOInput *vinput = VIRTIO_INPUT(obj);
++
++    virtio_input_init_config(vinput, pocketforge_a133_input_config);
++    object_property_add_str(obj, "event", NULL,
++                            pocketforge_a133_input_set_event);
++    object_property_add_bool(obj, "ready", pocketforge_a133_input_ready, NULL);
++    object_property_add_bool(obj, "held", pocketforge_a133_input_held, NULL);
++}
++
++static void pocketforge_a133_input_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    VirtIOInputClass *vic = VIRTIO_INPUT_CLASS(klass);
++
++    dc->desc = "PocketForge A133 deterministic controls";
++    dc->vmsd = &vmstate_pocketforge_a133_input;
++    vic->change_active = pocketforge_a133_input_change_active;
++}
++
++static const TypeInfo pocketforge_a133_input_info = {
++    .name = TYPE_POCKETFORGE_A133_INPUT,
++    .parent = TYPE_VIRTIO_INPUT,
++    .instance_size = sizeof(PocketForgeA133Input),
++    .instance_init = pocketforge_a133_input_init,
++    .class_init = pocketforge_a133_input_class_init,
++};
++
++static void pocketforge_a133_input_register_types(void)
++{
++    type_register_static(&pocketforge_a133_input_info);
++}
++
++type_init(pocketforge_a133_input_register_types)
+diff --git a/hw/input/virtio-input.c b/hw/input/virtio-input.c
+index 5b5398b..0478b21 100644
+--- a/hw/input/virtio-input.c
++++ b/hw/input/virtio-input.c
+@@ -20,13 +20,13 @@
+ 
+ /* ----------------------------------------------------------------- */
+ 
+-void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
++bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
+ {
+     VirtQueueElement *elem;
+     int i, len;
+ 
+     if (!vinput->active) {
+-        return;
++        return false;
+     }
+ 
+     /* queue up events ... */
+@@ -40,7 +40,7 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
+     /* ... until we see a report sync ... */
+     if (event->type != cpu_to_le16(EV_SYN) ||
+         event->code != cpu_to_le16(SYN_REPORT)) {
+-        return;
++        return true;
+     }
+ 
+     /* ... then check available space ... */
+@@ -52,7 +52,7 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
+             }
+             vinput->qindex = 0;
+             trace_virtio_input_queue_full();
+-            return;
++            return false;
+         }
+         vinput->queue[i].elem = elem;
+     }
+@@ -67,6 +67,7 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
+     }
+     virtio_notify(VIRTIO_DEVICE(vinput), vinput->evt);
+     vinput->qindex = 0;
++    return true;
+ }
+ 
+ static void virtio_input_handle_evt(VirtIODevice *vdev, VirtQueue *vq)
+diff --git a/include/hw/input/pocketforge_a133_input.h b/include/hw/input/pocketforge_a133_input.h
+new file mode 100644
+index 0000000..e1b7e29
+--- /dev/null
++++ b/include/hw/input/pocketforge_a133_input.h
+@@ -0,0 +1,15 @@
++/*
++ * PocketForge A133 deterministic virtual controls
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef HW_INPUT_POCKETFORGE_A133_INPUT_H
++#define HW_INPUT_POCKETFORGE_A133_INPUT_H
++
++#include "hw/virtio/virtio-input.h"
++
++#define TYPE_POCKETFORGE_A133_INPUT "pocketforge-a133-input"
++OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133Input, POCKETFORGE_A133_INPUT)
++
++#endif
+diff --git a/include/hw/virtio/virtio-input.h b/include/hw/virtio/virtio-input.h
+index a6c9703..9cf981d 100644
+--- a/include/hw/virtio/virtio-input.h
++++ b/include/hw/virtio/virtio-input.h
+@@ -102,7 +102,7 @@ struct VHostUserInput {
+     VhostUserBackend                  *vhost;
+ };
+ 
+-void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event);
++bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event);
+ void virtio_input_init_config(VirtIOInput *vinput,
+                               virtio_input_config *config);
+ virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 97a3a2a..55fda35 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -222,7 +222,8 @@ qtests_aarch64 = \
+   (config_all.has_key('CONFIG_TCG') and                                            \
+    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
+-    ['pocketforge-a100-rtc-test', 'pocketforge-a133-mmio-map-test'] : []) +         \
++    ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
++     'pocketforge-a133-mmio-map-test'] : []) +                                    \
+   ['arm-cpu-features',
+    'numa-test',
+    'boot-serial-test',
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+new file mode 100644
+index 0000000..424c022
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -0,0 +1,393 @@
++/*
++ * QTest coverage for the PocketForge A133 virtual input device
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bitops.h"
++#include "qemu/bswap.h"
++#include "libqtest.h"
++#include "libqos/libqos-malloc.h"
++#include "libqos/virtio-mmio.h"
++#include "qapi/qmp/qdict.h"
++
++#include "standard-headers/linux/input.h"
++#include "standard-headers/linux/virtio_config.h"
++#include "standard-headers/linux/virtio_ids.h"
++#include "standard-headers/linux/virtio_input.h"
++
++#define PF_A133_INPUT_MMIO_BASE 0x0a000200
++#define PF_A133_RAM_BASE 0x40000000
++#define PF_A133_RAM_END  0x41000000
++#define PF_A133_INPUT_PATH "/machine/pocketforge-input"
++#define VIRTIO_MMIO_QUEUE_READY     0x044
++#define VIRTIO_MMIO_QUEUE_DESC_LOW  0x080
++#define VIRTIO_MMIO_QUEUE_DESC_HIGH 0x084
++#define VIRTIO_MMIO_QUEUE_AVAIL_LOW 0x090
++#define VIRTIO_MMIO_QUEUE_AVAIL_HIGH 0x094
++#define VIRTIO_MMIO_QUEUE_USED_LOW  0x0a0
++#define VIRTIO_MMIO_QUEUE_USED_HIGH 0x0a4
++typedef struct InputFixture {
++    QTestState *qts;
++    QVirtioMMIODevice mmio;
++    QGuestAllocator alloc;
++    QVirtQueue *vq;
++} InputFixture;
++
++typedef struct EventBuffers {
++    uint64_t addr[2];
++    uint32_t head[2];
++} EventBuffers;
++
++typedef struct ControlCase {
++    const char *name;
++    uint16_t type;
++    uint16_t code;
++    int32_t pressed;
++} ControlCase;
++
++static const ControlCase controls[] = {
++    { "dpad-up", EV_ABS, ABS_HAT0Y, -1 },
++    { "dpad-down", EV_ABS, ABS_HAT0Y, 1 },
++    { "dpad-left", EV_ABS, ABS_HAT0X, -1 },
++    { "dpad-right", EV_ABS, ABS_HAT0X, 1 },
++    { "l1", EV_KEY, BTN_TL, 1 },
++    { "r1", EV_KEY, BTN_TR, 1 },
++    { "menu", EV_KEY, BTN_MODE, 1 },
++};
++
++static QVirtQueue *setup_modern_queue(InputFixture *f, uint16_t index)
++{
++    QVirtQueue *vq = g_new0(QVirtQueue, 1);
++    uint64_t addr;
++
++    vq->vdev = &f->mmio.vdev;
++    vq->index = index;
++    vq->align = 4096;
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 QVIRTIO_MMIO_QUEUE_SEL, index);
++    vq->size = qtest_readl(f->qts, PF_A133_INPUT_MMIO_BASE +
++                           QVIRTIO_MMIO_QUEUE_NUM_MAX);
++    g_assert_cmpuint(vq->size, >, 0);
++    vq->num_free = vq->size;
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 QVIRTIO_MMIO_QUEUE_NUM, vq->size);
++
++    addr = guest_alloc(&f->alloc, qvring_size(vq->size, vq->align));
++    qvring_init(f->qts, &f->alloc, vq, addr);
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 VIRTIO_MMIO_QUEUE_DESC_LOW, vq->desc);
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 VIRTIO_MMIO_QUEUE_DESC_HIGH, vq->desc >> 32);
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 VIRTIO_MMIO_QUEUE_AVAIL_LOW, vq->avail);
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 VIRTIO_MMIO_QUEUE_AVAIL_HIGH, vq->avail >> 32);
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 VIRTIO_MMIO_QUEUE_USED_LOW, vq->used);
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 VIRTIO_MMIO_QUEUE_USED_HIGH, vq->used >> 32);
++    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 VIRTIO_MMIO_QUEUE_READY, 1);
++    return vq;
++}
++
++static void input_fixture_init(InputFixture *f, bool setup_queue)
++{
++    uint64_t features;
++
++    memset(f, 0, sizeof(*f));
++    f->qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    g_assert_cmphex(qtest_readl(f->qts, PF_A133_INPUT_MMIO_BASE +
++                               QVIRTIO_MMIO_DEVICE_ID), ==, VIRTIO_ID_INPUT);
++
++    qvirtio_mmio_init_device(&f->mmio, f->qts,
++                             PF_A133_INPUT_MMIO_BASE, 4096);
++    qvirtio_start_device(&f->mmio.vdev);
++    features = qvirtio_get_features(&f->mmio.vdev);
++    features &= ~(QVIRTIO_F_BAD_FEATURE |
++                  BIT_ULL(VIRTIO_RING_F_INDIRECT_DESC) |
++                  BIT_ULL(VIRTIO_RING_F_EVENT_IDX) |
++                  BIT_ULL(VIRTIO_F_RING_PACKED));
++    qvirtio_set_features(&f->mmio.vdev, features);
++
++    if (setup_queue) {
++        alloc_init(&f->alloc, ALLOC_NO_FLAGS, PF_A133_RAM_BASE,
++                   PF_A133_RAM_END, 4096);
++        f->vq = setup_modern_queue(f, 0);
++        qvirtio_set_driver_ok(&f->mmio.vdev);
++    }
++}
++
++static void input_fixture_destroy(InputFixture *f)
++{
++    qvirtio_reset(&f->mmio.vdev);
++    if (f->vq) {
++        qvirtqueue_cleanup(f->mmio.vdev.bus, f->vq, &f->alloc);
++        alloc_destroy(&f->alloc);
++    }
++    qtest_quit(f->qts);
++}
++
++static void select_config(InputFixture *f, uint8_t select, uint8_t subsel)
++{
++    qtest_writeb(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 QVIRTIO_MMIO_DEVICE_SPECIFIC, select);
++    qtest_writeb(f->qts, PF_A133_INPUT_MMIO_BASE +
++                 QVIRTIO_MMIO_DEVICE_SPECIFIC + 1, subsel);
++}
++
++static uint8_t config_readb(InputFixture *f, uint64_t offset)
++{
++    return qtest_readb(f->qts, PF_A133_INPUT_MMIO_BASE +
++                       QVIRTIO_MMIO_DEVICE_SPECIFIC + offset);
++}
++
++static uint16_t config_readw(InputFixture *f, uint64_t offset)
++{
++    return qtest_readw(f->qts, PF_A133_INPUT_MMIO_BASE +
++                       QVIRTIO_MMIO_DEVICE_SPECIFIC + offset);
++}
++
++static uint32_t config_readl(InputFixture *f, uint64_t offset)
++{
++    return qtest_readl(f->qts, PF_A133_INPUT_MMIO_BASE +
++                       QVIRTIO_MMIO_DEVICE_SPECIFIC + offset);
++}
++
++static void assert_capability(InputFixture *f, uint8_t type, uint16_t code)
++{
++    uint8_t byte;
++
++    select_config(f, VIRTIO_INPUT_CFG_EV_BITS, type);
++    g_assert_cmpuint(config_readb(f, 2), >, code / 8);
++    byte = config_readb(f, 8 + code / 8);
++    g_assert_true(byte & BIT(code % 8));
++}
++
++static void assert_abs_range(InputFixture *f, uint8_t code,
++                             int32_t minimum, int32_t maximum)
++{
++    select_config(f, VIRTIO_INPUT_CFG_ABS_INFO, code);
++    g_assert_cmpuint(config_readb(f, 2), ==,
++                     sizeof(struct virtio_input_absinfo));
++    g_assert_cmpint((int32_t)config_readl(f, 8), ==, minimum);
++    g_assert_cmpint((int32_t)config_readl(f, 12), ==, maximum);
++}
++
++static bool inject(InputFixture *f, const char *event)
++{
++    QDict *response;
++    bool success;
++
++    response = qtest_qmp(f->qts,
++                         "{ 'execute': 'qom-set', 'arguments': {"
++                         " 'path': %s, 'property': 'event', 'value': %s } }",
++                         PF_A133_INPUT_PATH, event);
++    success = qdict_haskey(response, "return");
++    g_assert_true(success || qdict_haskey(response, "error"));
++    if (!success) {
++        QDict *error = qdict_get_qdict(response, "error");
++
++        g_test_message("injection '%s' rejected: %s", event,
++                       qdict_get_str(error, "desc"));
++    }
++    qobject_unref(response);
++    return success;
++}
++
++static EventBuffers add_event_buffers(InputFixture *f)
++{
++    EventBuffers buffers;
++    struct virtio_input_event zero = { 0 };
++    int i;
++
++    for (i = 0; i < 2; i++) {
++        buffers.addr[i] = guest_alloc(&f->alloc, sizeof(zero));
++        qtest_memwrite(f->qts, buffers.addr[i], &zero, sizeof(zero));
++        buffers.head[i] = qvirtqueue_add(f->qts, f->vq, buffers.addr[i],
++                                         sizeof(zero), true, false);
++        qvirtqueue_kick(f->qts, &f->mmio.vdev, f->vq, buffers.head[i]);
++    }
++    return buffers;
++}
++
++static void assert_event_pair(InputFixture *f, const EventBuffers *buffers,
++                              uint16_t type, uint16_t code, int32_t value)
++{
++    struct virtio_input_event event;
++    uint32_t head;
++    uint32_t len;
++
++    g_assert_true(qvirtqueue_get_buf(f->qts, f->vq, &head, &len));
++    g_assert_cmpuint(head, ==, buffers->head[0]);
++    g_assert_cmpuint(len, ==, sizeof(event));
++    qtest_memread(f->qts, buffers->addr[0], &event, sizeof(event));
++    g_assert_cmpuint(le16_to_cpu(event.type), ==, type);
++    g_assert_cmpuint(le16_to_cpu(event.code), ==, code);
++    g_assert_cmpint((int32_t)le32_to_cpu(event.value), ==, value);
++
++    g_assert_true(qvirtqueue_get_buf(f->qts, f->vq, &head, &len));
++    g_assert_cmpuint(head, ==, buffers->head[1]);
++    g_assert_cmpuint(len, ==, sizeof(event));
++    qtest_memread(f->qts, buffers->addr[1], &event, sizeof(event));
++    g_assert_cmpuint(le16_to_cpu(event.type), ==, EV_SYN);
++    g_assert_cmpuint(le16_to_cpu(event.code), ==, SYN_REPORT);
++    g_assert_cmpuint(le32_to_cpu(event.value), ==, 0);
++}
++
++static void test_identity_and_capabilities(void)
++{
++    const uint16_t keys[] = {
++        BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TL, BTN_TR,
++        BTN_SELECT, BTN_START, BTN_MODE,
++    };
++    const uint16_t axes[] = {
++        ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y,
++    };
++    InputFixture f;
++    char name[sizeof("TRIMUI Player1")];
++    int i;
++
++    input_fixture_init(&f, false);
++
++    select_config(&f, VIRTIO_INPUT_CFG_ID_NAME, 0);
++    g_assert_cmpuint(config_readb(&f, 2), ==, sizeof(name));
++    for (i = 0; i < sizeof(name); i++) {
++        name[i] = config_readb(&f, 8 + i);
++    }
++    g_assert_cmpstr(name, ==, "TRIMUI Player1");
++
++    select_config(&f, VIRTIO_INPUT_CFG_ID_DEVIDS, 0);
++    g_assert_cmpuint(config_readw(&f, 8), ==, BUS_USB);
++    g_assert_cmphex(config_readw(&f, 10), ==, 0x045e);
++    g_assert_cmphex(config_readw(&f, 12), ==, 0x028e);
++    g_assert_cmphex(config_readw(&f, 14), ==, 0x0110);
++
++    for (i = 0; i < ARRAY_SIZE(keys); i++) {
++        assert_capability(&f, EV_KEY, keys[i]);
++    }
++    for (i = 0; i < ARRAY_SIZE(axes); i++) {
++        assert_capability(&f, EV_ABS, axes[i]);
++    }
++
++    assert_abs_range(&f, ABS_X, 0, 4095);
++    assert_abs_range(&f, ABS_Y, 0, 4095);
++    assert_abs_range(&f, ABS_RX, 0, 4095);
++    assert_abs_range(&f, ABS_RY, 0, 4095);
++    assert_abs_range(&f, ABS_Z, 0, 255);
++    assert_abs_range(&f, ABS_RZ, 0, 255);
++    assert_abs_range(&f, ABS_HAT0X, -1, 1);
++    assert_abs_range(&f, ABS_HAT0Y, -1, 1);
++
++    input_fixture_destroy(&f);
++}
++
++static void test_ordered_injection(void)
++{
++    InputFixture f;
++    EventBuffers buffers;
++    char *event;
++    int i;
++
++    input_fixture_init(&f, true);
++    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "ready"));
++    g_assert_false(inject(&f, "dpad-up:press"));
++
++    buffers = add_event_buffers(&f);
++    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "ready"));
++    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
++    g_assert_false(inject(&f, ""));
++    g_assert_false(inject(&f, "south:press"));
++    g_assert_false(inject(&f, "dpad-up:tap"));
++    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
++
++    g_assert_true(inject(&f, "dpad-left:press"));
++    assert_event_pair(&f, &buffers, EV_ABS, ABS_HAT0X, -1);
++    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++
++    buffers = add_event_buffers(&f);
++    g_assert_false(inject(&f, "dpad-right:press"));
++    g_assert_false(inject(&f, "dpad-left:press"));
++    g_assert_true(inject(&f, "dpad-left:release"));
++    assert_event_pair(&f, &buffers, EV_ABS, ABS_HAT0X, 0);
++    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++    g_assert_false(inject(&f, "dpad-left:release"));
++
++    for (i = 0; i < ARRAY_SIZE(controls); i++) {
++        buffers = add_event_buffers(&f);
++        event = g_strdup_printf("%s:press", controls[i].name);
++        g_assert_true(inject(&f, event));
++        g_free(event);
++        assert_event_pair(&f, &buffers, controls[i].type,
++                          controls[i].code, controls[i].pressed);
++        g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++
++        buffers = add_event_buffers(&f);
++        event = g_strdup_printf("%s:release", controls[i].name);
++        g_assert_true(inject(&f, event));
++        g_free(event);
++        assert_event_pair(&f, &buffers, controls[i].type,
++                          controls[i].code, 0);
++        g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++    }
++
++    input_fixture_destroy(&f);
++}
++
++static void test_reset_and_late_injection(void)
++{
++    InputFixture f;
++    EventBuffers buffers;
++
++    input_fixture_init(&f, true);
++    buffers = add_event_buffers(&f);
++    g_assert_true(inject(&f, "menu:press"));
++    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 1);
++    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++
++    qvirtio_reset(&f.mmio.vdev);
++    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
++    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "ready"));
++    g_assert_false(inject(&f, "menu:release"));
++
++    qvirtqueue_cleanup(f.mmio.vdev.bus, f.vq, &f.alloc);
++    f.vq = NULL;
++    alloc_destroy(&f.alloc);
++    qtest_quit(f.qts);
++}
++
++static void test_no_device(void)
++{
++    QTestState *qts;
++    QDict *response;
++
++    qts = qtest_init("-machine pocketforge-a133,pocketforge-input-device=off "
++                     "-nodefaults");
++    g_assert_cmphex(qtest_readl(qts, PF_A133_INPUT_MMIO_BASE +
++                               QVIRTIO_MMIO_DEVICE_ID), ==, 0);
++    response = qtest_qmp(qts,
++                         "{ 'execute': 'qom-set', 'arguments': {"
++                         " 'path': %s, 'property': 'event',"
++                         " 'value': 'menu:press' } }",
++                         PF_A133_INPUT_PATH);
++    g_assert_true(qdict_haskey(response, "error"));
++    qobject_unref(response);
++    qtest_quit(qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/aarch64/pocketforge-a133-input/identity-capabilities",
++                   test_identity_and_capabilities);
++    qtest_add_func("/aarch64/pocketforge-a133-input/ordered-injection",
++                   test_ordered_injection);
++    qtest_add_func("/aarch64/pocketforge-a133-input/reset-late-injection",
++                   test_reset_and_late_injection);
++    qtest_add_func("/aarch64/pocketforge-a133-input/no-device",
++                   test_no_device);
++
++    return g_test_run();
++}
+-- 
+2.43.0
+
