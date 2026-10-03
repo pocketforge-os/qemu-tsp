@@ -1,0 +1,37 @@
+name: QEMU model tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  a133-model-qtests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out qemu-tsp
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build pinned test toolchain
+        run: |
+          docker build \
+            --label pf.bead=tsp-mc9m.41.984.54.4 \
+            --tag "qemu-tsp-test:${GITHUB_SHA}" \
+            --file ci/qemu-test.Dockerfile \
+            .
+
+      - name: Build QEMU and run A133 model qtests
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --volume "$PWD:/work" \
+            --workdir /work \
+            "qemu-tsp-test:${GITHUB_SHA}" \
+            bash -lc 'QEMU_TSP_SKIP_LINUX_USER=1 ./build.sh'
