@@ -92,6 +92,9 @@ if [ ! -f hw/input/pocketforge_a133_input.c ]; then
   git apply "$ROOT/pocketforge/0007-hw-input-add-PocketForge-A133-controls.patch"
 fi
 
+echo "== check applied PocketForge source whitespace =="
+git diff --check "$COMMIT" --
+
 mkdir -p "$OUT"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
