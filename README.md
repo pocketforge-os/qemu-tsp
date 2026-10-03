@@ -1,15 +1,15 @@
 # qemu-tsp
 
-A thin PocketForge fork of **qemu-user** (the `aarch64-linux-user` target) that adds a
-generic **evdev (`EVIOC*`) / uinput (`UI_*`) ioctl pass-through** so an *unmodified arm64
-binary* run under qemu-user on an x86_64 host can probe a host-synthesized input/uinput
-device **indistinguishably from real hardware**.
+A thin PocketForge patch stack for QEMU's `aarch64-linux-user` and
+`aarch64-softmmu` targets. It adds generic evdev/uinput ioctl pass-through for
+the off-hardware simulator and the `-M pocketforge-a133` system machine used by
+device-free fidelity tests.
 
 It is a **BUILD / SIM-HOST TOOL ONLY** — it is **never shipped in a PocketForge device
-image**. It exists so the off-hardware device simulator (`pocketforge-os/sim`, epic E5 /
-`infra-104`) can run the *identical* arm64 OCI app binary the device runs, against a
-descriptor-synthesized `uinput` device, on a GPU-less x86 host. It keeps modelmaker / x86
-as the simulator + CI host.
+image**. The user-mode target lets the simulator run the identical arm64 app binary
+against a host-synthesized input device. The system target boots the owned A133 kernel
+and DT with source-owned models. The A133 input model and its deterministic host
+interface are documented in [docs/pocketforge-a133-input.md](docs/pocketforge-a133-input.md).
 
 ## Why this exists
 
@@ -57,16 +57,23 @@ command's own `_IOC_DIR` / `_IOC_SIZE`:
 - It does **NOT** make guest **seccomp / enforcement** testable (qemu-user stubs
   `PR_SET_SECCOMP`→EINVAL). Isolation/confinement stays a hardware/substrate gate.
 
-## Build
+## Patch-stack topology
 
-See [BUILD.md](BUILD.md). TL;DR on an x86_64 Linux host:
+[UPSTREAM](UPSTREAM) is the single provenance anchor: it records the canonical
+upstream URL, tag, exact commit, and the relationship between that source and this
+repository. `build.sh` clones that commit and applies `pocketforge/*.patch` in numeric
+order. The upstream QEMU source history is deliberately not vendored or merged into
+this repository.
+
+## Build
 
 ```sh
 ./build.sh           # clones the pinned upstream qemu, applies the patch, builds
 ```
 
-Output: `build/qemu-tsp/qemu-aarch64` (static). Register via binfmt or invoke directly:
-`qemu-aarch64 ./your-arm64-binary`.
+Outputs are `build/qemu-tsp/qemu-aarch64` (static) and
+`build/qemu-tsp/qemu-system-aarch64`. Register the former via binfmt or invoke it
+directly as `qemu-aarch64 ./your-arm64-binary`.
 
 ## Verify (regression)
 
@@ -81,6 +88,7 @@ and `sudo`.
 
 ## Provenance
 
-Pinned upstream: see [UPSTREAM](UPSTREAM). Reproducibility today = pinned ref + patch.
+Pinned upstream and fork topology: see [UPSTREAM](UPSTREAM). Reproducibility today =
+pinned ref + ordered patch stack.
 Future hardening (tracked): mirror the upstream source tarball to the PocketForge S3/IPFS
 artifact mirror so the build is independent of gitlab.com availability.
