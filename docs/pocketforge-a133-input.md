@@ -20,7 +20,7 @@ controls the D-pad, the two digital bumpers, and the chassis Menu/Guide button.
 
 ## QMP injection ABI
 
-Wait until the device reports ready:
+Wait until the guest driver reports ready:
 
 ```json
 {"execute":"qom-get","arguments":{"path":"/machine/pocketforge-input","property":"ready"}}
@@ -45,7 +45,8 @@ The exact value grammar is `<control>:<action>`:
 | `r1` | `EV_KEY BTN_TR 1` | `EV_KEY BTN_TR 0` |
 | `menu` | `EV_KEY BTN_MODE 1` | `EV_KEY BTN_MODE 0` |
 
-Every accepted transition is followed immediately by `EV_SYN SYN_REPORT 0`.
+`ready` means the guest has set virtio `DRIVER_OK`. Every accepted transition is
+followed immediately by `EV_SYN SYN_REPORT 0`.
 Successful QMP command order is guest event order. The model does not synthesize a
 release: every press requires its matching release.
 
@@ -63,7 +64,7 @@ mutable resource.
 For a no-device negative control, start QEMU with:
 
 ```text
--M pocketforge-a133,pocketforge-input=off
+-M pocketforge-a133,pocketforge-input-device=off
 ```
 
 The virtio-mmio slot then reports no device and `/machine/pocketforge-input` does not

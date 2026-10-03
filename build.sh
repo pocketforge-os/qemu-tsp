@@ -57,7 +57,7 @@ got=$(git rev-parse HEAD)
 [ "$got" = "$COMMIT" ] || { echo "FATAL: upstream HEAD $got != pinned $COMMIT"; exit 1; }
 
 echo "== apply PocketForge patch: linux-user evdev/uinput ioctl pass-through =="
-git checkout -- linux-user/syscall.c 2>/dev/null || true
+git checkout -- linux-user/syscall.c
 if ! grep -q do_ioctl_pf_evdev_uinput linux-user/syscall.c; then
   git apply "$ROOT/pocketforge/0001-linux-user-evdev-uinput-ioctl-passthrough.patch"
 fi
@@ -87,6 +87,11 @@ if [ ! -f tests/qtest/pocketforge-a133-mmio-map-test.c ]; then
   git apply "$ROOT/pocketforge/0006-hw-arm-pocketforge-a133-complete-mmio-coverage.patch"
 fi
 
+echo "== apply PocketForge patch: deterministic A133 input controls =="
+if [ ! -f hw/input/pocketforge_a133_input.c ]; then
+  git apply "$ROOT/pocketforge/0007-hw-input-add-PocketForge-A133-controls.patch"
+fi
+
 mkdir -p "$OUT"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
@@ -110,9 +115,11 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 (cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled)
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
+  tests/qtest/pocketforge-a133-input-test \
   tests/qtest/pocketforge-a133-mmio-map-test
 meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a100-rtc-test \
+  qtest-aarch64/pocketforge-a133-input-test \
   qtest-aarch64/pocketforge-a133-mmio-map-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
