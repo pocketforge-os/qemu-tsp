@@ -92,6 +92,11 @@ if [ ! -f hw/input/pocketforge_a133_input.c ]; then
   git apply "$ROOT/pocketforge/0007-hw-input-add-PocketForge-A133-controls.patch"
 fi
 
+echo "== apply PocketForge patch: atomic virtio-input reports =="
+if ! grep -q 'without consuming guest buffers' hw/input/virtio-input.c; then
+  git apply "$ROOT/pocketforge/0008-hw-input-make-virtio-input-reports-queue-atomic.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 

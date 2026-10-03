@@ -54,6 +54,9 @@ Empty, oversized, malformed, or unsupported values fail. A duplicate press,
 release-before-press, or opposite direction on an already-held hat axis also fails.
 Injection before the guest sets virtio `DRIVER_OK`, after reset until it is ready again,
 or without enough guest event buffers fails without changing device state.
+An input transition and its following SYN report are queue-atomic: rejection does not
+claim the guest's available event descriptor, so retrying after the guest adds capacity
+is deterministic.
 
 The read-only `held` QOM property is true while any injected control lacks a matching
 release. Automation must release all successfully pressed controls and verify
