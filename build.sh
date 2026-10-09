@@ -122,6 +122,11 @@ if ! grep -q 'TYPE_AW_SDHOST_SUN50I_A100' include/hw/sd/allwinner-sdhost.h; then
   git apply "$ROOT/pocketforge/0013-hw-sd-add-A100-SD-host-variant.patch"
 fi
 
+echo "== apply PocketForge patch: connect A133 MMC0 to SD media =="
+if [ ! -f tests/qtest/pocketforge-a133-mmc-test.c ]; then
+  git apply "$ROOT/pocketforge/0014-hw-arm-connect-A133-MMC0-to-SD-media.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 
@@ -151,13 +156,15 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-input-test \
   tests/qtest/pocketforge-a133-mmio-map-test \
   tests/qtest/pocketforge-a133-r-i2c-test \
-  tests/qtest/pocketforge-a133-axp717-test
+  tests/qtest/pocketforge-a133-axp717-test \
+  tests/qtest/pocketforge-a133-mmc-test
 meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a100-rtc-test \
   qtest-aarch64/pocketforge-a133-input-test \
   qtest-aarch64/pocketforge-a133-mmio-map-test \
   qtest-aarch64/pocketforge-a133-r-i2c-test \
-  qtest-aarch64/pocketforge-a133-axp717-test
+  qtest-aarch64/pocketforge-a133-axp717-test \
+  qtest-aarch64/pocketforge-a133-mmc-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1

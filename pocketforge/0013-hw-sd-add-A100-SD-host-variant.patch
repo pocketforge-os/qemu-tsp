@@ -1,7 +1,7 @@
-From d9b5703ed3487bec2c3526552eb5f7edeed908f7 Mon Sep 17 00:00:00 2001
+From fab2ed95bace4e024ef33ac61d94477802744215 Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Fri, 9 Oct 2026 19:05:19 -0400
-Subject: [PATCH] hw/sd: add A100 SD host variant
+Subject: [PATCH 13/14] hw/sd: add A100 SD host variant
 
 Assisted-by: LLM
 ---

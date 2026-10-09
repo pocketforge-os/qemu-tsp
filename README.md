@@ -75,6 +75,27 @@ Outputs are `build/qemu-tsp/qemu-aarch64` (static) and
 `build/qemu-tsp/qemu-system-aarch64`. Register the former via binfmt or invoke it
 directly as `qemu-aarch64 ./your-arm64-binary`.
 
+For direct-kernel A133 boots, MMC0 accepts a raw SD image as
+`-drive if=sd,format=raw,file=PATH`. The guest kernel, board DTB, initrd, and raw
+image remain independent, identity-pinned inputs; this machine does not provide
+a BootROM/SPL firmware-from-SD path. MMC1 remains a register stub and disabled
+MMC2 is not instantiated.
+
+The reusable real-image input tuple is `boot-mode=direct-kernel+sd`, an
+independently pinned `Image`, unmodified board DTB, unmodified initrd, and the
+published raw disk digest. Build 6 is named by descriptor
+`ef573704f42e759b27bd3ba280aad0607d117cf278310b32ddbcb079992edba5/ImageSource.json`;
+its raw digest is `c2e684bda333be6784fa47839776ba6b805ecdd70585cfe841f268f3c9f117ae`
+and its on-image build ID is `device=a133-open-7x-gpu build=51766464d96e`.
+Because QEMU's SD card requires a power-of-two capacity, copy the immutable raw
+and zero-extend that copy to 2 GiB; verify the unextended source before doing so.
+
+Cloud-init callers own the per-run seed/observation protocol. Their seed hook
+writes `user-data`, `meta-data`, and `network-config` to the existing
+`POCKETFORGE` FAT partition on the writable copy before launch. No seed is
+injected through the DT, initrd, or kernel command line, so discovery and all
+reads still traverse the real sunxi-mmc driver and SD model.
+
 ## Verify (regression)
 
 ```sh

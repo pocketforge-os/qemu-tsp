@@ -148,7 +148,7 @@
     {"base":"0x3025000","size":"0x1000","name":"pocketforge-a133.gic_hyp_tail","kind":"stub","source":"dt"},
     {"base":"0x3026000","size":"0x2000","name":"gic_vcpu","kind":"model","source":"dt"},
     {"base":"0x30f0000","size":"0x10000","name":"pocketforge-a133.iommu","kind":"stub","source":"dt"},
-    {"base":"0x4020000","size":"0x1000","name":"pocketforge-a133.mmc0","kind":"stub","source":"dt"},
+    {"base":"0x4020000","size":"0x1000","name":"allwinner-sdhost","kind":"model","source":"dt"},
     {"base":"0x4021000","size":"0x1000","name":"pocketforge-a133.mmc1","kind":"stub","source":"dt"},
     {"base":"0x5000000","size":"0x400","name":"dw-apb-uart","kind":"model","source":"dt"},
     {"base":"0x5000400","size":"0x400","name":"dw-apb-uart","kind":"model","source":"dt"},
