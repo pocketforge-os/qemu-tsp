@@ -117,6 +117,11 @@ if ! grep -q 'pocketforge-a133.g2d_clk' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0012-hw-arm-cover-build-6-A133-probe-apertures.patch"
 fi
 
+echo "== apply PocketForge patch: A100 SD host variant =="
+if ! grep -q 'TYPE_AW_SDHOST_SUN50I_A100' include/hw/sd/allwinner-sdhost.h; then
+  git apply "$ROOT/pocketforge/0013-hw-sd-add-A100-SD-host-variant.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 
