@@ -163,7 +163,8 @@
     {"base":"0x7010320","size":"0xc","name":"pocketforge-a133.r_intc","kind":"stub","source":"dt"},
     {"base":"0x7022000","size":"0x400","name":"pocketforge-a133.r_pio","kind":"stub","source":"dt"},
     {"base":"0x7040000","size":"0x400","name":"pocketforge-a133.ir","kind":"stub","source":"dt"},
-    {"base":"0x7081400","size":"0x400","name":"pocketforge-a133.r_i2c0","kind":"stub","source":"dt"},
+    {"base":"0x7081400","size":"0x24","name":"allwinner.i2c","kind":"model","source":"dt"},
+    {"base":"0x7081424","size":"0x3dc","name":"pocketforge-a133.r_i2c0.reserved","kind":"stub","source":"dt"},
     {"base":"0xa000000","size":"0x200","name":"virtio-mmio","kind":"model","source":"synthetic"},
     {"base":"0xa000200","size":"0x200","name":"virtio-mmio","kind":"model","source":"synthetic"}
   ]

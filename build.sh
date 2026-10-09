@@ -107,6 +107,11 @@ if [ ! -f tests/qtest/pocketforge-a133-axp717-test.c ]; then
   git apply "$ROOT/pocketforge/0010-hw-misc-add-bounded-AXP717-register-bank.patch"
 fi
 
+echo "== apply PocketForge patch: precise R-I2C0 coverage classification =="
+if ! grep -q 'r_i2c0.reserved' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0011-hw-arm-classify-R-I2C0-aperture-precisely.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 

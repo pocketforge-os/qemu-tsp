@@ -86,17 +86,27 @@ typed `synthetic`; they are intentionally not used to cover real-DT ranges.
 
 ## Model and stub decisions
 
-The GICv2, four DesignWare APB UARTs, RTC, virtio transports, Cortex-A53 CPUs,
-and RAM keep real models.  The UART aperture is expanded to the DT-exact
+The GICv2, four DesignWare APB UARTs, RTC, R-I2C0, AXP717 PMIC, virtio
+transports, Cortex-A53 CPUs, and RAM use functional or bounded models. The
+UART aperture is expanded to the DT-exact
 `0x400`, and enabled UART0/1/3/4 are instantiated with their DT SPI lines.
 QEMU's generic GIC model exposes only `0x1000` at the first half of the DT's
 `0x03024000/0x2000` virtualization-interface tuple, so an exact
 `0x03025000/0x1000` residual stub covers only the missing half.
 
-All remaining enabled resources use uniquely named, exact-size RAM-backed
-register stubs.  They reset to zero and provide byte-addressable read-after-
-write storage.  This is deliberately an inert probe surface, not a claim of
-device functionality.  The driver audit is:
+R-I2C0 uses upstream QEMU's `allwinner.i2c-sun6i` register model at
+`0x07081400` with SPI 113. Its defined register bank is `0x24` bytes; only the
+register-free `0x3dc`-byte tail of the DT's `0x400` reservation remains an
+inert residual stub. The AXP717 at address `0x34` models only IRQ enable
+`0x40..0x44`, W1C IRQ status `0x48..0x4c`, regulator enable `0x80`, and
+regulator controls `0x83..0x9f`. Unmodelled PMIC registers read zero and
+ignore writes. The stored values are guest-programmed state, not hardware
+measurements; the model produces no PMIC events or interrupt output.
+
+All other enabled resources use uniquely named, exact-size RAM-backed
+register stubs. They reset to zero and provide byte-addressable read-after-
+write storage. This is deliberately an inert probe surface, not a claim of
+device functionality. The driver audit is:
 
 - `mmio-sram` requires storage semantics; exact RAM-backed apertures are the
   appropriate model.
@@ -110,7 +120,7 @@ device functionality.  The driver audit is:
 - `sunxi-mmc` has bounded reset/status timeouts.  Storage permits safe probe
   failure without pretending that removable media exists.
 - LEDC, DSI/DPHY, display, clocks, DMA, SID, thermal, pinctrl, watchdog, IOMMU,
-  USB, IR, I2C, and power-domain probe paths use ordinary register reads and
+  USB, IR, and power-domain probe paths use ordinary register reads and
   writes or bounded timeouts; none requires an unbounded hardware completion
   transition for the accepted boot path.
 - The audio codec and IR drivers are modules and are absent from the fidelity
@@ -123,6 +133,8 @@ than allowed to violate effective-status coverage.
 
 The QEMU qtest validates every final aperture from the running machine's
 flat map, tests reset and read-after-write storage at both ends of every new
-stub, checks the exact UART/model boundaries, and proves disabled resources
-are absent.  The automation mutation suite independently exercises every
+stub, checks the exact UART/model boundaries, exercises R-I2C0 reset/status,
+and keeps AXP717 register positives and an unpopulated-address NACK in one
+invocation. It also proves disabled resources are absent. The automation
+mutation suite independently exercises every
 fail-closed category named above.
