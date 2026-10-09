@@ -112,6 +112,11 @@ if ! grep -q 'r_i2c0.reserved' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0011-hw-arm-classify-R-I2C0-aperture-precisely.patch"
 fi
 
+echo "== apply PocketForge patch: build-6 A133 probe apertures =="
+if ! grep -q 'pocketforge-a133.g2d_clk' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0012-hw-arm-cover-build-6-A133-probe-apertures.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 

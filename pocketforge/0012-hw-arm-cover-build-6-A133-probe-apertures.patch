@@ -1,0 +1,125 @@
+From dc1ac8acd9788adc912f18bf0284493f6c39e22a Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 19:44:12 -0400
+Subject: [PATCH 12/14] hw/arm: cover build-6 A133 probe apertures
+
+Assisted-by: LLM
+---
+ docs/pocketforge-a133-peripheral-stubs.md    |  5 ++++-
+ hw/arm/pocketforge_a133.c                    |  9 +++++++--
+ tests/qtest/pocketforge-a133-mmio-map-test.c | 16 +++++++++++-----
+ 3 files changed, 22 insertions(+), 8 deletions(-)
+
+diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
+index dff3152..311c650 100644
+--- a/docs/pocketforge-a133-peripheral-stubs.md
++++ b/docs/pocketforge-a133-peripheral-stubs.md
+@@ -41,12 +41,15 @@ reg range) found FOURTEEN more peripherals between there and userspace:
+ | R-domain pinctrl | `pinctrl@7022000`, `allwinner,sun50i-a100-r-pinctrl` (`r_pio`) | `0x07022000` (`0x400`) | `drivers/pinctrl/sunxi/pinctrl-sunxi.c` (same driver as `&pio` above) | Same audit as the already-stubbed main pinctrl: unconditional read-modify-write, no poll. Its I2C pins route the AXP717 bus through `r_pio`. |
+ | PWM | `pwm@300a000`, `allwinner,sun50i-a100-pwm` | `0x0300a000` (`0x400`) | `drivers/pwm/pwm-sun4i.c`, `sun8i_pwm_get_state()` (via `pwm-backlight`'s `devm_pwm_get()`) | Plain `readl()` of the channel's period/duty register, no poll. |
+ | DE2 mixer0 | `bus@6000000/mixer@100000`, `allwinner,sun50i-a100-de2-mixer-0` | `0x06100000` (`0x100000`) | `drivers/gpu/drm/sun4i/sun8i_mixer.c`, `sun8i_mixer_bind()` | DRM component bind for the display-engine compositor (real DT still enables it; replaced functionally by virtio-gpu). Unconditional `regmap_write()` resetting layer/blend config, no poll. |
++| G2D clocks | `clock-controller@6480000`, `allwinner,sun50i-a100-g2d-clk` | `0x06480000` (`0x100`) | `drivers/clk/sunxi-ng/ccu-sun8i-de2.c`, `sunxi_de2_clk_probe()` | The build-6 7.x DT enables this standalone CCU. Clock registration reads its divider registers directly; zero-backed storage is sufficient and is not functional G2D coverage. |
++| G2D rotate | `rotate@64a8000`, `allwinner,sun50i-a100-g2d-rotate` | `0x064a8000` (`0x100`) | `drivers/gpu/drm/sun4i/sun8i_rotate.c` | The build-6 7.x DT enables this engine. Its aperture is retained as inert storage so ordinary probe-time accesses cannot abort; rendering remains unsupported. |
+ | TCON-LCD0 | `lcd-controller@6511000`, `allwinner,sun50i-a100-tcon-lcd` | `0x06511000` (`0x1000`) | `drivers/gpu/drm/sun4i/sun4i_tcon.c`, `sun4i_tcon_bind()` | Same DRM-bind class as mixer0/tcon-top; unconditional `regmap_write()`, no poll. |
+ | R-domain I2C0 | `i2c@7081400`, `allwinner,sun50i-a100-i2c` (`r_i2c0`, the AXP717 PMIC bus) | `0x07081400` (`0x400`) | `drivers/i2c/busses/i2c-mv64xxx.c` | Promoted from a stub to QEMU's `allwinner.i2c-sun6i` model for registers `0x00..0x23`, wired to SPI 113. Only the DT reservation's register-free `0x24..0x3ff` tail remains an inert stub. |
+ | Thermal sensor | `thermal-sensor@5070400`, `allwinner,sun50i-a100-ths` | `0x05070400` (`0x100`) | `drivers/thermal/sun8i_thermal.c`, `sun50i_h6_thermal_init()` | Unconditional `regmap_write()`, no poll. |
++| Audio codec | `codec@5096000`, `allwinner,sun50i-a133-codec` | `0x05096000` (`0x330`) | `sound/soc/sunxi/sun4i-codec.c`, `sun50i_a133_codec_component_probe()` | The build-6 7.x DT extends the aperture through register `0x32c`; zero-backed storage prevents a module-load abort but does not emulate audio. |
+ | USB OTG/MUSB | `usb@5100000`, `allwinner,sun50i-a100-musb` | `0x05100000` (`0x400`) | `drivers/usb/musb/sunxi.c`, `sunxi_musb_init()` | USB is explicitly SKIP (the infra-113 D10 cost this machine exists to avoid paying) -- this stub backs the single unconditional `writeb()` at probe time ONLY, it does not model USB. |
+ | USB PHY | `phy@5100400`, `allwinner,sun50i-a100-usb-phy` | `0x05100400`+`0x05101800`+`0x05200800` (`0x100` each: `phy_ctrl`, `pmu0`, `pmu1`) | `drivers/phy/allwinner/phy-sun4i-usb.c`, `sun4i_usb_phy_init()` | Same USB-SKIP class. Plain `readl()`-modify-`writel()` on `REG_HCI_PHY_CTL`/SIDDQ bits, no poll. Three disjoint reg ranges per the DT. |
+-| EHCI0/OHCI0/EHCI1/OHCI1 | `usb@5101000`, `usb@5101400`, `usb@5200000`, `usb@5200400` | `0x100` each | `drivers/usb/host/{ehci,ohci}-hcd.c` generic core | Same USB-SKIP class. Plain register init/reset writes; any hardware-completion wait uses the generic core's own bounded jiffies timeout (confirmed live: OHCI logs "USB HC reset timed out!" and fails its probe cleanly with `-1`, never hangs). |
++| EHCI0/OHCI0/EHCI1/OHCI1 | `usb@5101000`, `usb@5101400`, `usb@5200000`, `usb@5200400` | `0x05101000`, `0x05101400`, `0x05200000`, `0x05200400` (`0x100` each) | `drivers/usb/host/{ehci,ohci}-hcd.c` generic core | Same USB-SKIP class. Plain register init/reset writes; any hardware-completion wait uses the generic core's own bounded jiffies timeout (confirmed live: OHCI logs "USB HC reset timed out!" and fails its probe cleanly with `-1`, never hangs). |
+ 
+ ### R-I2C0 and AXP717 promotion
+ 
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index fc0c9ee..3b03d48 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -372,7 +372,8 @@ struct PocketForgeA133MachineState {
+ #define PF_A133_USBPHY_PMU1_SIZE  0x100
+ 
+ /*
+- * Enabled EHCI1/OHCI1 host controllers (usb@5200000 and usb@5200400).
++ * Enabled EHCI0/OHCI0/EHCI1/OHCI1 host controllers (usb@5101000,
++ * usb@5101400, usb@5200000, and usb@5200400).
+  * Same USB-SKIP class as MUSB/PHY above: the
+  * generic EHCI/OHCI core (drivers/usb/host/ehci-hcd.c, ohci-hcd.c) does
+  * plain register init/reset writes with its own bounded jiffies-based
+@@ -445,14 +446,18 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+-    { "pocketforge-a133.codec",            0x05096000, 0x31c },
++    { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+     { "pocketforge-a133.usbphy_pmu0",      0x05101800, 0x100 },
++    { "pocketforge-a133.ehci0",            0x05101000, 0x100 },
++    { "pocketforge-a133.ohci0",            0x05101400, 0x100 },
+     { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
+     { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
+     { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
+     { "pocketforge-a133.de2",              0x06000000, 0x400000 },
++    { "pocketforge-a133.g2d_clk",          0x06480000, 0x100 },
++    { "pocketforge-a133.g2d_rotate",       0x064a8000, 0x100 },
+     { "pocketforge-a133.dsi",              0x06504000, 0x1000 },
+     { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
+     { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index 7de0cc0..ca85b91 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -43,14 +43,18 @@ static const ExpectedRegion expected_regions[] = {
+     { "dw-apb-uart",                       0x05001000, 0x400 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+-    { "pocketforge-a133.codec",            0x05096000, 0x31c },
++    { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+     { "pocketforge-a133.usbphy_pmu0",      0x05101800, 0x100 },
++    { "pocketforge-a133.ehci0",            0x05101000, 0x100 },
++    { "pocketforge-a133.ohci0",            0x05101400, 0x100 },
+     { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
+     { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
+     { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
+     { "pocketforge-a133.de2",              0x06000000, 0x400000 },
++    { "pocketforge-a133.g2d_clk",          0x06480000, 0x100 },
++    { "pocketforge-a133.g2d_rotate",       0x064a8000, 0x100 },
+     { "pocketforge-a133.dsi",              0x06504000, 0x1000 },
+     { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
+     { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
+@@ -88,14 +92,18 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+-    { "pocketforge-a133.codec",            0x05096000, 0x31c },
++    { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+     { "pocketforge-a133.usbphy_pmu0",      0x05101800, 0x100 },
++    { "pocketforge-a133.ehci0",            0x05101000, 0x100 },
++    { "pocketforge-a133.ohci0",            0x05101400, 0x100 },
+     { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
+     { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
+     { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
+     { "pocketforge-a133.de2",              0x06000000, 0x400000 },
++    { "pocketforge-a133.g2d_clk",          0x06480000, 0x100 },
++    { "pocketforge-a133.g2d_rotate",       0x064a8000, 0x100 },
+     { "pocketforge-a133.dsi",              0x06504000, 0x1000 },
+     { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
+     { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
+@@ -132,9 +140,7 @@ static void test_exact_live_map(void)
+         assert_region_line(map, &expected_regions[i]);
+     }
+ 
+-    /* These controller nodes are disabled in the pinned effective DT. */
+-    g_assert_null(strstr(map, "0000000005101000-"));
+-    g_assert_null(strstr(map, "0000000005101400-"));
++    /* These display controller nodes are disabled in the pinned effective DT. */
+     g_assert_null(strstr(map, "pocketforge-a133.de2_clk"));
+     g_assert_null(strstr(map, "pocketforge-a133.mixer0"));
+ 
+-- 
+2.43.0
+

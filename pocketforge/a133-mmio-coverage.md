@@ -16,6 +16,18 @@ The fidelity workflow deliberately republishes that artifact under the legacy
 receipt basename `sun50i-a133-pocketforge-tsp.dtb`; the selected source is
 still Odyssey.
 
+The real-image acceptance supplement comes from published descriptor
+`ef573704f42e759b27bd3ba280aad0607d117cf278310b32ddbcb079992edba5/ImageSource.json`.
+The descriptor and the image independently identify raw SHA-256
+`c2e684bda333be6784fa47839776ba6b805ecdd70585cfe841f268f3c9f117ae`;
+the userdata file `/etc/pocketforge-build-id` reads
+`device=a133-open-7x-gpu build=51766464d96e`. Its kernel is
+`c22dbc0226242cd1e582073eac5d82d36953c0d8`, and its unmodified board DTB
+has SHA-256 `1a9042d839ee9d1548062efacc5dde332789c6dc846f21bb2c7877045d49b358`.
+That newer DT enables EHCI0/OHCI0 and the standalone G2D clock/rotate nodes,
+and extends the codec reservation to `0x330`; the coverage union records those
+probe apertures without claiming functional USB, G2D, or audio.
+
 The QEMU side is based on upstream commit
 `11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea`.  Before this work, the exact
 applied patch stack was inspected through the running machine with HMP
@@ -123,13 +135,13 @@ device functionality. The driver audit is:
   USB, IR, and power-domain probe paths use ordinary register reads and
   writes or bounded timeouts; none requires an unbounded hardware completion
   transition for the accepted boot path.
-- The audio codec and IR drivers are modules and are absent from the fidelity
-  initramfs.  Their exact apertures are still present because the enabled DT
-  advertises them.
+- The audio codec and IR drivers are modules and are absent from the small
+  diagnostic initramfs. Their exact apertures remain present because the real
+  rootfs loads them; the build-6 codec probe reaches offset `0x324`.
 
-Disabled MMC2, UART2, I2C0-3, Ethernet, EHCI0/OHCI0, R-UART, and R-I2C1 are
-not mapped.  In particular, the prior EHCI0/OHCI0 stubs are removed rather
-than allowed to violate effective-status coverage.
+Disabled MMC2, UART2, I2C0-3, Ethernet, R-UART, and R-I2C1 are not mapped.
+EHCI0/OHCI0 are zero-backed only for the build-6 DT where they are enabled;
+their generic drivers fail through bounded timeouts, so USB remains SKIP.
 
 The QEMU qtest validates every final aperture from the running machine's
 flat map, tests reset and read-after-write storage at both ends of every new
