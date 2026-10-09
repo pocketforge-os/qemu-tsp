@@ -97,6 +97,11 @@ if ! grep -q 'without consuming guest buffers' hw/input/virtio-input.c; then
   git apply "$ROOT/pocketforge/0008-hw-input-make-virtio-input-reports-queue-atomic.patch"
 fi
 
+echo "== apply PocketForge patch: A133 R-I2C0 controller =="
+if [ ! -f tests/qtest/pocketforge-a133-r-i2c-test.c ]; then
+  git apply "$ROOT/pocketforge/0009-hw-arm-model-A133-R-I2C0-controller.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 
@@ -124,11 +129,13 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-input-test \
-  tests/qtest/pocketforge-a133-mmio-map-test
+  tests/qtest/pocketforge-a133-mmio-map-test \
+  tests/qtest/pocketforge-a133-r-i2c-test
 meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a100-rtc-test \
   qtest-aarch64/pocketforge-a133-input-test \
-  qtest-aarch64/pocketforge-a133-mmio-map-test
+  qtest-aarch64/pocketforge-a133-mmio-map-test \
+  qtest-aarch64/pocketforge-a133-r-i2c-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1
