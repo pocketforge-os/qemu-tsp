@@ -22,6 +22,8 @@ EXPECTED = {
     "rootfs": "e76f7379c5684884da6469366b4e49103706a868ec3476d27d66530a2ef18af6",
 }
 
+QEMU_STACK_VERSION_PREFIX = "pocketforge-qemu-tsp-head="
+
 ROOTFS_OFFSET = 127_926_272
 ROOTFS_SIZE = 1_518_338_048
 SMOKE_SCRIPT = """#!/bin/sh
@@ -173,6 +175,42 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def checked_out_head(source_root: Path) -> str:
+    head = subprocess.run(
+        ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    for command in (
+        ["git", "-C", str(source_root), "diff", "--quiet", "HEAD", "--"],
+        ["git", "-C", str(source_root), "diff", "--cached", "--quiet", "HEAD", "--"],
+    ):
+        result = subprocess.run(command, check=False)
+        if result.returncode != 0:
+            raise RuntimeError("source-tree-not-clean")
+    return head
+
+
+def verify_qemu_provenance(qemu: Path, source_root: Path) -> None:
+    head = checked_out_head(source_root)
+    version = subprocess.run(
+        [str(qemu), "--version"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout.splitlines()[0]
+    marker = f"{QEMU_STACK_VERSION_PREFIX}{head}"
+    if marker not in version:
+        raise RuntimeError(f"qemu-provenance:{marker}:{version}")
+    print(
+        f"QEMU_PROVENANCE head={head} sha256={sha256(qemu)} status=ok",
+        flush=True,
+    )
 
 
 def copy_range(source: Path, destination: Path, offset: int, size: int) -> None:
@@ -379,8 +417,14 @@ def main() -> int:
     parser.add_argument("--initrd", type=Path, required=True)
     parser.add_argument("--sd", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[1],
+    )
     args = parser.parse_args()
 
+    verify_qemu_provenance(args.qemu, args.source_root)
     args.work.mkdir(parents=True, exist_ok=True)
     for stale in ("qmp.sock", "serial.sock"):
         path = args.work / stale
