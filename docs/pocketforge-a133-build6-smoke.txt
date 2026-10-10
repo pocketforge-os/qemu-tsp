@@ -94,8 +94,10 @@ Required external prerequisite
 ------------------------------
 
 Publish a replacement owned simulator kernel/rootfs tuple with virtio core,
-virtio-mmio, virtio-input and virtio-gpu enabled (built in, or with all modules
-present and loaded). Then rerun the full smoke against its newly pinned hashes:
+virtio-mmio, virtio-input and virtio-gpu built in. Requiring `=y` keeps the
+preflight fail-closed; accepting `=m` would additionally require proving module
+presence and dependency closure in the initrd/rootfs. Then rerun the full smoke
+against its newly pinned hashes:
 register the GIO listener, compare actual Scanout bytes to the display query,
 run the refused-event/no-read negative control, and inject/read back one key,
 both sticks, both triggers and the hat as uid debug.

@@ -53,6 +53,13 @@ def embedded_config(image: Path) -> dict[str, str]:
     return config
 
 
+def unavailable_drivers(config: dict[str, str]) -> list[str]:
+    """Return drivers that are not guaranteed available at early boot."""
+    # Built-ins make READY self-contained. Accepting "m" would also need
+    # module-presence and dependency checks in both initrd and rootfs.
+    return [name for name in REQUIRED_CONFIG if config.get(name, "n") != "y"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     for name in EXPECTED:
@@ -73,12 +80,10 @@ def main() -> int:
         print(f"PREFLIGHT result=BLOCKED reason=kernel-config-unreadable detail={error}")
         return 1
 
-    missing = []
+    missing = unavailable_drivers(config)
     for name in REQUIRED_CONFIG:
         value = config.get(name, "n")
         print(f"KCONFIG name={name} value={value}")
-        if value not in ("y", "m"):
-            missing.append(name)
 
     if failed:
         print("PREFLIGHT result=BLOCKED reason=artifact-identity-mismatch")
