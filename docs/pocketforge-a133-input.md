@@ -72,14 +72,14 @@ XR24=`PIXMAN_x8r8g8b8`, XB24=`PIXMAN_x8b8g8r8`, and
 AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 `reason=unsupported-format` token.
 
-## Input capability query (ABI 2.0)
+## Input capability query (ABI 2.1)
 
 `query-pocketforge-input` reports the batch limit and every injectible device:
 
 ```json
 {
   "return": {
-    "abi_version": {"major": 2, "minor": 0},
+    "abi_version": {"major": 2, "minor": 1},
     "max_batch_events": 256,
     "devices": [{
       "id": "gamepad",
@@ -103,6 +103,18 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
           {"code": 316, "name": "BTN_MODE"}
         ]},
         {"type": 3, "abs": [
+          {"code": 0, "name": "ABS_X", "min": 0, "max": 4095,
+           "fuzz": 0, "flat": 0},
+          {"code": 1, "name": "ABS_Y", "min": 0, "max": 4095,
+           "fuzz": 0, "flat": 0},
+          {"code": 3, "name": "ABS_RX", "min": 0, "max": 4095,
+           "fuzz": 0, "flat": 0},
+          {"code": 4, "name": "ABS_RY", "min": 0, "max": 4095,
+           "fuzz": 0, "flat": 0},
+          {"code": 2, "name": "ABS_Z", "min": 0, "max": 255,
+           "fuzz": 0, "flat": 0},
+          {"code": 5, "name": "ABS_RZ", "min": 0, "max": 255,
+           "fuzz": 0, "flat": 0},
           {"code": 16, "name": "ABS_HAT0X", "min": -1, "max": 1,
            "fuzz": 0, "flat": 0},
           {"code": 17, "name": "ABS_HAT0Y", "min": -1, "max": 1,
@@ -114,13 +126,13 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 }
 ```
 
-`caps` is per device and is the exact allow-list accepted by
+`caps` is per device and is the exact code allow-list accepted by
 `pocketforge-input-send`, so clients can disable controls unavailable in a
-tier. ABI 2.0 exposes the nine digital controls and the two hat axes. The guest
-decoder's eventual uinput node also declares the four 12-bit stick axes and two
-8-bit triggers, but QEMU does not advertise or accept those until the MCU
-analog follow-up lands as an additive ABI 2 minor revision. All ABS entries
-include `fuzz` and `flat`; both are zero for this device.
+tier. ABI 2.1 additively exposes the four 12-bit stick axes and two 8-bit
+trigger axes alongside the ABI 2.0 digital controls and hats. All ABS entries
+include `fuzz` and `flat`; both are zero for this device. The physical L2/R2
+actuators are binary, so `ABS_Z` and `ABS_RZ` accept only the advertised
+endpoints 0 and 255; an intermediate value is an invalid parameter.
 
 `ready` means both physical UART streams have been configured by the guest and
 have accepted their initial centered/all-released frame. ABI major 2 fixes
@@ -130,6 +142,35 @@ removes or reinterprets one of those rules. A minor change may add optional
 response fields, a new independently identified device, or capabilities;
 clients may ignore additions from a newer minor but must reject an unknown
 major. Removing an existing capability is not a compatible minor change.
+
+### Analog MCU contract and evidence
+
+These controls are not a SoC GPADC. The owned build-6 DT at kernel commit
+`c22dbc0226242cd1e582073eac5d82d36953c0d8`,
+`arch/arm64/boot/dts/allwinner/sun50i-a133-pocketforge-tsp.dts:132-154`,
+identifies an external gamepad MCU, and lines 614-625 enable its right stream
+on UART3 and left stream on UART4. The shipped owned decoder at runtime commit
+`5738f3d5e108b52186b129a5db1c62a878278b19` defines the eight-byte, unsigned
+12-bit wire frame in `crates/pf-input-decode/src/lib.rs:31-36`.
+
+The decoder is the guest-visible driver contract for every analog value:
+
+- `crates/pf-input-decode/src/decode.rs:132-145` declares `ABS_X/Y/RX/RY`
+  as 0..4095 and `ABS_Z/RZ` as 0..255.
+  `crates/pf-input-decode/src/lib.rs:84-100` sets `fuzz=0` and `flat=0`, so
+  the release image reports no deadzone.
+- `decode.rs:179-193` maps left UART X/Y directly to `ABS_X/Y`, right UART
+  X/Y directly to `ABS_RX/RY`, L2 to `ABS_Z`, and R2 to `ABS_RZ`.
+  `decode.rs:249-257` emits the unsigned wire samples directly, with no X or
+  Y sign inversion.
+- `decode.rs:218-230` emits triggers only as 0/255 endpoints. The matching
+  constants and raw 12-bit range are in `codes.rs:110-125`.
+
+QEMU therefore initializes all four sticks to arithmetic mid-scale 2048 and
+serializes injected values unchanged in the MCU frame. Evdev has no separate
+center property, and the driver deliberately reports no deadzone. Real-unit
+rest offsets and any future calibration remain provisional until the input
+receipt is incorporated; they do not change this raw device ABI.
 
 Each UART source has a bounded 1024-byte pending FIFO in addition to the real
 model's 16-byte RX FIFO. A 256-triple maximum batch can contain at most 128
@@ -176,16 +217,17 @@ The `events` array contains 1 through 256 ordered `(type, code, value)` triples.
 It consists of one or more non-empty reports, each terminated explicitly by
 `EV_SYN/SYN_REPORT/0`; another SYN code/value, an empty report, or a missing
 final SYN is invalid. Every type and code must appear in that device's query.
-EV_ABS values must be inside the advertised inclusive range. EV_KEY accepts
-only 0 and 1 and rejects duplicate press or release-before-press. Hat release
-to zero is explicit. QEMU never synthesizes a release.
+EV_ABS values must be inside the advertised inclusive range; binary trigger
+axes additionally accept only 0 or 255. EV_KEY accepts only 0 and 1 and rejects
+duplicate press or release-before-press. Hat release to zero is explicit. QEMU
+never synthesizes a release.
 
 QEMU validates the whole array on temporary state, snapshots at most one
 complete frame for each affected UART at every SYN_REPORT, and preflights both
 bounded FIFOs. Any validation or capacity failure delivers no byte prefix and
 changes no held state. Frames are strictly ordered within each UART stream and
 each frame is complete. UART3 and UART4 are independent physical streams, so
-ABI 2.0 makes no guest-observable cross-stream ordering promise when one batch
+ABI 2.x makes no guest-observable cross-stream ordering promise when one batch
 touches both. QMP execution on the main loop prevents another producer from
 interleaving a frame.
 
@@ -195,7 +237,7 @@ rejects both.
 
 ## Failure contract
 
-ABI 2.0 adds no core QAPI `ErrorClass` values. Unknown/disabled devices return
+ABI 2.x adds no core QAPI `ErrorClass` values. Unknown/disabled devices return
 `DeviceNotFound`, and an input device whose two UARTs are not ready returns
 `DeviceNotActive`. Other errors use `GenericError` with one stable token at the
 start of `desc`:

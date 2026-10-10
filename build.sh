@@ -209,6 +209,16 @@ if ! grep -q 'DW_UART_CPR_32BIT_FIFO16' hw/char/dw_apb_uart.c; then
   git apply "$ROOT/pocketforge/0022-hw-char-model-DW-UART-component-parameters.patch"
 fi
 
+echo "== apply PocketForge patch: RED qtests for A133 MCU analog controls =="
+if ! grep -q 'analog-frames-negative' tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0023-tests-cover-A133-MCU-analog-controls.patch"
+fi
+
+echo "== apply PocketForge patch: A133 MCU sticks and triggers =="
+if ! grep -q 'ABS_X, "ABS_X"' hw/input/pocketforge_a133_input.c; then
+  git apply "$ROOT/pocketforge/0024-hw-input-model-A133-MCU-sticks-and-triggers.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree

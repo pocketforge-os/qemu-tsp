@@ -1,0 +1,168 @@
+From 2361aa773195e3a053b9254a716a295397c81729 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 05:00:17 -0400
+Subject: [PATCH 1/2] tests: cover A133 MCU analog controls
+
+Assisted-by: LLM
+---
+ tests/qtest/pocketforge-a133-input-test.c | 116 +++++++++++++++++++++-
+ 1 file changed, 114 insertions(+), 2 deletions(-)
+
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index 4d5bbbb..5a0c1ec 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -68,6 +68,19 @@ static QDict *raw_send(QTestState *qts, int type, int code, int value)
+         type, code, value);
+ }
+ 
++static QDict *raw_send_two(QTestState *qts,
++                           int type0, int code0, int value0,
++                           int type1, int code1, int value1)
++{
++    return qtest_qmp(qts,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'gamepad', 'events': ["
++        " { 'type': %d, 'code': %d, 'value': %d },"
++        " { 'type': %d, 'code': %d, 'value': %d },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
++        type0, code0, value0, type1, code1, value1);
++}
++
+ static void assert_error_prefix(QDict *response, const char *prefix)
+ {
+     QDict *error = qdict_get_qdict(response, "error");
+@@ -156,7 +169,7 @@ static void test_query_and_transport(void)
+     int i;
+ 
+     g_assert_cmpint(qdict_get_int(version, "major"), ==, 2);
+-    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 0);
++    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 1);
+     g_assert_cmpint(qdict_get_int(result, "max_batch_events"), ==, 256);
+     g_assert_cmpstr(qdict_get_str(device, "id"), ==, "gamepad");
+     g_assert_cmpstr(qdict_get_str(device, "name"), ==, "TRIMUI Player1");
+@@ -171,7 +184,12 @@ static void test_query_and_transport(void)
+     }
+     g_assert_true(query_has_abs(device, ABS_HAT0X, -1, 1));
+     g_assert_true(query_has_abs(device, ABS_HAT0Y, -1, 1));
+-    g_assert_false(query_has_abs(device, ABS_X, 0, 4095));
++    g_assert_true(query_has_abs(device, ABS_X, 0, 4095));
++    g_assert_true(query_has_abs(device, ABS_Y, 0, 4095));
++    g_assert_true(query_has_abs(device, ABS_RX, 0, 4095));
++    g_assert_true(query_has_abs(device, ABS_RY, 0, 4095));
++    g_assert_true(query_has_abs(device, ABS_Z, 0, 255));
++    g_assert_true(query_has_abs(device, ABS_RZ, 0, 255));
+     qobject_unref(response);
+ 
+     /* The former machine-owned virtio-input transport is gone. */
+@@ -179,6 +197,98 @@ static void test_query_and_transport(void)
+     qtest_quit(qts);
+ }
+ 
++static void test_analog_frames_and_negative_control(void)
++{
++    static const uint8_t left_x_min[] = {
++        0xff, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0xfe,
++    };
++    static const uint8_t left_x_mid[] = {
++        0xff, 0x01, 0x00, 0x08, 0x00, 0x08, 0x00, 0xfe,
++    };
++    static const uint8_t left_y_max[] = {
++        0xff, 0x01, 0x00, 0x08, 0x00, 0x0f, 0xff, 0xfe,
++    };
++    static const uint8_t right_xy[] = {
++        0xff, 0x01, 0x00, 0x0f, 0xff, 0x00, 0x00, 0xfe,
++    };
++    static const uint8_t left_l2_pressed[] = {
++        0xff, 0x01, 0x02, 0x08, 0x00, 0x0f, 0xff, 0xfe,
++    };
++    static const uint8_t left_l2_released[] = {
++        0xff, 0x01, 0x00, 0x08, 0x00, 0x0f, 0xff, 0xfe,
++    };
++    static const uint8_t right_r2_pressed[] = {
++        0xff, 0x01, 0x02, 0x0f, 0xff, 0x00, 0x00, 0xfe,
++    };
++    static const uint8_t right_r2_released[] = {
++        0xff, 0x01, 0x00, 0x0f, 0xff, 0x00, 0x00, 0xfe,
++    };
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    QDict *response;
++
++    uart_configure(qts, PF_UART3_BASE);
++    uart_configure(qts, PF_UART4_BASE);
++    uart_assert_frame(qts, PF_UART3_BASE, centered);
++    uart_assert_frame(qts, PF_UART4_BASE, centered);
++
++    /* A later invalid triple rejects the whole report and emits no prefix. */
++    response = raw_send_two(qts, EV_ABS, ABS_X, 0,
++                            EV_ABS, ABS_Y, 4096);
++    assert_error_prefix(response,
++        "pocketforge-input: reason=invalid-parameter index=1:");
++    qobject_unref(response);
++    uart_assert_empty(qts, PF_UART3_BASE);
++    uart_assert_empty(qts, PF_UART4_BASE);
++
++    response = raw_send(qts, EV_ABS, ABS_X, 0);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART4_BASE, left_x_min);
++
++    response = raw_send(qts, EV_ABS, ABS_X, 2048);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART4_BASE, left_x_mid);
++
++    response = raw_send(qts, EV_ABS, ABS_Y, 4095);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART4_BASE, left_y_max);
++
++    response = raw_send_two(qts, EV_ABS, ABS_RX, 4095,
++                            EV_ABS, ABS_RY, 0);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART3_BASE, right_xy);
++
++    response = raw_send(qts, EV_ABS, ABS_Z, 255);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART4_BASE, left_l2_pressed);
++    response = raw_send(qts, EV_ABS, ABS_Z, 0);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART4_BASE, left_l2_released);
++
++    response = raw_send(qts, EV_ABS, ABS_RZ, 255);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART3_BASE, right_r2_pressed);
++    response = raw_send(qts, EV_ABS, ABS_RZ, 0);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART3_BASE, right_r2_released);
++
++    /* The real binary actuator cannot produce an intermediate trigger sample. */
++    response = raw_send(qts, EV_ABS, ABS_Z, 127);
++    assert_error_prefix(response,
++        "pocketforge-input: reason=invalid-parameter index=0:");
++    qobject_unref(response);
++    uart_assert_empty(qts, PF_UART3_BASE);
++    uart_assert_empty(qts, PF_UART4_BASE);
++    qtest_quit(qts);
++}
++
+ static void test_uart_component_parameters(void)
+ {
+     QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
+@@ -377,6 +487,8 @@ int main(int argc, char **argv)
+                    test_uart_irrelevant_parity_selection);
+     qtest_add_func("/aarch64/pocketforge-a133-input/mcu-frames-negative",
+                    test_mcu_frames_and_negative_control);
++    qtest_add_func("/aarch64/pocketforge-a133-input/analog-frames-negative",
++                   test_analog_frames_and_negative_control);
+     qtest_add_func("/aarch64/pocketforge-a133-input/batch-capacity",
+                    test_batch_atomic_capacity);
+     qtest_add_func("/aarch64/pocketforge-a133-input/disabled-non-machine",
+-- 
+2.43.0
+

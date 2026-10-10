@@ -95,6 +95,14 @@ exec 4<>/tmp/pf-evtest.pipe
     key_release=0
     hat_press=0
     hat_release=0
+    abs_x=0
+    abs_y=0
+    abs_rx=0
+    abs_ry=0
+    abs_z_press=0
+    abs_z_release=0
+    abs_rz_press=0
+    abs_rz_release=0
     while IFS= read -r line; do
         printf '%s\\n' "$line"
         case "$line" in
@@ -115,9 +123,21 @@ exec 4<>/tmp/pf-evtest.pipe
                 key_release=1 ;;
             *'code 17 (ABS_HAT0Y), value -1'*) hat_press=1 ;;
             *'code 17 (ABS_HAT0Y), value 0'*) hat_release=1 ;;
+            *'code 0 (ABS_X), value 0'*) abs_x=1 ;;
+            *'code 1 (ABS_Y), value 4095'*) abs_y=1 ;;
+            *'code 3 (ABS_RX), value 4095'*) abs_rx=1 ;;
+            *'code 4 (ABS_RY), value 0'*) abs_ry=1 ;;
+            *'code 2 (ABS_Z), value 255'*) abs_z_press=1 ;;
+            *'code 2 (ABS_Z), value 0'*) abs_z_release=1 ;;
+            *'code 5 (ABS_RZ), value 255'*) abs_rz_press=1 ;;
+            *'code 5 (ABS_RZ), value 0'*) abs_rz_release=1 ;;
         esac
         if [ "$key_press" -eq 1 ] && [ "$key_release" -eq 1 ] &&
-           [ "$hat_press" -eq 1 ] && [ "$hat_release" -eq 1 ]; then
+           [ "$hat_press" -eq 1 ] && [ "$hat_release" -eq 1 ] &&
+           [ "$abs_x" -eq 1 ] && [ "$abs_y" -eq 1 ] &&
+           [ "$abs_rx" -eq 1 ] && [ "$abs_ry" -eq 1 ] &&
+           [ "$abs_z_press" -eq 1 ] && [ "$abs_z_release" -eq 1 ] &&
+           [ "$abs_rz_press" -eq 1 ] && [ "$abs_rz_release" -eq 1 ]; then
             exit 0
         fi
     done
@@ -159,12 +179,45 @@ grep -Eq 'code 304 [(]BTN_(SOUTH|A)[)], value 1' /tmp/pf-evtest.log
 grep -Eq 'code 304 [(]BTN_(SOUTH|A)[)], value 0' /tmp/pf-evtest.log
 grep -Eq 'code 17 [(]ABS_HAT0Y[)], value -1' /tmp/pf-evtest.log
 grep -Eq 'code 17 [(]ABS_HAT0Y[)], value 0' /tmp/pf-evtest.log
+grep -Eq 'code 0 [(]ABS_X[)], value 0' /tmp/pf-evtest.log
+grep -Eq 'code 1 [(]ABS_Y[)], value 4095' /tmp/pf-evtest.log
+grep -Eq 'code 3 [(]ABS_RX[)], value 4095' /tmp/pf-evtest.log
+grep -Eq 'code 4 [(]ABS_RY[)], value 0' /tmp/pf-evtest.log
+grep -Eq 'code 2 [(]ABS_Z[)], value 255' /tmp/pf-evtest.log
+grep -Eq 'code 2 [(]ABS_Z[)], value 0' /tmp/pf-evtest.log
+grep -Eq 'code 5 [(]ABS_RZ[)], value 255' /tmp/pf-evtest.log
+grep -Eq 'code 5 [(]ABS_RZ[)], value 0' /tmp/pf-evtest.log
+grep -Eq 'Input device ID: bus 0x3 vendor 0x45e product 0x28e version 0x110' \
+    /tmp/pf-evtest.log
+grep -Fq 'Input device name: "TRIMUI Player1"' /tmp/pf-evtest.log
+check_abs_range() {
+    awk -v code="$1" -v want_max="$2" '
+        /Event code [0-9]+ [(]/ {
+            active = index($0, "(" code ")") != 0
+            if (active) {
+                seen = 1
+                minimum = ""
+                maximum = ""
+            }
+            next
+        }
+        active && /Min[[:space:]]+-?[0-9]+/ { minimum = $NF }
+        active && /Max[[:space:]]+-?[0-9]+/ { maximum = $NF }
+        END { exit !(seen && minimum == 0 && maximum == want_max) }
+    ' /tmp/pf-evtest.log
+}
+check_abs_range ABS_X 4095
+check_abs_range ABS_Y 4095
+check_abs_range ABS_RX 4095
+check_abs_range ABS_RY 4095
+check_abs_range ABS_Z 255
+check_abs_range ABS_RZ 255
 if grep -Eq 'type 5 [(]EV_SW[)]|SW_LID' /tmp/pf-evtest.log; then
     printf 'PF_SMOKE_FAIL reason=negative-event-delivered\\n' >&3
     exit 1
 fi
 restore_broker
-printf 'PF_SMOKE_PASS uid=1001 key=BTN_SOUTH:1,0 hat=ABS_HAT0Y:-1,0 negative_ev_sw=absent broker_restored=true decoder=%s\\n' "$decoder_start" >&3
+printf 'PF_SMOKE_PASS uid=1001 key=BTN_SOUTH:1,0 hat=ABS_HAT0Y:-1,0 sticks=ABS_X:0,ABS_Y:4095,ABS_RX:4095,ABS_RY:0 triggers=ABS_Z:255,0,ABS_RZ:255,0 ranges=sticks:0..4095,triggers:0..255 negative_ev_sw=absent broker_restored=true decoder=%s\\n' "$decoder_start" >&3
 systemctl poweroff
 """
 
@@ -508,7 +561,7 @@ def main() -> int:
         else:
             raise RuntimeError(f"input-not-ready:{info}")
 
-        if info.get("abi_version") != {"major": 2, "minor": 0}:
+        if info.get("abi_version") != {"major": 2, "minor": 1}:
             raise RuntimeError(f"input-abi:{info}")
         devices = info.get("devices", [])
         if (len(devices) != 1 or devices[0].get("id") != "gamepad" or
@@ -516,7 +569,23 @@ def main() -> int:
             raise RuntimeError(f"input-devices:{devices}")
         if not devices[0].get("ready"):
             raise RuntimeError(f"input-not-ready:{devices[0]}")
-        print("QMP_INPUT abi=2.0 device=gamepad ready=true", flush=True)
+        expected_axes = {
+            0: ("ABS_X", 0, 4095), 1: ("ABS_Y", 0, 4095),
+            3: ("ABS_RX", 0, 4095), 4: ("ABS_RY", 0, 4095),
+            2: ("ABS_Z", 0, 255), 5: ("ABS_RZ", 0, 255),
+        }
+        advertised_axes = {}
+        for cap in devices[0].get("caps", []):
+            if cap.get("type") == 3:
+                advertised_axes.update({axis["code"]: axis for axis in cap["abs"]})
+        for code, (name, minimum, maximum) in expected_axes.items():
+            axis = advertised_axes.get(code)
+            if axis != {
+                "code": code, "name": name, "min": minimum, "max": maximum,
+                "fuzz": 0, "flat": 0,
+            }:
+                raise RuntimeError(f"input-axis:{code}:{axis}")
+        print("QMP_INPUT abi=2.1 device=gamepad ready=true", flush=True)
 
         negative = send_report(qmp, event(5, 0, 1))
         description = negative.get("error", {}).get("desc", "")
@@ -529,6 +598,10 @@ def main() -> int:
         for triple in (
             event(1, 304, 1), event(1, 304, 0),
             event(3, 17, -1), event(3, 17, 0),
+            event(3, 0, 0), event(3, 1, 4095),
+            event(3, 3, 4095), event(3, 4, 0),
+            event(3, 2, 255), event(3, 2, 0),
+            event(3, 5, 255), event(3, 5, 0),
         ):
             response = send_report(qmp, triple)
             if "return" not in response:
@@ -542,6 +615,14 @@ def main() -> int:
             r"code 304 \(BTN_(SOUTH|A)\), value 0",
             r"code 17 \(ABS_HAT0Y\), value -1",
             r"code 17 \(ABS_HAT0Y\), value 0",
+            r"code 0 \(ABS_X\), value 0",
+            r"code 1 \(ABS_Y\), value 4095",
+            r"code 3 \(ABS_RX\), value 4095",
+            r"code 4 \(ABS_RY\), value 0",
+            r"code 2 \(ABS_Z\), value 255",
+            r"code 2 \(ABS_Z\), value 0",
+            r"code 5 \(ABS_RZ\), value 255",
+            r"code 5 \(ABS_RZ\), value 0",
         )
         for pattern in patterns:
             if not re.search(pattern, log_text):
@@ -563,6 +644,9 @@ def main() -> int:
         print(
             "GUEST_INPUT uid=1001 device=TRIMUI_Player1 "
             "key=BTN_SOUTH:press,release hat=ABS_HAT0Y:-1,0 "
+            "sticks=ABS_X:0,ABS_Y:4095,ABS_RX:4095,ABS_RY:0 "
+            "triggers=ABS_Z:255,0,ABS_RZ:255,0 "
+            "ranges=sticks:0..4095,triggers:0..255 "
             "negative_ev_sw=absent broker_restored=true "
             f"decoder={decoder.group(1)} "
             f"multi_user_active={boot_gate.group(1)} "
