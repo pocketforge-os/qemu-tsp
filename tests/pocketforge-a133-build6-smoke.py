@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -79,16 +80,35 @@ if [ -z "$event_name" ]; then
     printf 'PF_SMOKE_FAIL reason=gamepad-not-found\\n' >&3
     exit 1
 fi
+power_event=
+tries=0
+while [ -z "$power_event" ] && [ "$tries" -lt 2000 ]; do
+    for candidate in /sys/class/input/event*/device/name; do
+        if [ -r "$candidate" ] && [ "$(cat "$candidate")" = "axp20x-pek" ]; then
+            power_event=$(basename "$(dirname "$(dirname "$candidate")")")
+            break
+        fi
+    done
+    tries=$((tries + 1))
+done
+if [ -z "$power_event" ]; then
+    printf 'PF_SMOKE_FAIL reason=power-key-not-found\\n' >&3
+    exit 1
+fi
+printf 'PF_SMOKE_POWER_SCAN device=%s name=axp20x-pek\\n' "$power_event" >&3
 if timeout 5s systemctl is-active --quiet pf-input-broker.service; then
     timeout 5s systemctl stop pf-input-broker.service
     broker_was_active=1
 fi
 mkfifo /tmp/pf-evtest.pipe
 mkfifo /tmp/pf-evtest-ready.pipe
+mkfifo /tmp/pf-power-evtest.pipe
+mkfifo /tmp/pf-power-evtest-ready.pipe
 chmod 0666 /tmp/pf-evtest.pipe
 # Keep one read/write descriptor open while the asynchronous reader and writer
 # attach; otherwise dash can block on the background command's redirection.
 exec 4<>/tmp/pf-evtest.pipe
+exec 5<>/tmp/pf-power-evtest.pipe
 (
     ready_sent=0
     key_press=0
@@ -138,27 +158,76 @@ exec 4<>/tmp/pf-evtest.pipe
            [ "$abs_rx" -eq 1 ] && [ "$abs_ry" -eq 1 ] &&
            [ "$abs_z_press" -eq 1 ] && [ "$abs_z_release" -eq 1 ] &&
            [ "$abs_rz_press" -eq 1 ] && [ "$abs_rz_release" -eq 1 ]; then
+            printf 'PF_GAMEPAD_EVENTS complete=true\\n' >&3
             exit 0
         fi
     done
     exit 1
 ) </tmp/pf-evtest.pipe >/tmp/pf-evtest.log &
 watcher_pid=$!
+(
+    ready_sent=0
+    presses=0
+    releases=0
+    while IFS= read -r line; do
+        printf '%s\\n' "$line"
+        case "$line" in
+            Event:*) printf 'PF_POWER_EVTEST %s\\n' "$line" >&3 ;;
+        esac
+        case "$line" in
+            'Testing ...'*)
+                if [ "$ready_sent" -eq 0 ]; then
+                    printf 'ready\\n' >/tmp/pf-power-evtest-ready.pipe
+                    ready_sent=1
+                fi
+                ;;
+            *'code 116 (KEY_POWER), value 1'*)
+                presses=$((presses + 1))
+                printf 'PF_POWER_COUNT presses=%s releases=%s\\n' \
+                    "$presses" "$releases" >&3
+                ;;
+            *'code 116 (KEY_POWER), value 0'*)
+                releases=$((releases + 1))
+                printf 'PF_POWER_COUNT presses=%s releases=%s\\n' \
+                    "$presses" "$releases" >&3
+                ;;
+        esac
+        if [ "$presses" -ge 2 ] && [ "$releases" -ge 2 ]; then
+            exit 0
+        fi
+    done
+    exit 1
+) </tmp/pf-power-evtest.pipe >/tmp/pf-power-evtest.log &
+power_watcher_pid=$!
 setpriv --reuid=1001 --regid=1001 --init-groups \
     stdbuf -oL evtest --grab "/dev/input/$event_name" \
     >/tmp/pf-evtest.pipe 2>&1 &
 evtest_pid=$!
-if ! IFS= read -r evtest_ready </tmp/pf-evtest-ready.pipe; then
+setpriv --reuid=1001 --regid=1001 --init-groups \
+    stdbuf -oL evtest --grab "/dev/input/$power_event" \
+    >/tmp/pf-power-evtest.pipe 2>&1 &
+power_evtest_pid=$!
+if ! timeout 15s sh -c 'IFS= read -r ready </tmp/pf-evtest-ready.pipe'; then
     printf 'PF_SMOKE_FAIL reason=evtest-not-ready\\n' >&3
     exit 1
 fi
-printf 'PF_SMOKE_READY uid=1001 device=%s name=TRIMUI_Player1 broker=%s decoder=%s\\n' \
-    "$event_name" "$broker_was_active" "$decoder_start" >&3
+if ! timeout 15s sh -c \
+    'IFS= read -r ready </tmp/pf-power-evtest-ready.pipe'; then
+    printf 'PF_SMOKE_FAIL reason=power-evtest-not-ready\\n' >&3
+    exit 1
+fi
+printf 'PF_SMOKE_READY uid=1001 device=%s name=TRIMUI_Player1 power_device=%s power_name=axp20x-pek broker=%s decoder=%s\\n' \
+    "$event_name" "$power_event" "$broker_was_active" "$decoder_start" >&3
 if ! wait "$watcher_pid"; then
     printf 'PF_SMOKE_FAIL reason=event-watch\\n' >&3
     exit 1
 fi
+if ! wait "$power_watcher_pid"; then
+    printf 'PF_SMOKE_FAIL reason=power-event-watch\\n' >&3
+    exit 1
+fi
 exec 4>&-
+exec 5>&-
 if kill -0 "$evtest_pid" 2>/dev/null; then
     kill -KILL "$evtest_pid"
 fi
@@ -172,6 +241,22 @@ case "$evtest_status" in
     *)
         printf 'PF_SMOKE_FAIL reason=evtest-exit status=%s\\n' \
             "$evtest_status" >&3
+        exit 1
+        ;;
+esac
+if kill -0 "$power_evtest_pid" 2>/dev/null; then
+    kill -KILL "$power_evtest_pid"
+fi
+if wait "$power_evtest_pid"; then
+    power_evtest_status=0
+else
+    power_evtest_status=$?
+fi
+case "$power_evtest_status" in
+    0|137|141) ;;
+    *)
+        printf 'PF_SMOKE_FAIL reason=power-evtest-exit status=%s\\n' \
+            "$power_evtest_status" >&3
         exit 1
         ;;
 esac
@@ -190,6 +275,9 @@ grep -Eq 'code 5 [(]ABS_RZ[)], value 0' /tmp/pf-evtest.log
 grep -Eq 'Input device ID: bus 0x3 vendor 0x45e product 0x28e version 0x110' \
     /tmp/pf-evtest.log
 grep -Fq 'Input device name: "TRIMUI Player1"' /tmp/pf-evtest.log
+test "$(grep -c 'code 116 [(]KEY_POWER[)], value 1' /tmp/pf-power-evtest.log)" -ge 2
+test "$(grep -c 'code 116 [(]KEY_POWER[)], value 0' /tmp/pf-power-evtest.log)" -ge 2
+grep -Fq 'Input device name: "axp20x-pek"' /tmp/pf-power-evtest.log
 check_abs_range() {
     awk -v code="$1" -v want_max="$2" '
         /Event code [0-9]+ [(]/ {
@@ -217,7 +305,7 @@ if grep -Eq 'type 5 [(]EV_SW[)]|SW_LID' /tmp/pf-evtest.log; then
     exit 1
 fi
 restore_broker
-printf 'PF_SMOKE_PASS uid=1001 key=BTN_SOUTH:1,0 hat=ABS_HAT0Y:-1,0 sticks=ABS_X:0,ABS_Y:4095,ABS_RX:4095,ABS_RY:0 triggers=ABS_Z:255,0,ABS_RZ:255,0 ranges=sticks:0..4095,triggers:0..255 negative_ev_sw=absent broker_restored=true decoder=%s\\n' "$decoder_start" >&3
+printf 'PF_SMOKE_PASS uid=1001 key=BTN_SOUTH:1,0 hat=ABS_HAT0Y:-1,0 sticks=ABS_X:0,ABS_Y:4095,ABS_RX:4095,ABS_RY:0 triggers=ABS_Z:255,0,ABS_RZ:255,0 power=KEY_POWER:short,long negative_ev_sw=absent broker_restored=true decoder=%s\\n' "$decoder_start" >&3
 systemctl poweroff
 """
 
@@ -341,38 +429,58 @@ class Console:
         self.sock = sock
         self.buffer = b""
         self.transcript = transcript.open("wb")
+        self.condition = threading.Condition()
+        self.failure = None
+        self.reader = threading.Thread(target=self._drain, daemon=True)
+        self.reader.start()
+
+    def _drain(self) -> None:
+        try:
+            while True:
+                data = self.sock.recv(65536)
+                if not data:
+                    raise RuntimeError("serial-eof")
+                with self.condition:
+                    self.transcript.write(data)
+                    self.transcript.flush()
+                    self.buffer += data
+                    self.condition.notify_all()
+        except (OSError, RuntimeError) as error:
+            with self.condition:
+                self.failure = error
+                self.condition.notify_all()
 
     def close(self) -> None:
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.sock.close()
+        self.reader.join(timeout=5)
         self.transcript.close()
 
     def until(self, needle: bytes, timeout: float) -> str:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            failure = self.buffer.find(b"PF_SMOKE_FAIL ")
-            if failure >= 0:
-                line_end = self.buffer.find(b"\n", failure)
-                if line_end >= 0:
-                    line = self.buffer[failure:line_end].decode(
-                        errors="replace"
-                    )
-                    raise RuntimeError(f"guest-failure:{line}")
-            if needle in self.buffer:
-                end = self.buffer.index(needle) + len(needle)
-                found = self.buffer[:end]
-                self.buffer = self.buffer[end:]
-                return found.decode(errors="replace")
-            readable, _, _ = select.select(
-                [self.sock], [], [], max(0, deadline - time.monotonic())
-            )
-            if readable:
-                data = self.sock.recv(65536)
-                if not data:
-                    raise RuntimeError("serial-eof")
-                self.transcript.write(data)
-                self.transcript.flush()
-                self.buffer += data
-        tail = self.buffer[-1000:].decode(errors="replace")
-        raise RuntimeError(f"serial-timeout:{needle!r}:{tail}")
+        with self.condition:
+            while time.monotonic() < deadline:
+                failure = self.buffer.find(b"PF_SMOKE_FAIL ")
+                if failure >= 0:
+                    line_end = self.buffer.find(b"\n", failure)
+                    if line_end >= 0:
+                        line = self.buffer[failure:line_end].decode(
+                            errors="replace"
+                        )
+                        raise RuntimeError(f"guest-failure:{line}")
+                if needle in self.buffer:
+                    end = self.buffer.index(needle) + len(needle)
+                    found = self.buffer[:end]
+                    self.buffer = self.buffer[end:]
+                    return found.decode(errors="replace")
+                if self.failure is not None:
+                    raise self.failure
+                self.condition.wait(max(0, deadline - time.monotonic()))
+            tail = self.buffer[-1000:].decode(errors="replace")
+            raise RuntimeError(f"serial-timeout:{needle!r}:{tail}")
 
 
 def prepare_smoke_disk(sd: Path, work: Path) -> Path:
@@ -455,11 +563,23 @@ def event(event_type: int, code: int, value: int) -> dict:
     return {"type": event_type, "code": code, "value": value}
 
 
-def send_report(qmp: JsonLine, *events: dict) -> dict:
+def send_report(qmp: JsonLine, *events: dict, device: str = "gamepad") -> dict:
     return qmp.command(
         "pocketforge-input-send",
-        {"device": "gamepad", "events": [*events, event(0, 0, 0)]},
+        {"device": device, "events": [*events, event(0, 0, 0)]},
     )
+
+
+def wait_device_ready(qmp: JsonLine, device: str, timeout: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout
+    info = {}
+    while time.monotonic() < deadline:
+        info = qmp.command("query-pocketforge-input").get("return", {})
+        devices = {item.get("id"): item for item in info.get("devices", [])}
+        if devices.get(device, {}).get("ready"):
+            return info
+        time.sleep(0.1)
+    raise RuntimeError(f"input-not-ready:{device}:{info}")
 
 
 def main() -> int:
@@ -554,28 +674,30 @@ def main() -> int:
         info = {}
         while time.monotonic() < deadline:
             info = qmp.command("query-pocketforge-input").get("return", {})
-            devices = info.get("devices", [])
-            if devices and devices[0].get("ready"):
+            devices = {item.get("id"): item for item in info.get("devices", [])}
+            if (devices.get("gamepad", {}).get("ready") and
+                    devices.get("power-key", {}).get("ready")):
                 break
             time.sleep(0.5)
         else:
             raise RuntimeError(f"input-not-ready:{info}")
 
-        if info.get("abi_version") != {"major": 2, "minor": 1}:
+        if info.get("abi_version") != {"major": 2, "minor": 2}:
             raise RuntimeError(f"input-abi:{info}")
-        devices = info.get("devices", [])
-        if (len(devices) != 1 or devices[0].get("id") != "gamepad" or
-                devices[0].get("name") != "TRIMUI Player1"):
+        devices = {item.get("id"): item for item in info.get("devices", [])}
+        if (set(devices) != {"gamepad", "power-key"} or
+                devices["gamepad"].get("name") != "TRIMUI Player1" or
+                devices["power-key"].get("name") != "axp20x-pek"):
             raise RuntimeError(f"input-devices:{devices}")
-        if not devices[0].get("ready"):
-            raise RuntimeError(f"input-not-ready:{devices[0]}")
+        if not all(item.get("ready") for item in devices.values()):
+            raise RuntimeError(f"input-not-ready:{devices}")
         expected_axes = {
             0: ("ABS_X", 0, 4095), 1: ("ABS_Y", 0, 4095),
             3: ("ABS_RX", 0, 4095), 4: ("ABS_RY", 0, 4095),
             2: ("ABS_Z", 0, 255), 5: ("ABS_RZ", 0, 255),
         }
         advertised_axes = {}
-        for cap in devices[0].get("caps", []):
+        for cap in devices["gamepad"].get("caps", []):
             if cap.get("type") == 3:
                 advertised_axes.update({axis["code"]: axis for axis in cap["abs"]})
         for code, (name, minimum, maximum) in expected_axes.items():
@@ -585,7 +707,17 @@ def main() -> int:
                 "fuzz": 0, "flat": 0,
             }:
                 raise RuntimeError(f"input-axis:{code}:{axis}")
-        print("QMP_INPUT abi=2.1 device=gamepad ready=true", flush=True)
+        power_codes = {
+            (cap["type"], code["code"])
+            for cap in devices["power-key"].get("caps", [])
+            for code in cap.get("codes", [])
+        }
+        if power_codes != {(0, 0), (1, 116)}:
+            raise RuntimeError(f"power-key-caps:{power_codes}")
+        print(
+            "QMP_INPUT abi=2.2 devices=gamepad,power-key ready=true",
+            flush=True,
+        )
 
         negative = send_report(qmp, event(5, 0, 1))
         description = negative.get("error", {}).get("desc", "")
@@ -594,6 +726,19 @@ def main() -> int:
         ):
             raise RuntimeError(f"negative-control:{negative}")
         print("QMP_NEGATIVE reason=invalid-parameter delivered=false", flush=True)
+
+        power_negative = send_report(
+            qmp, event(5, 0, 1), device="power-key"
+        )
+        description = power_negative.get("error", {}).get("desc", "")
+        if not description.startswith(
+            "pocketforge-input: reason=invalid-parameter index=0:"
+        ):
+            raise RuntimeError(f"power-negative-control:{power_negative}")
+        print(
+            "QMP_POWER_NEGATIVE reason=invalid-parameter delivered=false",
+            flush=True,
+        )
 
         valid_reports = (
             event(1, 304, 1), event(1, 304, 0),
@@ -612,6 +757,41 @@ def main() -> int:
         if "return" not in response:
             raise RuntimeError(f"positive-injection:{response}")
         print("QMP_POSITIVE reports=12 atomic=true", flush=True)
+        console.until(b"PF_GAMEPAD_EVENTS complete=true", 30.0)
+
+        response = send_report(
+            qmp, event(1, 116, 1), device="power-key"
+        )
+        if "return" not in response:
+            raise RuntimeError(f"power-short-press:{response}")
+        console.until(b"PF_POWER_COUNT presses=1 releases=0", 30.0)
+        wait_device_ready(qmp, "power-key")
+        time.sleep(0.1)
+        response = send_report(
+            qmp, event(1, 116, 0), device="power-key"
+        )
+        if "return" not in response:
+            raise RuntimeError(f"power-short-release:{response}")
+        console.until(b"PF_POWER_COUNT presses=1 releases=1", 30.0)
+        wait_device_ready(qmp, "power-key")
+        response = send_report(
+            qmp, event(1, 116, 1), device="power-key"
+        )
+        if "return" not in response:
+            raise RuntimeError(f"power-long-press:{response}")
+        console.until(b"PF_POWER_COUNT presses=2 releases=1", 30.0)
+        wait_device_ready(qmp, "power-key")
+        # Leave margin above the DT-owned one-second long-press threshold even
+        # when TCG virtual time trails wall time during a busy boot.
+        time.sleep(2.0)
+        response = send_report(
+            qmp, event(1, 116, 0), device="power-key"
+        )
+        if "return" not in response:
+            raise RuntimeError(f"power-long-release:{response}")
+        console.until(b"PF_POWER_COUNT presses=2 releases=2", 30.0)
+        wait_device_ready(qmp, "power-key")
+        print("QMP_POWER short=true long=true explicit_release=true", flush=True)
 
         console.until(b"PF_SMOKE_PASS ", 60.0)
         console.until(b"\n", 5.0)
@@ -629,6 +809,8 @@ def main() -> int:
             r"code 2 \(ABS_Z\), value 0",
             r"code 5 \(ABS_RZ\), value 255",
             r"code 5 \(ABS_RZ\), value 0",
+            r"code 116 \(KEY_POWER\), value 1",
+            r"code 116 \(KEY_POWER\), value 0",
         )
         for pattern in patterns:
             if not re.search(pattern, log_text):
@@ -652,6 +834,7 @@ def main() -> int:
             "key=BTN_SOUTH:press,release hat=ABS_HAT0Y:-1,0 "
             "sticks=ABS_X:0,ABS_Y:4095,ABS_RX:4095,ABS_RY:0 "
             "triggers=ABS_Z:255,0,ABS_RZ:255,0 "
+            "power=KEY_POWER:short,long "
             "ranges=sticks:0..4095,triggers:0..255 "
             "negative_ev_sw=absent broker_restored=true "
             f"decoder={decoder.group(1)} "

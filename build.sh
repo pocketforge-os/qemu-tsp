@@ -219,6 +219,34 @@ if ! grep -q 'ABS_X, "ABS_X"' hw/input/pocketforge_a133_input.c; then
   git apply "$ROOT/pocketforge/0024-hw-input-model-A133-MCU-sticks-and-triggers.patch"
 fi
 
+echo "== apply PocketForge patch: RED qtests for AXP717 power key =="
+if ! grep -q 'power-key-query-negative' tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0025-tests-cover-A133-AXP717-power-key.patch"
+fi
+
+echo "== apply PocketForge patch: AXP717 power key interrupt path =="
+if ! grep -q 'pocketforge_a133_power_key_send' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0026-hw-model-A133-AXP717-power-key.patch"
+fi
+
+echo "== apply PocketForge patch: indent gamepad query capabilities =="
+if git apply --check \
+    "$ROOT/pocketforge/0027-hw-arm-indent-gamepad-query-capabilities.patch" \
+    2>/dev/null; then
+  git apply "$ROOT/pocketforge/0027-hw-arm-indent-gamepad-query-capabilities.patch"
+fi
+
+echo "== apply PocketForge patch: RED A133 PEK reset and migration coverage =="
+if ! grep -q 'pek-reset-clears-machine-state' \
+    tests/qtest/pocketforge-a133-axp717-test.c; then
+  git apply "$ROOT/pocketforge/0028-tests-cover-A133-PEK-reset-and-migration.patch"
+fi
+
+echo "== apply PocketForge patch: preserve A133 PEK reset and migration state =="
+if ! grep -q 'vmstate_pocketforge_a133_power' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0029-hw-preserve-A133-PEK-state-across-reset-and-migratio.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree

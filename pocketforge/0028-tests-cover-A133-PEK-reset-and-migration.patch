@@ -1,0 +1,204 @@
+From 4cbd96a5425e0e142e3bb1bb3256a7bc5a683228 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sat, 10 Oct 2026 07:38:45 -0400
+Subject: [PATCH 28/29] tests: cover A133 PEK reset and migration
+
+Assisted-by: LLM
+---
+ tests/qtest/meson.build                    |   4 +
+ tests/qtest/pocketforge-a133-axp717-test.c | 137 ++++++++++++++++++++-
+ 2 files changed, 135 insertions(+), 6 deletions(-)
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 4aeaef8..2805823 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -330,6 +330,10 @@ qtests = {
+   'netdev-socket': files('netdev-socket.c', '../unit/socket-helpers.c'),
+ }
+ 
++qtests += {
++  'pocketforge-a133-axp717-test': files('migration-helpers.c'),
++}
++
+ if vnc.found()
+   gvnc = dependency('gvnc-1.0', method: 'pkg-config', required: false)
+   if gvnc.found()
+diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
+index 9876854..5c2b2e7 100644
+--- a/tests/qtest/pocketforge-a133-axp717-test.c
++++ b/tests/qtest/pocketforge-a133-axp717-test.c
+@@ -6,6 +6,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "libqtest-single.h"
++#include "migration-helpers.h"
+ #include "qapi/qmp/qdict.h"
+ #include "standard-headers/linux/input.h"
+ 
+@@ -36,6 +37,22 @@
+ #define AXP717_PEK_LONG     0x04
+ #define AXP717_PEK_SHORT    0x08
+ #define POWER_KEY_INACTIVE "PocketForge input device 'power-key' is not active"
++
++static uint32_t r_intc_read(QTestState *qts, uint32_t reg)
++{
++    return qtest_readl(qts, R_INTC_BASE + reg);
++}
++
++static QDict *power_send_on(QTestState *qts, int value)
++{
++    return qtest_qmp(qts,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'power-key', 'events': ["
++        " { 'type': %d, 'code': %d, 'value': %d },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
++        EV_KEY, KEY_POWER, value);
++}
++
+ static uint32_t i2c_status(void)
+ {
+     return qtest_readl(global_qtest, R_I2C0_BASE + TWI_STAT);
+@@ -88,12 +105,7 @@ static uint8_t axp717_read(uint8_t reg)
+ 
+ static QDict *power_send(int value)
+ {
+-    return qtest_qmp(global_qtest,
+-        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
+-        " 'device': 'power-key', 'events': ["
+-        " { 'type': %d, 'code': %d, 'value': %d },"
+-        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
+-        EV_KEY, KEY_POWER, value);
++    return power_send_on(global_qtest, value);
+ }
+ 
+ static void assert_qmp_success(QDict *response)
+@@ -183,6 +195,113 @@ static void test_pek_irq_path_and_masked_negative(void)
+                     AXP717_PEK_RISE | AXP717_PEK_LONG);
+ }
+ 
++static void test_pek_reset_clears_machine_state(void)
++{
++    QDict *response;
++
++    axp717_write(AXP717_IRQ1_STATE, 0xff);
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_CTRL, 3);
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_ENABLE, 1);
++    axp717_write(AXP717_IRQ1_EN, AXP717_PEK_RISE | AXP717_PEK_FALL);
++    assert_qmp_success(power_send(1));
++    g_assert_cmphex(R_INTC_READ(R_INTC_PENDING), ==, 1);
++
++    qtest_qmp_assert_success(global_qtest, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(global_qtest, "RESET");
++    g_assert_cmphex(R_INTC_READ(R_INTC_CTRL), ==, 0);
++    g_assert_cmphex(R_INTC_READ(R_INTC_ENABLE), ==, 0);
++    g_assert_cmphex(R_INTC_READ(R_INTC_PENDING), ==, 0);
++    g_assert_cmphex(axp717_read(AXP717_IRQ1_EN), ==, 0);
++    g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE), ==, 0);
++
++    /* Negative control: reset also forgets the host-side held state. */
++    response = power_send(0);
++    assert_qmp_error(response,
++                     "pocketforge-input: reason=invalid-parameter index=0:");
++
++    /* Positive control: a fresh press/release works after reconfiguration. */
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_ENABLE, 1);
++    axp717_write(AXP717_IRQ1_EN, AXP717_PEK_RISE | AXP717_PEK_FALL);
++    assert_qmp_success(power_send(1));
++    assert_qmp_success(power_send(0));
++}
++
++static void test_pek_migration(bool pressed)
++{
++    g_autofree char *tmpdir = NULL;
++    g_autofree char *socket_path = NULL;
++    g_autofree char *uri = NULL;
++    QTestState *from;
++    QTestState *to;
++    QDict *response;
++
++    tmpdir = g_dir_make_tmp("pocketforge-a133-migration-XXXXXX", NULL);
++    g_assert_nonnull(tmpdir);
++    socket_path = g_build_filename(tmpdir, "migration.sock", NULL);
++    uri = g_strdup_printf("unix:%s", socket_path);
++
++    from = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
++    to = qtest_init("-machine pocketforge-a133,pocketforge-display=off "
++                    "-incoming defer");
++
++    qtest_writel(from, R_INTC_BASE + R_INTC_CTRL, 3);
++    qtest_writel(from, R_INTC_BASE + R_INTC_ENABLE, 1);
++    /* Program the PMIC through QOM-independent guest I2C in the main tests. */
++    qtest_writel(from, R_I2C0_BASE + TWI_CNTR,
++                 CNTR_BUS_ENABLE | CNTR_START);
++    g_assert_cmphex(qtest_readl(from, R_I2C0_BASE + TWI_STAT), ==, STAT_START);
++    qtest_writel(from, R_I2C0_BASE + TWI_DATA, 0x34 << 1);
++    g_assert_cmphex(qtest_readl(from, R_I2C0_BASE + TWI_STAT), ==,
++                    STAT_ADDR_WR_ACK);
++    qtest_writel(from, R_I2C0_BASE + TWI_DATA, AXP717_IRQ1_EN);
++    g_assert_cmphex(qtest_readl(from, R_I2C0_BASE + TWI_STAT), ==,
++                    STAT_DATA_TX_ACK);
++    qtest_writel(from, R_I2C0_BASE + TWI_DATA,
++                 AXP717_PEK_RISE | AXP717_PEK_FALL);
++    g_assert_cmphex(qtest_readl(from, R_I2C0_BASE + TWI_STAT), ==,
++                    STAT_DATA_TX_ACK);
++    qtest_writel(from, R_I2C0_BASE + TWI_CNTR,
++                 CNTR_BUS_ENABLE | CNTR_STOP);
++    if (pressed) {
++        assert_qmp_success(power_send_on(from, 1));
++        g_assert_cmphex(r_intc_read(from, R_INTC_PENDING), ==, 1);
++    }
++
++    migrate_incoming_qmp(to, uri, "{}");
++    migrate_qmp(from, uri, "{}");
++    wait_for_migration_complete(from);
++    wait_for_migration_complete(to);
++
++    g_assert_cmphex(r_intc_read(to, R_INTC_CTRL), ==, 3);
++    g_assert_cmphex(r_intc_read(to, R_INTC_ENABLE), ==, 1);
++    g_assert_cmphex(r_intc_read(to, R_INTC_PENDING), ==, pressed ? 1 : 0);
++
++    /* Negative and positive controls prove the held state migrated too. */
++    response = power_send_on(to, pressed ? 1 : 0);
++    assert_qmp_error(response,
++                     "pocketforge-input: reason=invalid-parameter index=0:");
++    assert_qmp_success(power_send_on(to, pressed ? 0 : 1));
++    if (!pressed) {
++        assert_qmp_success(power_send_on(to, 0));
++    }
++
++    qtest_quit(to);
++    qtest_quit(from);
++    g_assert_cmpint(g_remove(socket_path), ==, -1);
++    g_assert_cmpint(errno, ==, ENOENT);
++    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
++}
++
++static void test_pek_migration_idle(void)
++{
++    test_pek_migration(false);
++}
++
++static void test_pek_migration_pressed_pending(void)
++{
++    test_pek_migration(true);
++}
++
+ int main(int argc, char **argv)
+ {
+     int ret;
+@@ -193,6 +312,12 @@ int main(int argc, char **argv)
+                    test_register_bank_and_unpopulated_nack);
+     qtest_add_func("/pocketforge-a133/axp717/pek-irq-path-mask-negative",
+                    test_pek_irq_path_and_masked_negative);
++    qtest_add_func("/pocketforge-a133/axp717/pek-reset-clears-machine-state",
++                   test_pek_reset_clears_machine_state);
++    qtest_add_func("/pocketforge-a133/axp717/migration-idle",
++                   test_pek_migration_idle);
++    qtest_add_func("/pocketforge-a133/axp717/migration-pressed-pending",
++                   test_pek_migration_pressed_pending);
+     ret = g_test_run();
+     qtest_end();
+ 
+-- 
+2.43.0

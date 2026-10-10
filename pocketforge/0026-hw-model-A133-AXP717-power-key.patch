@@ -1,0 +1,551 @@
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sat, 10 Oct 2026 00:00:00 +0000
+Subject: [PATCH 26/26] hw: model A133 AXP717 power key interrupt path
+
+Route AXP717 PEK edges through the real A100 NMI register block and expose
+the separate build-6 axp20x-pek device through input ABI 2.2.
+
+Assisted-by: LLM
+---
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 5026871..b0976f2 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -61,9 +61,10 @@
+  * auto-generated FDT like -M virt has) still makes virtio-mmio
+  * discoverable. (3) R-I2C0 now uses QEMU's sun6i controller, and the AXP717
+  * exposes only the bounded IRQ/regulator register bank needed by the
+- * mainline MFD and regulator drivers. It synthesizes no PMIC events or
+- * interrupts. Only the register-free tail of the DT's 0x400-byte R-I2C0
+- * reservation remains a stub. CI wiring (Phase D) remains out of scope.
++ * mainline MFD and regulator drivers. Its PEK edge/status IRQ is routed
++ * through the functional A100 NMI block to GIC SPI 103. Only the
++ * register-free tail of the DT's 0x400-byte R-I2C0 reservation remains a
++ * stub. CI wiring (Phase D) remains out of scope.
+  * (4) MMC0 is QEMU's Allwinner SD host with the A100 descriptor format,
+  * calibration register and DMA address shift, at the real base and SPI 39.
+  * MMC1 remains an inert DT-aperture stub; disabled MMC2 is absent.
+@@ -103,8 +104,10 @@
+ #include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
++#include "hw/misc/axp2xx.h"
+ #include "hw/intc/arm_gic.h"
+ #include "hw/intc/arm_gic_common.h"
++#include "hw/irq.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/rtc/pocketforge_a100_rtc.h"
+ #include "hw/sd/allwinner-sdhost.h"
+@@ -136,6 +139,14 @@ struct PocketForgeA133MachineState {
+     VirtIOGPUBase *gpu;
+     PocketForgeA133Input *input_device;
+     DWApbUartState *gamepad_uart[2];
++    DeviceState *pmic;
++    MemoryRegion r_intc_mmio;
++    qemu_irq r_intc_parent_irq;
++    uint32_t r_intc_ctrl;
++    uint32_t r_intc_enable;
++    uint32_t r_intc_pending;
++    bool r_intc_source;
++    bool power_key_held;
+ };
+ 
+ #define PF_A133_NATIVE_WIDTH 720
+@@ -505,7 +516,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
+     { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
+     { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
+-    { "pocketforge-a133.r_intc",           0x07010320, 0xc },
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+ };
+@@ -535,8 +545,81 @@ static void pocketforge_a133_create_mmio_stubs(void)
+     }
+ }
+ 
++static void pocketforge_a133_r_intc_update(PocketForgeA133MachineState *s)
++{
++    qemu_set_irq(s->r_intc_parent_irq,
++                 (s->r_intc_enable & s->r_intc_pending & 1) != 0);
++}
++
++static uint64_t pocketforge_a133_r_intc_read(void *opaque, hwaddr offset,
++                                             unsigned size)
++{
++    PocketForgeA133MachineState *s = opaque;
++
++    switch (offset) {
++    case 0x0:
++        return s->r_intc_ctrl;
++    case 0x4:
++        return s->r_intc_enable;
++    case 0x8:
++        return s->r_intc_pending;
++    default:
++        return 0;
++    }
++}
++
++static void pocketforge_a133_r_intc_write(void *opaque, hwaddr offset,
++                                          uint64_t value, unsigned size)
++{
++    PocketForgeA133MachineState *s = opaque;
++
++    switch (offset) {
++    case 0x0:
++        s->r_intc_ctrl = value & 3;
++        break;
++    case 0x4:
++        s->r_intc_enable = value & 1;
++        break;
++    case 0x8:
++        s->r_intc_pending &= ~(value & 1);
++        break;
++    }
++    pocketforge_a133_r_intc_update(s);
++}
++
++static const MemoryRegionOps pocketforge_a133_r_intc_ops = {
++    .read = pocketforge_a133_r_intc_read,
++    .write = pocketforge_a133_r_intc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++static void pocketforge_a133_r_intc_set(void *opaque, int n, int level)
++{
++    PocketForgeA133MachineState *s = opaque;
++
++    s->r_intc_source = level;
++    if (level) {
++        s->r_intc_pending |= 1;
++    }
++    pocketforge_a133_r_intc_update(s);
++}
++
++static qemu_irq pocketforge_a133_create_r_intc(
++    PocketForgeA133MachineState *s, qemu_irq parent_irq)
++{
++    s->r_intc_parent_irq = parent_irq;
++    memory_region_init_io(&s->r_intc_mmio, OBJECT(s),
++                          &pocketforge_a133_r_intc_ops, s,
++                          "pocketforge-a133.r_intc", PF_A133_R_INTC_SIZE);
++    memory_region_add_subregion(get_system_memory(), PF_A133_R_INTC_BASE,
++                                &s->r_intc_mmio);
++    return qemu_allocate_irq(pocketforge_a133_r_intc_set, s, 0);
++}
++
+ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+-                                            qemu_irq irq)
++                                            qemu_irq irq, qemu_irq pmic_irq)
+ {
+     DeviceState *dev = qdev_new(TYPE_AW_I2C_SUN6I);
+     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+@@ -545,7 +628,9 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+     sysbus_mmio_map(sbd, 0, PF_A133_R_I2C0_BASE);
+     sysbus_connect_irq(sbd, 0, irq);
+     s->r_i2c0_bus = AW_I2C(dev)->bus;
+-    i2c_slave_create_simple(s->r_i2c0_bus, "axp717_pmu", 0x34);
++    s->pmic = DEVICE(i2c_slave_create_simple(s->r_i2c0_bus,
++                                              "axp717_pmu", 0x34));
++    qdev_connect_gpio_out(s->pmic, 0, pmic_irq);
+ 
+     /* The DT reserves 0x400 bytes; the sun6i register bank ends at 0x23. */
+     pocketforge_a133_mmio_stub_create(
+@@ -790,7 +875,8 @@ static void pocketforge_a133_init(MachineState *machine)
+     pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
+ 
+     pocketforge_a133_create_mmio_stubs();
+-    pocketforge_a133_create_r_i2c0(s, pic[113]);
++    pocketforge_a133_create_r_i2c0(
++        s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
+     pocketforge_a133_create_mmc0(pic[PF_A133_MMC0_IRQ]);
+ 
+     pocketforge_a133_create_virtio_mmio(machine, pic);
+@@ -903,22 +989,19 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     device_tail = &info->devices;
+     info->abi_version = g_new0(PocketForgeAbiVersion, 1);
+     info->abi_version->major = 2;
+-    info->abi_version->minor = 1;
++    info->abi_version->minor = 2;
+     info->max_batch_events = PF_A133_INPUT_BATCH_MAX;
+     s = POCKETFORGE_A133_MACHINE(current_machine);
+-    if (!s->input_device) {
+-        return info;
+-    }
+-
+-    device = g_new0(PocketForgeInputDeviceInfo, 1);
+-    device->id = g_strdup("gamepad");
+-    device->name = g_strdup(PF_A133_INPUT_NAME);
+-    device->bustype = BUS_USB;
+-    device->vendor = 0x045e;
+-    device->product = 0x028e;
+-    device->version = 0x0110;
+-    device->ready = pocketforge_a133_input_is_ready(s->input_device);
+-    caps_tail = &device->caps;
++    if (s->input_device) {
++        device = g_new0(PocketForgeInputDeviceInfo, 1);
++        device->id = g_strdup("gamepad");
++        device->name = g_strdup(PF_A133_INPUT_NAME);
++        device->bustype = BUS_USB;
++        device->vendor = 0x045e;
++        device->product = 0x028e;
++        device->version = 0x0110;
++        device->ready = pocketforge_a133_input_is_ready(s->input_device);
++        caps_tail = &device->caps;
+ 
+     cap = g_new0(PocketForgeInputCaps, 1);
+     cap->type = EV_SYN;
+@@ -958,12 +1041,117 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+         axis->fuzz = pocketforge_a133_input_axes[i].fuzz;
+         axis->flat = pocketforge_a133_input_axes[i].flat;
+         QAPI_LIST_APPEND(abs_tail, axis);
++    }
++        QAPI_LIST_APPEND(caps_tail, cap);
++        QAPI_LIST_APPEND(device_tail, device);
++    }
++
++    device = g_new0(PocketForgeInputDeviceInfo, 1);
++    device->id = g_strdup("power-key");
++    device->name = g_strdup("axp20x-pek");
++    device->bustype = 0;
++    device->vendor = 0;
++    device->product = 0;
++    device->version = 0;
++    device->ready = s->pmic && axp717_pek_is_ready(s->pmic) &&
++                    (s->r_intc_enable & 1);
++    caps_tail = &device->caps;
++
++    cap = g_new0(PocketForgeInputCaps, 1);
++    cap->type = EV_SYN;
++    cap->has_codes = true;
++    code_tail = &cap->codes;
++    {
++        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++        code->code = SYN_REPORT;
++        code->name = g_strdup("SYN_REPORT");
++        QAPI_LIST_APPEND(code_tail, code);
++    }
++    QAPI_LIST_APPEND(caps_tail, cap);
++
++    cap = g_new0(PocketForgeInputCaps, 1);
++    cap->type = EV_KEY;
++    cap->has_codes = true;
++    code_tail = &cap->codes;
++    {
++        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++        code->code = KEY_POWER;
++        code->name = g_strdup("KEY_POWER");
++        QAPI_LIST_APPEND(code_tail, code);
+     }
+     QAPI_LIST_APPEND(caps_tail, cap);
+     QAPI_LIST_APPEND(device_tail, device);
+     return info;
+ }
+ 
++static void pocketforge_a133_power_key_send(
++    PocketForgeA133MachineState *s, PocketForgeInputEventList *events,
++    Error **errp)
++{
++    PocketForgeInputEventList *item;
++    bool held = s->power_key_held;
++    bool report_has_event = false;
++    size_t count = 0;
++    size_t index = 0;
++
++    for (item = events; item; item = item->next) {
++        PocketForgeInputEvent *event = item->value;
++
++        count++;
++        if (count > PF_A133_INPUT_BATCH_MAX) {
++            error_setg(errp, "pocketforge-input: reason=resource-busy: "
++                       "batch exceeds %u events", PF_A133_INPUT_BATCH_MAX);
++            return;
++        }
++        if (event->type == EV_SYN && event->code == SYN_REPORT &&
++            event->value == 0) {
++            if (!report_has_event) {
++                error_setg(errp, "pocketforge-input: "
++                           "reason=invalid-parameter index=%zu: "
++                           "empty input report", index);
++                return;
++            }
++            report_has_event = false;
++        } else if (event->type != EV_KEY || event->code != KEY_POWER ||
++                   (event->value != 0 && event->value != 1)) {
++            error_setg(errp, "pocketforge-input: "
++                       "reason=invalid-parameter index=%zu: "
++                       "event is not advertised by power-key", index);
++            return;
++        } else if (!!event->value == held) {
++            error_setg(errp, "pocketforge-input: "
++                       "reason=invalid-parameter index=%zu: "
++                       "duplicate press or release-before-press", index);
++            return;
++        } else {
++            held = event->value;
++            report_has_event = true;
++        }
++        index++;
++    }
++    if (!count || report_has_event) {
++        error_setg(errp, "pocketforge-input: "
++                   "reason=invalid-parameter index=%zu: "
++                   "batch must end with SYN_REPORT", index);
++        return;
++    }
++    if (!s->pmic || !axp717_pek_is_ready(s->pmic) ||
++        !(s->r_intc_enable & 1)) {
++        error_set(errp, ERROR_CLASS_DEVICE_NOT_ACTIVE,
++                  "PocketForge input device 'power-key' is not active");
++        return;
++    }
++
++    for (item = events; item; item = item->next) {
++        PocketForgeInputEvent *event = item->value;
++
++        if (event->type == EV_KEY) {
++            axp717_pek_set(s->pmic, event->value);
++        }
++    }
++    s->power_key_held = held;
++}
++
+ void pocketforge_a133_input_send_qmp(const char *device,
+                                      PocketForgeInputEventList *events,
+                                      Error **errp)
+@@ -974,16 +1162,25 @@ void pocketforge_a133_input_send_qmp(const char *device,
+     size_t count = 0;
+     size_t i = 0;
+ 
+-    if (strcmp(device, "gamepad")) {
++    if (strcmp(device, "gamepad") && strcmp(device, "power-key")) {
+         error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
+                          "PocketForge input device '%s' was not found", device);
+         return;
+     }
+     if (!object_dynamic_cast(OBJECT(current_machine),
+-                             TYPE_POCKETFORGE_A133_MACHINE) ||
+-        !(s = POCKETFORGE_A133_MACHINE(current_machine))->input_device) {
++                             TYPE_POCKETFORGE_A133_MACHINE)) {
++        error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
++                         "PocketForge input device '%s' is disabled", device);
++        return;
++    }
++    s = POCKETFORGE_A133_MACHINE(current_machine);
++    if (!strcmp(device, "power-key")) {
++        pocketforge_a133_power_key_send(s, events, errp);
++        return;
++    }
++    if (!s->input_device) {
+         error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
+-                         "PocketForge input device 'gamepad' is disabled");
++                  "PocketForge input device 'gamepad' is disabled");
+         return;
+     }
+     for (item = events; item; item = item->next) {
+diff --git a/hw/misc/axp2xx.c b/hw/misc/axp2xx.c
+index d0fd6d5..356bb6b 100644
+--- a/hw/misc/axp2xx.c
++++ b/hw/misc/axp2xx.c
+@@ -33,7 +33,10 @@
+ #include "qom/object.h"
+ #include "trace.h"
+ #include "hw/i2c/i2c.h"
++#include "hw/irq.h"
++#include "hw/misc/axp2xx.h"
+ #include "migration/vmstate.h"
++#include "qemu/timer.h"
+ 
+ #define TYPE_AXP2XX     "axp2xx_pmu"
+ #define TYPE_AXP209_PMU "axp209_pmu"
+@@ -52,6 +55,9 @@ typedef struct AXP2xxI2CState {
+     uint8_t regs[NR_REGS];  /* peripheral registers */
+     uint8_t ptr;            /* current register index */
+     uint8_t count;          /* counter used for tx/rx */
++    qemu_irq irq;
++    bool pek_pressed;
++    int64_t pek_press_ns;
+ } AXP2xxI2CState;
+ 
+ typedef struct AXP2xxClass {
+@@ -168,9 +174,9 @@ static void axp221_reset_enter(AXP2xxI2CState *s, ResetType type)
+  * The AXP717 subtype is deliberately only a software-visible register bank.
+  * It models IRQ enable 0x40..0x44, W1C IRQ status 0x48..0x4c, regulator
+  * enable 0x80, and regulator voltage/enable controls 0x83..0x9f.  Those
+- * values only report prior guest writes: they are not hardware measurements.
+- * Unmodelled registers read as zero and ignore writes.  The model generates
+- * no PMIC events and has no interrupt output.
++ * values report prior guest writes and the modeled PEK edge/duration status;
++ * they are not hardware measurements. Unmodelled registers read as zero and
++ * ignore writes. Enabled status bits drive the PMIC interrupt output.
+  */
+ static bool axp717_reg_is_modelled(uint8_t reg)
+ {
+@@ -184,6 +190,17 @@ static uint8_t axp717_read(AXP2xxI2CState *s, uint8_t reg)
+     return axp717_reg_is_modelled(reg) ? s->regs[reg] : 0;
+ }
+ 
++static void axp717_update_irq(AXP2xxI2CState *s)
++{
++    unsigned int i;
++    bool level = false;
++
++    for (i = 0; i < 5; i++) {
++        level |= (s->regs[0x40 + i] & s->regs[0x48 + i]) != 0;
++    }
++    qemu_set_irq(s->irq, level);
++}
++
+ static void axp717_write(AXP2xxI2CState *s, uint8_t reg, uint8_t value)
+ {
+     if (reg >= 0x48 && reg <= 0x4c) {
+@@ -191,6 +208,10 @@ static void axp717_write(AXP2xxI2CState *s, uint8_t reg, uint8_t value)
+     } else if (axp717_reg_is_modelled(reg)) {
+         s->regs[reg] = value;
+     }
++    if ((reg >= 0x40 && reg <= 0x44) ||
++        (reg >= 0x48 && reg <= 0x4c)) {
++        axp717_update_irq(s);
++    }
+ }
+ 
+ static void axp717_reset_enter(AXP2xxI2CState *s, ResetType type)
+@@ -198,6 +219,41 @@ static void axp717_reset_enter(AXP2xxI2CState *s, ResetType type)
+     memset(s->regs, 0, NR_REGS);
+     s->ptr = 0;
+     s->count = 0;
++    s->pek_pressed = false;
++    s->pek_press_ns = 0;
++    qemu_set_irq(s->irq, 0);
++}
++
++void axp717_pek_set(DeviceState *dev, bool pressed)
++{
++    AXP2xxI2CState *s = AXP2XX(dev);
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++
++    g_assert(object_dynamic_cast(OBJECT(dev), TYPE_AXP717_PMU));
++    g_assert(pressed != s->pek_pressed);
++    s->pek_pressed = pressed;
++    if (pressed) {
++        s->pek_press_ns = now;
++        s->regs[0x49] |= BIT(1); /* PEK falling edge */
++    } else {
++        s->regs[0x49] |= BIT(0); /* PEK rising edge */
++        /*
++         * AXP717 reports duration alongside the release edge.  One second
++         * separates its short and long classifications; Linux consumes only
++         * the two edge resources for KEY_POWER.
++         */
++        s->regs[0x49] |= now - s->pek_press_ns >= NANOSECONDS_PER_SECOND ?
++                         BIT(2) : BIT(3);
++    }
++    axp717_update_irq(s);
++}
++
++bool axp717_pek_is_ready(DeviceState *dev)
++{
++    AXP2xxI2CState *s = AXP2XX(dev);
++
++    return object_dynamic_cast(OBJECT(dev), TYPE_AXP717_PMU) &&
++           (s->regs[0x41] & (BIT(0) | BIT(1))) == (BIT(0) | BIT(1));
+ }
+ 
+ static void axp2xx_reset_enter(Object *obj, ResetType type)
+@@ -262,13 +318,27 @@ static int axp2xx_tx(I2CSlave *i2c, uint8_t data)
+     return 0;
+ }
+ 
++static int axp2xx_post_load(void *opaque, int version_id)
++{
++    AXP2xxI2CState *s = opaque;
++
++    if (object_dynamic_cast(OBJECT(s), TYPE_AXP717_PMU)) {
++        axp717_update_irq(s);
++    }
++    return 0;
++}
++
+ static const VMStateDescription vmstate_axp2xx = {
+     .name = TYPE_AXP2XX,
+-    .version_id = 1,
++    .version_id = 2,
++    .minimum_version_id = 1,
++    .post_load = axp2xx_post_load,
+     .fields = (VMStateField[]) {
+         VMSTATE_UINT8_ARRAY(regs, AXP2xxI2CState, NR_REGS),
+         VMSTATE_UINT8(ptr, AXP2xxI2CState),
+         VMSTATE_UINT8(count, AXP2xxI2CState),
++        VMSTATE_BOOL_V(pek_pressed, AXP2xxI2CState, 2),
++        VMSTATE_INT64_V(pek_press_ns, AXP2xxI2CState, 2),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+@@ -286,10 +356,18 @@ static void axp2xx_class_init(ObjectClass *oc, void *data)
+     isc->send = axp2xx_tx;
+ }
+ 
++static void axp2xx_init(Object *obj)
++{
++    AXP2xxI2CState *s = AXP2XX(obj);
++
++    qdev_init_gpio_out(DEVICE(obj), &s->irq, 1);
++}
++
+ static const TypeInfo axp2xx_info = {
+     .name = TYPE_AXP2XX,
+     .parent = TYPE_I2C_SLAVE,
+     .instance_size = sizeof(AXP2xxI2CState),
++    .instance_init = axp2xx_init,
+     .class_size = sizeof(AXP2xxClass),
+     .class_init = axp2xx_class_init,
+     .abstract = true,
+diff --git a/include/hw/misc/axp2xx.h b/include/hw/misc/axp2xx.h
+new file mode 100644
+index 0000000..a982a82
+--- /dev/null
++++ b/include/hw/misc/axp2xx.h
+@@ -0,0 +1,15 @@
++/*
++ * X-Powers PMIC helpers
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef HW_MISC_AXP2XX_H
++#define HW_MISC_AXP2XX_H
++
++#include "hw/qdev-core.h"
++
++void axp717_pek_set(DeviceState *dev, bool pressed);
++bool axp717_pek_is_ready(DeviceState *dev);
++
++#endif
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index 8bc3fd1..8f715ec 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -494,7 +494,8 @@ static void test_disabled_and_non_machine(void)
+     response = qtest_qmp(qts,
+         "{ 'execute': 'query-pocketforge-input' }");
+     result = qdict_get_qdict(response, "return");
+-    g_assert_true(qlist_empty(qdict_get_qlist(result, "devices")));
++    g_assert_cmpuint(qlist_size(qdict_get_qlist(result, "devices")), ==, 1);
++    g_assert_nonnull(query_device_by_id(response, "power-key"));
+     qobject_unref(response);
+     response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
+     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index 09b272e..52052cb 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -108,7 +108,6 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
+     { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
+     { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
+-    { "pocketforge-a133.r_intc",           0x07010320, 0xc },
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+     { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },

@@ -1,0 +1,254 @@
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sat, 10 Oct 2026 00:00:00 +0000
+Subject: [PATCH 25/26] tests: cover A133 AXP717 power-key injection
+
+Add RED coverage for the AXP717 PEK IRQ path, the A100 NMI controller,
+ABI 2.2 capability discovery, short/long holds, and masked/invalid
+negative controls.
+
+Assisted-by: LLM
+---
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -89,15 +89,20 @@
+     g_assert_true(g_str_has_prefix(qdict_get_str(error, "desc"), prefix));
+ }
+ 
+-static QDict *query_device(QDict *response)
++static QDict *query_device_by_id(QDict *response, const char *id)
+ {
+     QDict *result = qdict_get_qdict(response, "return");
+     QList *devices = qdict_get_qlist(result, "devices");
+-    const QListEntry *entry = qlist_first(devices);
++    const QListEntry *entry;
+ 
+-    g_assert_nonnull(entry);
+-    g_assert_null(qlist_next(entry));
+-    return qobject_to(QDict, qlist_entry_obj(entry));
++    QLIST_FOREACH_ENTRY(devices, entry) {
++        QDict *device = qobject_to(QDict, qlist_entry_obj(entry));
++
++        if (!strcmp(qdict_get_str(device, "id"), id)) {
++            return device;
++        }
++    }
++    g_assert_not_reached();
+ }
+ 
+ static bool query_has_code(QDict *device, int type, int code)
+@@ -165,11 +170,11 @@
+         "{ 'execute': 'query-pocketforge-input' }");
+     QDict *result = qdict_get_qdict(response, "return");
+     QDict *version = qdict_get_qdict(result, "abi_version");
+-    QDict *device = query_device(response);
++    QDict *device = query_device_by_id(response, "gamepad");
+     int i;
+ 
+     g_assert_cmpint(qdict_get_int(version, "major"), ==, 2);
+-    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 1);
++    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 2);
+     g_assert_cmpint(qdict_get_int(result, "max_batch_events"), ==, 256);
+     g_assert_cmpstr(qdict_get_str(device, "id"), ==, "gamepad");
+     g_assert_cmpstr(qdict_get_str(device, "name"), ==, "TRIMUI Player1");
+@@ -197,6 +202,36 @@
+     qtest_quit(qts);
+ }
+ 
++static void test_power_key_query_and_negative_control(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    QDict *response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    QDict *device = query_device_by_id(response, "power-key");
++
++    g_assert_cmpstr(qdict_get_str(device, "name"), ==, "axp20x-pek");
++    g_assert_cmpint(qdict_get_int(device, "bustype"), ==, 0);
++    g_assert_cmpint(qdict_get_int(device, "vendor"), ==, 0);
++    g_assert_cmpint(qdict_get_int(device, "product"), ==, 0);
++    g_assert_cmpint(qdict_get_int(device, "version"), ==, 0);
++    g_assert_false(qdict_get_bool(device, "ready"));
++    g_assert_true(query_has_code(device, EV_SYN, SYN_REPORT));
++    g_assert_true(query_has_code(device, EV_KEY, KEY_POWER));
++    g_assert_false(query_has_code(device, EV_SW, SW_LID));
++    qobject_unref(response);
++
++    response = qtest_qmp(qts,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'power-key', 'events': ["
++        " { 'type': %d, 'code': %d, 'value': 1 },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
++        EV_SW, SW_LID);
++    assert_error_prefix(response,
++        "pocketforge-input: reason=invalid-parameter index=0:");
++    qobject_unref(response);
++    qtest_quit(qts);
++}
++
+ static void test_analog_frames_and_negative_control(void)
+ {
+     static const uint8_t left_x_min[] = {
+@@ -314,7 +349,7 @@
+     uart_configure_lcr(qts, PF_UART4_BASE, 0x13);
+     response = qtest_qmp(qts,
+         "{ 'execute': 'query-pocketforge-input' }");
+-    device = query_device(response);
++    device = query_device_by_id(response, "gamepad");
+     g_assert_true(qdict_get_bool(device, "ready"));
+     qobject_unref(response);
+     uart_assert_frame(qts, PF_UART3_BASE, centered);
+@@ -354,7 +389,7 @@
+     uart_assert_empty(qts, PF_UART4_BASE);
+     response = qtest_qmp(qts,
+         "{ 'execute': 'query-pocketforge-input' }");
+-    device = query_device(response);
++    device = query_device_by_id(response, "gamepad");
+     g_assert_false(qdict_get_bool(device, "ready"));
+     qobject_unref(response);
+ 
+@@ -362,7 +397,7 @@
+     uart_assert_frame(qts, PF_UART4_BASE, centered);
+     response = qtest_qmp(qts,
+         "{ 'execute': 'query-pocketforge-input' }");
+-    device = query_device(response);
++    device = query_device_by_id(response, "gamepad");
+     g_assert_true(qdict_get_bool(device, "ready"));
+     qobject_unref(response);
+ 
+@@ -481,6 +516,8 @@
+     g_test_init(&argc, &argv, NULL);
+     qtest_add_func("/aarch64/pocketforge-a133-input/query-transport",
+                    test_query_and_transport);
++    qtest_add_func("/aarch64/pocketforge-a133-input/power-key-query-negative",
++                   test_power_key_query_and_negative_control);
+     qtest_add_func("/aarch64/pocketforge-a133-input/uart-component-parameters",
+                    test_uart_component_parameters);
+     qtest_add_func("/aarch64/pocketforge-a133-input/uart-8n1-eps-ignored",
+--- a/tests/qtest/pocketforge-a133-axp717-test.c
++++ b/tests/qtest/pocketforge-a133-axp717-test.c
+@@ -6,6 +6,8 @@
+ 
+ #include "qemu/osdep.h"
+ #include "libqtest-single.h"
++#include "qapi/qmp/qdict.h"
++#include "standard-headers/linux/input.h"
+ 
+ #define R_I2C0_BASE 0x07081400
+ #define TWI_DATA    0x08
+@@ -22,6 +24,18 @@
+ #define STAT_DATA_TX_ACK    0x28
+ #define STAT_ADDR_RD_ACK    0x40
+ 
++#define R_INTC_BASE         0x07010320
++#define R_INTC_CTRL         0x00
++#define R_INTC_ENABLE       0x04
++#define R_INTC_PENDING      0x08
++#define R_INTC_READ(reg) qtest_readl(global_qtest, R_INTC_BASE + (reg))
++#define AXP717_IRQ1_EN      0x41
++#define AXP717_IRQ1_STATE   0x49
++#define AXP717_PEK_RISE     0x01
++#define AXP717_PEK_FALL     0x02
++#define AXP717_PEK_LONG     0x04
++#define AXP717_PEK_SHORT    0x08
++#define POWER_KEY_INACTIVE "PocketForge input device 'power-key' is not active"
+ static uint32_t i2c_status(void)
+ {
+     return qtest_readl(global_qtest, R_I2C0_BASE + TWI_STAT);
+@@ -72,6 +86,31 @@
+     return value;
+ }
+ 
++static QDict *power_send(int value)
++{
++    return qtest_qmp(global_qtest,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'power-key', 'events': ["
++        " { 'type': %d, 'code': %d, 'value': %d },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
++        EV_KEY, KEY_POWER, value);
++}
++
++static void assert_qmp_success(QDict *response)
++{
++    g_assert_nonnull(qdict_get(response, "return"));
++    qobject_unref(response);
++}
++
++static void assert_qmp_error(QDict *response, const char *prefix)
++{
++    QDict *error = qdict_get_qdict(response, "error");
++
++    g_assert_nonnull(error);
++    g_assert_true(g_str_has_prefix(qdict_get_str(error, "desc"), prefix));
++    qobject_unref(response);
++}
++
+ static void test_register_bank_and_unpopulated_nack(void)
+ {
+     /* Positive paths: IRQ enable and regulator control registers persist. */
+@@ -93,6 +132,57 @@
+     i2c_stop();
+ }
+ 
++static void test_pek_irq_path_and_masked_negative(void)
++{
++    QDict *response;
++
++    g_assert_cmphex(R_INTC_READ(R_INTC_CTRL), ==, 0);
++    g_assert_cmphex(R_INTC_READ(R_INTC_ENABLE), ==, 0);
++    g_assert_cmphex(R_INTC_READ(R_INTC_PENDING), ==, 0);
++
++    /* Negative control: a disabled PMIC mask makes the device inactive. */
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_ENABLE, 1);
++    response = power_send(1);
++    assert_qmp_error(response, POWER_KEY_INACTIVE);
++    g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE), ==, 0);
++    g_assert_cmphex(R_INTC_READ(R_INTC_PENDING), ==, 0);
++
++    axp717_write(AXP717_IRQ1_EN, AXP717_PEK_RISE | AXP717_PEK_FALL);
++    assert_qmp_success(power_send(1));
++    g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE), ==, AXP717_PEK_FALL);
++    g_assert_cmphex(R_INTC_READ(R_INTC_PENDING), ==, 1);
++
++    /*
++     * The latch must acknowledge once even while the active-low PMIC line is
++     * asserted.  Re-latching without a new edge starves the QMP main loop.
++     */
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_PENDING, 1);
++    g_assert_cmphex(R_INTC_READ(R_INTC_PENDING), ==, 0);
++
++    /* PMIC W1C deasserts its level; NMI pending has its own W1C latch. */
++    axp717_write(AXP717_IRQ1_STATE, AXP717_PEK_FALL);
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_PENDING, 1);
++    g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE), ==, 0);
++    g_assert_cmphex(R_INTC_READ(R_INTC_PENDING), ==, 0);
++
++    /* A short release sets rising-edge and short-duration status together. */
++    qtest_clock_step(global_qtest, 100 * 1000 * 1000);
++    assert_qmp_success(power_send(0));
++    g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE), ==,
++                    AXP717_PEK_RISE | AXP717_PEK_SHORT);
++    axp717_write(AXP717_IRQ1_STATE, 0xff);
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_PENDING, 1);
++
++    /* A held key is classified long, while Linux still sees one release. */
++    assert_qmp_success(power_send(1));
++    axp717_write(AXP717_IRQ1_STATE, AXP717_PEK_FALL);
++    qtest_writel(global_qtest, R_INTC_BASE + R_INTC_PENDING, 1);
++    qtest_clock_step(global_qtest, 2 * 1000 * 1000 * 1000LL);
++    assert_qmp_success(power_send(0));
++    g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE), ==,
++                    AXP717_PEK_RISE | AXP717_PEK_LONG);
++}
++
+ int main(int argc, char **argv)
+ {
+     int ret;
+@@ -101,6 +191,8 @@
+     qtest_start("-machine pocketforge-a133 -display none");
+     qtest_add_func("/pocketforge-a133/axp717/register-bank-and-nack",
+                    test_register_bank_and_unpopulated_nack);
++    qtest_add_func("/pocketforge-a133/axp717/pek-irq-path-mask-negative",
++                   test_pek_irq_path_and_masked_negative);
+     ret = g_test_run();
+     qtest_end();
+ 

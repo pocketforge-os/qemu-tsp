@@ -72,14 +72,14 @@ XR24=`PIXMAN_x8r8g8b8`, XB24=`PIXMAN_x8b8g8r8`, and
 AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 `reason=unsupported-format` token.
 
-## Input capability query (ABI 2.1)
+## Input capability query (ABI 2.2)
 
 `query-pocketforge-input` reports the batch limit and every injectible device:
 
 ```json
 {
   "return": {
-    "abi_version": {"major": 2, "minor": 1},
+    "abi_version": {"major": 2, "minor": 2},
     "max_batch_events": 256,
     "devices": [{
       "id": "gamepad",
@@ -121,6 +121,18 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
            "fuzz": 0, "flat": 0}
         ]}
       ]
+    }, {
+      "id": "power-key",
+      "name": "axp20x-pek",
+      "bustype": 0,
+      "vendor": 0,
+      "product": 0,
+      "version": 0,
+      "ready": true,
+      "caps": [
+        {"type": 0, "codes": [{"code": 0, "name": "SYN_REPORT"}]},
+        {"type": 1, "codes": [{"code": 116, "name": "KEY_POWER"}]}
+      ]
     }]
   }
 }
@@ -128,7 +140,8 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 
 `caps` is per device and is the exact code allow-list accepted by
 `pocketforge-input-send`, so clients can disable controls unavailable in a
-tier. ABI 2.1 additively exposes the four 12-bit stick axes and two 8-bit
+tier. ABI 2.2 additively exposes the separate AXP717 power key. ABI 2.1
+additively exposes the four 12-bit stick axes and two 8-bit
 trigger axes alongside the ABI 2.0 digital controls and hats. All ABS entries
 include `fuzz` and `flat`; both are zero for this device. The physical L2/R2
 actuators are binary, so `ABS_Z` and `ABS_RZ` accept only the advertised
@@ -270,14 +283,33 @@ read-only `held` property covers pressed keys and non-zero hats. Reset clears
 held state and pending frames; automation must still send explicit releases
 for accepted presses.
 
-## Power, volume, touch, and switches
+## Power key, volume, touch, and switches
 
 Power and volume are not gamepad capabilities. The owned A133 platform
 descriptor at commit `5c21b42520e82c45088778aba2088379a163696a` assigns
 `KEY_VOLUMEUP`/`KEY_VOLUMEDOWN` to the separate `sunxi-keyboard` input. The
 exact build-6 DT leaves its LRADC disabled, so no runtime enablement is assumed.
-The owned build-6 kernel creates an `axp20x-pek` child for `KEY_POWER`; the
-bounded QEMU AXP717 model intentionally generates no PMIC event or IRQ until
-the dedicated PMIC follow-up. Touch and the hall/gpio switch are also
-unmodeled. ABI 2.0 therefore exposes only `gamepad` and does not invent power,
-volume, touch, or EV_SW on that device.
+The owned build-6 DT at kernel commit
+`c22dbc0226242cd1e582073eac5d82d36953c0d8`,
+`arch/arm64/boot/dts/allwinner/sun50i-a133-pocketforge-tsp.dts:415-422`,
+declares `x-powers,axp717` at R-I2C0 address `0x34`, with a level-low IRQ into
+R_INTC input 0. The SoC DT at `sun50i-a100.dtsi:923-931` routes that NMI block
+to GIC SPI 103. This release contract is AXP717, not AXP2202.
+
+ABI 2.2 exposes that independent Linux device as `power-key`. The build-6
+driver `drivers/input/misc/axp20x-pek.c` names it `axp20x-pek`, leaves its input
+identity fields at zero, advertises only `EV_KEY/KEY_POWER`, and maps the PMIC
+falling edge to press and rising edge to release. The model implements AXP717
+IRQ1 enable/status at `0x41`/`0x49`, W1C status, the A100 NMI control/enable/W1C
+pending registers, and GIC SPI 103 delivery. `ready` becomes true only after
+the guest enables both PEK edges and the NMI. QEMU never synthesizes a release;
+a short or long press is the client-controlled interval between explicit
+press and release. The AXP717 also classifies releases below one second as
+short and intervals of at least one second as long in its otherwise
+guest-unused IRQ1 status bits. That threshold is provisional pending the
+real-unit receipt; the release input driver consumes only edge resources, so
+it does not alter the guest-visible `KEY_POWER` contract.
+
+Volume remains a separate `sunxi-keyboard` input and the exact build-6 DT
+leaves LRADC disabled. Touch and the hall/gpio switch are unmodeled. No power,
+volume, touch, or EV_SW capability is invented on `gamepad`.
