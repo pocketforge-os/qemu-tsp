@@ -1,0 +1,356 @@
+From f5d7ace53408a41a01bfbe2f1b5c07068ed72396 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 19:09:58 -0400
+Subject: [PATCH 14/14] hw/arm: connect A133 MMC0 to SD media
+
+Assisted-by: LLM
+---
+ docs/pocketforge-a133-peripheral-stubs.md    |  12 ++
+ hw/arm/pocketforge_a133.c                    |  43 ++++-
+ tests/qtest/meson.build                      |   2 +-
+ tests/qtest/pocketforge-a133-mmc-test.c      | 171 +++++++++++++++++++
+ tests/qtest/pocketforge-a133-mmio-map-test.c |   3 +-
+ 5 files changed, 227 insertions(+), 4 deletions(-)
+ create mode 100644 tests/qtest/pocketforge-a133-mmc-test.c
+
+diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
+index 311c650..cd0eb09 100644
+--- a/docs/pocketforge-a133-peripheral-stubs.md
++++ b/docs/pocketforge-a133-peripheral-stubs.md
+@@ -61,3 +61,15 @@ bounded software register bank: IRQ enable `0x40..0x44`, W1C IRQ status
+ Unmodelled registers read zero and ignore writes. Stored regulator values are
+ guest-programmed state, not hardware measurements; the model generates no
+ PMIC events and exposes no interrupt output.
++
++### MMC0 promotion
++
++MMC0 at `0x04020000`, SPI 39 is now the
++`allwinner-sdhost-sun50i-a100` functional model and accepts one raw SD drive
++on bus 0. The A100 subtype uses 8 KiB IDMA descriptors, exposes the sample
++delay calibration register, and reconstructs the word-addressed DLBA,
++descriptor buffer, and next-descriptor fields before applying the four-byte
++alignment mask. MMC1 remains an inert register stub and disabled MMC2 remains
++absent. The qtest reads LBA 1 through IDMA from both a valid GPT marker and a
++corrupt control image, and checks that a command with no attached medium gets
++no response.
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 3b03d48..d2f67a3 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -64,6 +64,9 @@
+  * mainline MFD and regulator drivers. It synthesizes no PMIC events or
+  * interrupts. Only the register-free tail of the DT's 0x400-byte R-I2C0
+  * reservation remains a stub. CI wiring (Phase D) remains out of scope.
++ * (4) MMC0 is QEMU's Allwinner SD host with the A100 descriptor format,
++ * calibration register and DMA address shift, at the real base and SPI 39.
++ * MMC1 remains an inert DT-aperture stub; disabled MMC2 is absent.
+  * The GE8300 silicon
+  * GPU / PowerVR blob is never modeled (aspirational) -- display output is
+  * entirely the open virtio-gpu graft (virgl/llvmpipe on the host side).
+@@ -84,6 +87,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/units.h"
++#include "qemu/error-report.h"
+ #include "qapi/error.h"
+ #include "cpu.h"
+ #include "hw/arm/boot.h"
+@@ -98,10 +102,13 @@
+ #include "hw/intc/arm_gic_common.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/rtc/pocketforge_a100_rtc.h"
++#include "hw/sd/allwinner-sdhost.h"
++#include "hw/sd/sd.h"
+ #include "hw/sysbus.h"
+ #include "hw/virtio/virtio-mmio.h"
+ #include "exec/address-spaces.h"
+ #include "sysemu/device_tree.h"
++#include "sysemu/blockdev.h"
+ #include "hw/arm/fdt.h"
+ #include "sysemu/sysemu.h"
+ #include "qemu/module.h"
+@@ -139,6 +146,10 @@ struct PocketForgeA133MachineState {
+ /* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
+ #define PF_A133_RTC_BASE        0x07000000
+ 
++/* mmc@4020000 (MMC0), exact base and GIC SPI from sun50i-a100.dtsi. */
++#define PF_A133_MMC0_BASE       0x04020000
++#define PF_A133_MMC0_IRQ        39
++
+ /*
+  * Phase B (tsp-mc9m.41.925.2.2) RAM-backed register-file stubs -- addresses
+  * and sizes taken verbatim from sun50i-a100.dtsi's "ccu", "watchdog", "pio",
+@@ -442,7 +453,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.pio",              0x0300b000, 0x400 },
+     { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
+     { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
+-    { "pocketforge-a133.mmc0",             0x04020000, 0x1000 },
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+@@ -513,6 +523,34 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+         PF_A133_R_I2C0_SIZE - AW_I2C_MEM_SIZE);
+ }
+ 
++static void pocketforge_a133_create_mmc0(qemu_irq irq)
++{
++    DriveInfo *di = drive_get(IF_SD, 0, 0);
++    BlockBackend *blk = di ? blk_by_legacy_dinfo(di) : NULL;
++    DeviceState *host = qdev_new(TYPE_AW_SDHOST_SUN50I_A100);
++    DeviceState *card;
++    BusState *bus;
++
++    object_property_set_link(OBJECT(host), "dma-memory",
++                             OBJECT(get_system_memory()), &error_fatal);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(host), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(host), 0, PF_A133_MMC0_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(host), 0, irq);
++
++    bus = qdev_get_child_bus(host, "sd-bus");
++    if (!bus) {
++        error_report("No SD bus found on A133 MMC0");
++        exit(1);
++    }
++    if (!di) {
++        return;
++    }
++
++    card = qdev_new(TYPE_SD_CARD);
++    qdev_prop_set_drive_err(card, "drive", blk, &error_fatal);
++    qdev_realize_and_unref(card, bus, &error_fatal);
++}
++
+ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+ {
+     DeviceState *gicdev;
+@@ -684,6 +722,7 @@ static void pocketforge_a133_init(MachineState *machine)
+ 
+     pocketforge_a133_create_mmio_stubs();
+     pocketforge_a133_create_r_i2c0(s, pic[113]);
++    pocketforge_a133_create_mmc0(pic[PF_A133_MMC0_IRQ]);
+ 
+     pocketforge_a133_create_virtio_mmio(machine, pic);
+ 
+@@ -713,6 +752,8 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a53");
+     mc->default_ram_size = 1 * GiB;
+     mc->default_ram_id = "pocketforge-a133.ram";
++    mc->block_default_type = IF_SD;
++    mc->units_per_default_bus = 1;
+     mc->no_cdrom = true;
+     mc->no_floppy = true;
+     mc->no_parallel = true;
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 3e64a49..6ac525f 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -224,7 +224,7 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
+-     'pocketforge-a133-axp717-test'] : []) +                                      \
++     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) +         \
+   ['arm-cpu-features',
+    'numa-test',
+    'boot-serial-test',
+diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a133-mmc-test.c
+new file mode 100644
+index 0000000..8411e74
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-mmc-test.c
+@@ -0,0 +1,171 @@
++/*
++ * PocketForge A133 MMC0 qtest
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bitops.h"
++#include "qemu/bswap.h"
++#include "qemu/units.h"
++#include "libqtest.h"
++
++#define MMC0_BASE       0x04020000
++#define RAM_DESC        0x40010000
++#define RAM_DATA        0x40012000
++#define TEST_IMAGE_SIZE (1 * MiB)
++
++#define REG_GCTRL 0x00
++#define REG_BLKSZ 0x10
++#define REG_BCNTR 0x14
++#define REG_CMDR  0x18
++#define REG_CARG  0x1c
++#define REG_RESP0 0x20
++#define REG_RINTR 0x38
++#define REG_STAS  0x3c
++#define REG_DLBA  0x84
++
++#define GCTRL_DMA_ENABLE BIT(5)
++#define CMD_START        BIT(31)
++#define CMD_DATA         BIT(9)
++#define CMD_LONG_RESP    BIT(7)
++#define CMD_RESP         BIT(6)
++#define RINTR_NO_RESP    BIT(1)
++#define RINTR_CMD_DONE   BIT(2)
++#define RINTR_DATA_OVER  BIT(3)
++#define STAS_CARD_PRESENT BIT(8)
++
++#define DESC_OWN   BIT(31)
++#define DESC_FIRST BIT(3)
++#define DESC_LAST  BIT(2)
++
++static void write_image_marker(const char *path, const char marker[8])
++{
++    int fd = open(path, O_WRONLY);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(pwrite(fd, marker, 8, 512), ==, 8);
++    g_assert_cmpint(close(fd), ==, 0);
++}
++
++static char *create_image(const char marker[8])
++{
++    GError *error = NULL;
++    char *path = NULL;
++    int fd = g_file_open_tmp("pocketforge-a133-mmc-XXXXXX", &path, &error);
++
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(ftruncate(fd, TEST_IMAGE_SIZE), ==, 0);
++    g_assert_cmpint(close(fd), ==, 0);
++    write_image_marker(path, marker);
++    return path;
++}
++
++static uint32_t send_command(QTestState *qts, uint32_t cmd, uint32_t arg)
++{
++    qtest_writel(qts, MMC0_BASE + REG_RINTR, UINT32_MAX);
++    qtest_writel(qts, MMC0_BASE + REG_CARG, arg);
++    qtest_writel(qts, MMC0_BASE + REG_CMDR, CMD_START | cmd);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_CMDR) & CMD_START, ==, 0);
++    return qtest_readl(qts, MMC0_BASE + REG_RINTR);
++}
++
++static void initialize_sd(QTestState *qts)
++{
++    uint32_t irq;
++
++    irq = send_command(qts, 0, 0);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    irq = send_command(qts, CMD_RESP | 55, 0);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    irq = send_command(qts, CMD_RESP | 41, 0x40300000);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    irq = send_command(qts, CMD_RESP | CMD_LONG_RESP | 2, 0);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    irq = send_command(qts, CMD_RESP | 3, 0);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_RESP0) >> 16, ==, 0x4567);
++    irq = send_command(qts, CMD_RESP | 7, 0x45670000);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    irq = send_command(qts, CMD_RESP | 16, 512);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++}
++
++static void read_gpt_marker(QTestState *qts, char marker[8])
++{
++    uint32_t desc[4] = {
++        cpu_to_le32(DESC_OWN | DESC_FIRST | DESC_LAST),
++        cpu_to_le32(512),
++        cpu_to_le32(RAM_DATA >> 2),
++        0,
++    };
++    uint32_t irq;
++
++    memset(marker, 0, 8);
++    qtest_memwrite(qts, RAM_DESC, desc, sizeof(desc));
++    qtest_memwrite(qts, RAM_DATA, marker, 8);
++    qtest_writel(qts, MMC0_BASE + REG_GCTRL, GCTRL_DMA_ENABLE);
++    qtest_writel(qts, MMC0_BASE + REG_BLKSZ, 512);
++    qtest_writel(qts, MMC0_BASE + REG_BCNTR, 512);
++    qtest_writel(qts, MMC0_BASE + REG_DLBA, RAM_DESC >> 2);
++    irq = send_command(qts, CMD_RESP | CMD_DATA | 17, 512);
++    g_assert_cmphex(irq & (RINTR_CMD_DONE | RINTR_DATA_OVER), ==,
++                    RINTR_CMD_DONE | RINTR_DATA_OVER);
++    qtest_memread(qts, RAM_DATA, marker, 8);
++    qtest_memread(qts, RAM_DESC, desc, sizeof(desc));
++    g_assert_cmphex(le32_to_cpu(desc[0]) & DESC_OWN, ==, 0);
++}
++
++static QTestState *start_with_image(const char *path)
++{
++    g_autofree char *quoted = g_shell_quote(path);
++
++    return qtest_initf("-M pocketforge-a133 -m 64M "
++                       "-drive if=sd,format=raw,file=%s", quoted);
++}
++
++static void test_real_media_and_controls(void)
++{
++    static const char valid_gpt[8] = "EFI PART";
++    static const char corrupt_gpt[8] = "BAD GPT!";
++    g_autofree char *valid_path = create_image(valid_gpt);
++    g_autofree char *corrupt_path = create_image(corrupt_gpt);
++    QTestState *qts;
++    char marker[8];
++    uint32_t irq;
++
++    /* Positive: shifted A100 DMA addresses fetch the raw GPT signature. */
++    qts = start_with_image(valid_path);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++    initialize_sd(qts);
++    read_gpt_marker(qts, marker);
++    g_assert_cmpmem(marker, sizeof(marker), valid_gpt, sizeof(valid_gpt));
++    qtest_quit(qts);
++
++    /* Negative control: bytes come from media; a corrupt GPT stays corrupt. */
++    qts = start_with_image(corrupt_path);
++    initialize_sd(qts);
++    read_gpt_marker(qts, marker);
++    g_assert_cmpmem(marker, sizeof(marker), corrupt_gpt, sizeof(corrupt_gpt));
++    g_assert_cmpint(memcmp(marker, valid_gpt, sizeof(marker)), !=, 0);
++    qtest_quit(qts);
++
++    /* Negative control: without media, commands receive no response. */
++    qts = qtest_init("-M pocketforge-a133 -m 64M");
++    irq = send_command(qts, CMD_RESP | 8, 0x1aa);
++    g_assert_cmphex(irq & RINTR_NO_RESP, !=, 0);
++    qtest_quit(qts);
++
++    g_assert_cmpint(unlink(valid_path), ==, 0);
++    g_assert_cmpint(unlink(corrupt_path), ==, 0);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("pocketforge-a133/mmc/real-media-and-controls",
++                   test_real_media_and_controls);
++    return g_test_run();
++}
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index ca85b91..de7685d 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -35,7 +35,7 @@ static const ExpectedRegion expected_regions[] = {
+     { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
+     { "gic_vcpu",                          0x03026000, 0x2000 },
+     { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
+-    { "pocketforge-a133.mmc0",             0x04020000, 0x1000 },
++    { "allwinner-sdhost",                  0x04020000, 0x1000 },
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "dw-apb-uart",                       0x05000000, 0x400 },
+     { "dw-apb-uart",                       0x05000400, 0x400 },
+@@ -88,7 +88,6 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.pio",              0x0300b000, 0x400 },
+     { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
+     { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
+-    { "pocketforge-a133.mmc0",             0x04020000, 0x1000 },
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+-- 
+2.43.0
+

@@ -16,6 +16,18 @@ The fidelity workflow deliberately republishes that artifact under the legacy
 receipt basename `sun50i-a133-pocketforge-tsp.dtb`; the selected source is
 still Odyssey.
 
+The real-image acceptance supplement comes from published descriptor
+`ef573704f42e759b27bd3ba280aad0607d117cf278310b32ddbcb079992edba5/ImageSource.json`.
+The descriptor and the image independently identify raw SHA-256
+`c2e684bda333be6784fa47839776ba6b805ecdd70585cfe841f268f3c9f117ae`;
+the userdata file `/etc/pocketforge-build-id` reads
+`device=a133-open-7x-gpu build=51766464d96e`. Its kernel is
+`c22dbc0226242cd1e582073eac5d82d36953c0d8`, and its unmodified board DTB
+has SHA-256 `1a9042d839ee9d1548062efacc5dde332789c6dc846f21bb2c7877045d49b358`.
+That newer DT enables EHCI0/OHCI0 and the standalone G2D clock/rotate nodes,
+and extends the codec reservation to `0x330`; the coverage union records those
+probe apertures without claiming functional USB, G2D, or audio.
+
 The QEMU side is based on upstream commit
 `11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea`.  Before this work, the exact
 applied patch stack was inspected through the running machine with HMP
@@ -86,17 +98,36 @@ typed `synthetic`; they are intentionally not used to cover real-DT ranges.
 
 ## Model and stub decisions
 
-The GICv2, four DesignWare APB UARTs, RTC, virtio transports, Cortex-A53 CPUs,
-and RAM keep real models.  The UART aperture is expanded to the DT-exact
+The GICv2, four DesignWare APB UARTs, RTC, R-I2C0, AXP717 PMIC, MMC0, virtio
+transports, Cortex-A53 CPUs, and RAM use functional or bounded models. The
+UART aperture is expanded to the DT-exact
 `0x400`, and enabled UART0/1/3/4 are instantiated with their DT SPI lines.
 QEMU's generic GIC model exposes only `0x1000` at the first half of the DT's
 `0x03024000/0x2000` virtualization-interface tuple, so an exact
 `0x03025000/0x1000` residual stub covers only the missing half.
 
-All remaining enabled resources use uniquely named, exact-size RAM-backed
-register stubs.  They reset to zero and provide byte-addressable read-after-
-write storage.  This is deliberately an inert probe surface, not a claim of
-device functionality.  The driver audit is:
+R-I2C0 uses upstream QEMU's `allwinner.i2c-sun6i` register model at
+`0x07081400` with SPI 113. Its defined register bank is `0x24` bytes; only the
+register-free `0x3dc`-byte tail of the DT's `0x400` reservation remains an
+inert residual stub. The AXP717 at address `0x34` models only IRQ enable
+`0x40..0x44`, W1C IRQ status `0x48..0x4c`, regulator enable `0x80`, and
+regulator controls `0x83..0x9f`. Unmodelled PMIC registers read zero and
+ignore writes. The stored values are guest-programmed state, not hardware
+measurements; the model produces no PMIC events or interrupt output.
+
+MMC0 uses the `allwinner-sdhost-sun50i-a100` model at `0x04020000`, wired to
+SPI 39 and to SD bus 0. It retains upstream Allwinner register behavior while
+selecting the A100/D1 variant data: 8 KiB IDMA descriptors, calibration
+support, new timings, and a two-bit DMA address shift. The model reconstructs
+the byte addresses in DLBA, each descriptor buffer, and the next-descriptor
+field before applying the four-byte alignment mask. A raw image is attached
+with `-drive if=sd,format=raw,file=PATH`. MMC1 remains an inert stub and the
+disabled MMC2 is absent.
+
+All other enabled resources use uniquely named, exact-size RAM-backed
+register stubs. They reset to zero and provide byte-addressable read-after-
+write storage. This is deliberately an inert probe surface, not a claim of
+device functionality. The driver audit is:
 
 - `mmio-sram` requires storage semantics; exact RAM-backed apertures are the
   appropriate model.
@@ -107,22 +138,25 @@ device functionality.  The driver audit is:
 - `sun8i-ce` reads `CE_CTR` during probe but does not issue or poll a crypto job
   there.  Zero-backed storage removes the observed abort.  Functional crypto
   requests remain intentionally unsupported.
-- `sunxi-mmc` has bounded reset/status timeouts.  Storage permits safe probe
-  failure without pretending that removable media exists.
 - LEDC, DSI/DPHY, display, clocks, DMA, SID, thermal, pinctrl, watchdog, IOMMU,
-  USB, IR, I2C, and power-domain probe paths use ordinary register reads and
+  USB, IR, and power-domain probe paths use ordinary register reads and
   writes or bounded timeouts; none requires an unbounded hardware completion
   transition for the accepted boot path.
-- The audio codec and IR drivers are modules and are absent from the fidelity
-  initramfs.  Their exact apertures are still present because the enabled DT
-  advertises them.
+- The audio codec and IR drivers are modules and are absent from the small
+  diagnostic initramfs. Their exact apertures remain present because the real
+  rootfs loads them; the build-6 codec probe reaches offset `0x324`.
 
-Disabled MMC2, UART2, I2C0-3, Ethernet, EHCI0/OHCI0, R-UART, and R-I2C1 are
-not mapped.  In particular, the prior EHCI0/OHCI0 stubs are removed rather
-than allowed to violate effective-status coverage.
+Disabled MMC2, UART2, I2C0-3, Ethernet, R-UART, and R-I2C1 are not mapped.
+EHCI0/OHCI0 are zero-backed only for the build-6 DT where they are enabled;
+their generic drivers fail through bounded timeouts, so USB remains SKIP.
 
 The QEMU qtest validates every final aperture from the running machine's
 flat map, tests reset and read-after-write storage at both ends of every new
-stub, checks the exact UART/model boundaries, and proves disabled resources
-are absent.  The automation mutation suite independently exercises every
+stub, checks the exact UART/model boundaries, exercises R-I2C0 reset/status,
+and keeps AXP717 register positives and an unpopulated-address NACK in one
+invocation. The MMC qtest uses shifted IDMA descriptor addresses to read LBA 1
+from a valid raw image, distinguishes a corrupt-image control, and checks the
+no-media command response in that same invocation. It also proves disabled
+resources are absent. The automation
+mutation suite independently exercises every
 fail-closed category named above.

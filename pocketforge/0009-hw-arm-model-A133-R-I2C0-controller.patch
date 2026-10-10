@@ -1,0 +1,182 @@
+From 57470cca36d5a1c9bcc7a60ffcc0fe175e175dbc Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 18:42:32 -0400
+Subject: [PATCH] hw/arm: model A133 R-I2C0 controller
+
+Replace the register-file stub with the upstream sun6i Allwinner I2C controller at the board DT address and SPI 113. Preserve the full DT aperture as a parent container and cover reset/status semantics in qtest.
+
+Assisted-by: LLM
+---
+ hw/arm/Kconfig                               |  1 +
+ hw/arm/pocketforge_a133.c                    | 23 ++++++++++-
+ tests/qtest/meson.build                      |  2 +-
+ tests/qtest/pocketforge-a133-mmio-map-test.c |  3 +-
+ tests/qtest/pocketforge-a133-r-i2c-test.c    | 41 ++++++++++++++++++++
+ 5 files changed, 66 insertions(+), 4 deletions(-)
+ create mode 100644 tests/qtest/pocketforge-a133-r-i2c-test.c
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 78c500f..3d7c408 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -274,6 +274,7 @@ config POCKETFORGE_A133
+     bool
+     default y
+     depends on TCG && AARCH64
++    select ALLWINNER_I2C
+     select ARM_GIC
+     select DW_APB_UART
+     select POCKETFORGE_A100_RTC
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 1694550..d656230 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -91,6 +91,7 @@
+ #include "hw/arm/bsa.h"
+ #include "hw/boards.h"
+ #include "hw/char/dw_apb_uart.h"
++#include "hw/i2c/allwinner-i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
+ #include "hw/intc/arm_gic.h"
+@@ -112,6 +113,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133MachineState,
+ 
+ struct PocketForgeA133MachineState {
+     MachineState parent_obj;
++    MemoryRegion r_i2c0_container;
++    I2CBus *r_i2c0_bus;
+     bool input;
+ };
+ 
+@@ -460,7 +463,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.r_intc",           0x07010320, 0xc },
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+-    { "pocketforge-a133.r_i2c0",           0x07081400, 0x400 },
+ };
+ 
+ typedef struct PfA133UartRegion {
+@@ -488,6 +490,23 @@ static void pocketforge_a133_create_mmio_stubs(void)
+     }
+ }
+ 
++static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
++                                            qemu_irq irq)
++{
++    DeviceState *dev = qdev_new(TYPE_AW_I2C_SUN6I);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    memory_region_init(&s->r_i2c0_container, OBJECT(s),
++                       "pocketforge-a133.r_i2c0", PF_A133_R_I2C0_SIZE);
++    memory_region_add_subregion(&s->r_i2c0_container, 0,
++                                sysbus_mmio_get_region(sbd, 0));
++    memory_region_add_subregion(get_system_memory(), PF_A133_R_I2C0_BASE,
++                                &s->r_i2c0_container);
++    sysbus_connect_irq(sbd, 0, irq);
++    s->r_i2c0_bus = AW_I2C(dev)->bus;
++}
++
+ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+ {
+     DeviceState *gicdev;
+@@ -617,6 +636,7 @@ static void pocketforge_a133_modify_dtb(const struct arm_boot_info *binfo,
+ 
+ static void pocketforge_a133_init(MachineState *machine)
+ {
++    PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(machine);
+     MemoryRegion *sysmem = get_system_memory();
+     qemu_irq pic[PF_A133_NUM_SPI];
+     struct arm_boot_info *binfo = g_new0(struct arm_boot_info, 1);
+@@ -657,6 +677,7 @@ static void pocketforge_a133_init(MachineState *machine)
+     pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
+ 
+     pocketforge_a133_create_mmio_stubs();
++    pocketforge_a133_create_r_i2c0(s, pic[113]);
+ 
+     pocketforge_a133_create_virtio_mmio(machine, pic);
+ 
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 55fda35..df1c372 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -223,7 +223,7 @@ qtests_aarch64 = \
+    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
+-     'pocketforge-a133-mmio-map-test'] : []) +                                    \
++     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test'] : []) +      \
+   ['arm-cpu-features',
+    'numa-test',
+    'boot-serial-test',
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index e939756..c6720e5 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -61,7 +61,7 @@ static const ExpectedRegion expected_regions[] = {
+     { "pocketforge-a133.r_intc",           0x07010320, 0xc },
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+-    { "pocketforge-a133.r_i2c0",           0x07081400, 0x400 },
++    { "allwinner.i2c",                     0x07081400, 0x24 },
+     { "virtio-mmio",                       0x0a000000, 0x200 },
+     { "virtio-mmio",                       0x0a000200, 0x200 },
+ };
+@@ -104,7 +104,6 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.r_intc",           0x07010320, 0xc },
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+-    { "pocketforge-a133.r_i2c0",           0x07081400, 0x400 },
+ };
+ 
+ static QTestState *mmio_start(void)
+diff --git a/tests/qtest/pocketforge-a133-r-i2c-test.c b/tests/qtest/pocketforge-a133-r-i2c-test.c
+new file mode 100644
+index 0000000..282152e
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-r-i2c-test.c
+@@ -0,0 +1,41 @@
++/*
++ * PocketForge A133 R-I2C0 controller qtest
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest-single.h"
++
++#define R_I2C0_BASE 0x07081400
++#define TWI_STAT    0x10
++#define TWI_SRST    0x18
++
++static void test_r_i2c0_registers(void)
++{
++    g_assert_cmphex(qtest_readl(global_qtest, R_I2C0_BASE + TWI_STAT),
++                    ==, 0xf8);
++
++    qtest_writel(global_qtest, R_I2C0_BASE + TWI_SRST, 1);
++    g_assert_cmphex(qtest_readl(global_qtest, R_I2C0_BASE + TWI_SRST),
++                    ==, 1);
++    qtest_writel(global_qtest, R_I2C0_BASE + TWI_SRST, 0);
++    g_assert_cmphex(qtest_readl(global_qtest, R_I2C0_BASE + TWI_SRST),
++                    ==, 0);
++    g_assert_cmphex(qtest_readl(global_qtest, R_I2C0_BASE + TWI_STAT),
++                    ==, 0xf8);
++}
++
++int main(int argc, char **argv)
++{
++    int ret;
++
++    g_test_init(&argc, &argv, NULL);
++    qtest_start("-machine pocketforge-a133 -display none");
++    qtest_add_func("/pocketforge-a133/r-i2c0/registers",
++                   test_r_i2c0_registers);
++    ret = g_test_run();
++    qtest_end();
++
++    return ret;
++}
+-- 
+2.43.0
+

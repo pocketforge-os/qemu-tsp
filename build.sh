@@ -97,6 +97,36 @@ if ! grep -q 'without consuming guest buffers' hw/input/virtio-input.c; then
   git apply "$ROOT/pocketforge/0008-hw-input-make-virtio-input-reports-queue-atomic.patch"
 fi
 
+echo "== apply PocketForge patch: A133 R-I2C0 controller =="
+if [ ! -f tests/qtest/pocketforge-a133-r-i2c-test.c ]; then
+  git apply "$ROOT/pocketforge/0009-hw-arm-model-A133-R-I2C0-controller.patch"
+fi
+
+echo "== apply PocketForge patch: bounded AXP717 PMIC register bank =="
+if [ ! -f tests/qtest/pocketforge-a133-axp717-test.c ]; then
+  git apply "$ROOT/pocketforge/0010-hw-misc-add-bounded-AXP717-register-bank.patch"
+fi
+
+echo "== apply PocketForge patch: precise R-I2C0 coverage classification =="
+if ! grep -q 'r_i2c0.reserved' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0011-hw-arm-classify-R-I2C0-aperture-precisely.patch"
+fi
+
+echo "== apply PocketForge patch: build-6 A133 probe apertures =="
+if ! grep -q 'pocketforge-a133.g2d_clk' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0012-hw-arm-cover-build-6-A133-probe-apertures.patch"
+fi
+
+echo "== apply PocketForge patch: A100 SD host variant =="
+if ! grep -q 'TYPE_AW_SDHOST_SUN50I_A100' include/hw/sd/allwinner-sdhost.h; then
+  git apply "$ROOT/pocketforge/0013-hw-sd-add-A100-SD-host-variant.patch"
+fi
+
+echo "== apply PocketForge patch: connect A133 MMC0 to SD media =="
+if [ ! -f tests/qtest/pocketforge-a133-mmc-test.c ]; then
+  git apply "$ROOT/pocketforge/0014-hw-arm-connect-A133-MMC0-to-SD-media.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 
@@ -124,11 +154,17 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-input-test \
-  tests/qtest/pocketforge-a133-mmio-map-test
+  tests/qtest/pocketforge-a133-mmio-map-test \
+  tests/qtest/pocketforge-a133-r-i2c-test \
+  tests/qtest/pocketforge-a133-axp717-test \
+  tests/qtest/pocketforge-a133-mmc-test
 meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a100-rtc-test \
   qtest-aarch64/pocketforge-a133-input-test \
-  qtest-aarch64/pocketforge-a133-mmio-map-test
+  qtest-aarch64/pocketforge-a133-mmio-map-test \
+  qtest-aarch64/pocketforge-a133-r-i2c-test \
+  qtest-aarch64/pocketforge-a133-axp717-test \
+  qtest-aarch64/pocketforge-a133-mmc-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1

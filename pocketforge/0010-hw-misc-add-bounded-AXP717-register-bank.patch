@@ -1,0 +1,316 @@
+From 4e4996ff83678a4d93b80fd4836884f21149a20b Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 18:46:54 -0400
+Subject: [PATCH] hw/misc: add bounded AXP717 register bank
+
+Expose only the IRQ and regulator registers required by the mainline AXP717 MFD/regulator drivers, attach the PMIC at the board DT address, and cover positive register paths plus an adjacent-address NACK in one qtest invocation.
+
+Assisted-by: LLM
+---
+ hw/arm/Kconfig                             |   1 +
+ hw/arm/pocketforge_a133.c                  |   2 +
+ hw/misc/axp2xx.c                           |  68 ++++++++++++-
+ tests/qtest/meson.build                    |   3 +-
+ tests/qtest/pocketforge-a133-axp717-test.c | 108 +++++++++++++++++++++
+ 5 files changed, 179 insertions(+), 3 deletions(-)
+ create mode 100644 tests/qtest/pocketforge-a133-axp717-test.c
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 3d7c408..5d913ae 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -276,6 +276,7 @@ config POCKETFORGE_A133
+     depends on TCG && AARCH64
+     select ALLWINNER_I2C
+     select ARM_GIC
++    select AXP2XX_PMU
+     select DW_APB_UART
+     select POCKETFORGE_A100_RTC
+     select POCKETFORGE_A133_INPUT
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index d656230..b58cbde 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -92,6 +92,7 @@
+ #include "hw/boards.h"
+ #include "hw/char/dw_apb_uart.h"
+ #include "hw/i2c/allwinner-i2c.h"
++#include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
+ #include "hw/intc/arm_gic.h"
+@@ -505,6 +506,7 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+                                 &s->r_i2c0_container);
+     sysbus_connect_irq(sbd, 0, irq);
+     s->r_i2c0_bus = AW_I2C(dev)->bus;
++    i2c_slave_create_simple(s->r_i2c0_bus, "axp717_pmu", 0x34);
+ }
+ 
+ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+diff --git a/hw/misc/axp2xx.c b/hw/misc/axp2xx.c
+index 41538c1..d0fd6d5 100644
+--- a/hw/misc/axp2xx.c
++++ b/hw/misc/axp2xx.c
+@@ -2,6 +2,7 @@
+  * AXP-2XX PMU Emulation, supported lists:
+  *   AXP209
+  *   AXP221
++ *   AXP717 (bounded register bank for regulator discovery)
+  *
+  * Copyright (C) 2022 Strahinja Jankovic <strahinja.p.jankovic@gmail.com>
+  * Copyright (C) 2023 qianfan Zhao <qianfanguijin@163.com>
+@@ -37,6 +38,7 @@
+ #define TYPE_AXP2XX     "axp2xx_pmu"
+ #define TYPE_AXP209_PMU "axp209_pmu"
+ #define TYPE_AXP221_PMU "axp221_pmu"
++#define TYPE_AXP717_PMU "axp717_pmu"
+ 
+ OBJECT_DECLARE_TYPE(AXP2xxI2CState, AXP2xxClass, AXP2XX)
+ 
+@@ -57,6 +59,8 @@ typedef struct AXP2xxClass {
+     I2CSlaveClass parent_class;
+     /*< public >*/
+     void (*reset_enter)(AXP2xxI2CState *s, ResetType type);
++    uint8_t (*read)(AXP2xxI2CState *s, uint8_t reg);
++    void (*write)(AXP2xxI2CState *s, uint8_t reg, uint8_t value);
+ } AXP2xxClass;
+ 
+ #define AXP209_CHIP_VERSION_ID             (0x01)
+@@ -160,6 +164,42 @@ static void axp221_reset_enter(AXP2xxI2CState *s, ResetType type)
+     s->regs[0xe6] = 0xa0;
+ }
+ 
++/*
++ * The AXP717 subtype is deliberately only a software-visible register bank.
++ * It models IRQ enable 0x40..0x44, W1C IRQ status 0x48..0x4c, regulator
++ * enable 0x80, and regulator voltage/enable controls 0x83..0x9f.  Those
++ * values only report prior guest writes: they are not hardware measurements.
++ * Unmodelled registers read as zero and ignore writes.  The model generates
++ * no PMIC events and has no interrupt output.
++ */
++static bool axp717_reg_is_modelled(uint8_t reg)
++{
++    return (reg >= 0x40 && reg <= 0x44) ||
++           (reg >= 0x48 && reg <= 0x4c) || reg == 0x80 ||
++           (reg >= 0x83 && reg <= 0x9f);
++}
++
++static uint8_t axp717_read(AXP2xxI2CState *s, uint8_t reg)
++{
++    return axp717_reg_is_modelled(reg) ? s->regs[reg] : 0;
++}
++
++static void axp717_write(AXP2xxI2CState *s, uint8_t reg, uint8_t value)
++{
++    if (reg >= 0x48 && reg <= 0x4c) {
++        s->regs[reg] &= ~value;
++    } else if (axp717_reg_is_modelled(reg)) {
++        s->regs[reg] = value;
++    }
++}
++
++static void axp717_reset_enter(AXP2xxI2CState *s, ResetType type)
++{
++    memset(s->regs, 0, NR_REGS);
++    s->ptr = 0;
++    s->count = 0;
++}
++
+ static void axp2xx_reset_enter(Object *obj, ResetType type)
+ {
+     AXP2xxI2CState *s = AXP2XX(obj);
+@@ -182,10 +222,12 @@ static int axp2xx_event(I2CSlave *i2c, enum i2c_event event)
+ static uint8_t axp2xx_rx(I2CSlave *i2c)
+ {
+     AXP2xxI2CState *s = AXP2XX(i2c);
++    AXP2xxClass *sc = AXP2XX_GET_CLASS(s);
+     uint8_t ret = 0xff;
+ 
+     if (s->ptr < NR_REGS) {
+-        ret = s->regs[s->ptr++];
++        ret = sc->read ? sc->read(s, s->ptr) : s->regs[s->ptr];
++        s->ptr++;
+     }
+ 
+     trace_axp2xx_rx(s->ptr - 1, ret);
+@@ -200,6 +242,7 @@ static uint8_t axp2xx_rx(I2CSlave *i2c)
+ static int axp2xx_tx(I2CSlave *i2c, uint8_t data)
+ {
+     AXP2xxI2CState *s = AXP2XX(i2c);
++    AXP2xxClass *sc = AXP2XX_GET_CLASS(s);
+ 
+     if (s->count == 0) {
+         /* Store register address */
+@@ -208,7 +251,12 @@ static int axp2xx_tx(I2CSlave *i2c, uint8_t data)
+         trace_axp2xx_select(data);
+     } else {
+         trace_axp2xx_tx(s->ptr, data);
+-        s->regs[s->ptr++] = data;
++        if (sc->write) {
++            sc->write(s, s->ptr, data);
++        } else {
++            s->regs[s->ptr] = data;
++        }
++        s->ptr++;
+     }
+ 
+     return 0;
+@@ -273,11 +321,27 @@ static const TypeInfo axp221_info = {
+     .class_init = axp221_class_init,
+ };
+ 
++static void axp717_class_init(ObjectClass *oc, void *data)
++{
++    AXP2xxClass *sc = AXP2XX_CLASS(oc);
++
++    sc->reset_enter = axp717_reset_enter;
++    sc->read = axp717_read;
++    sc->write = axp717_write;
++}
++
++static const TypeInfo axp717_info = {
++    .name = TYPE_AXP717_PMU,
++    .parent = TYPE_AXP2XX,
++    .class_init = axp717_class_init,
++};
++
+ static void axp2xx_register_devices(void)
+ {
+     type_register_static(&axp2xx_info);
+     type_register_static(&axp209_info);
+     type_register_static(&axp221_info);
++    type_register_static(&axp717_info);
+ }
+ 
+ type_init(axp2xx_register_devices);
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index df1c372..3e64a49 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -223,7 +223,8 @@ qtests_aarch64 = \
+    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
+-     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test'] : []) +      \
++     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
++     'pocketforge-a133-axp717-test'] : []) +                                      \
+   ['arm-cpu-features',
+    'numa-test',
+    'boot-serial-test',
+diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
+new file mode 100644
+index 0000000..4fd051c
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-axp717-test.c
+@@ -0,0 +1,108 @@
++/*
++ * PocketForge A133 AXP717 PMIC qtest
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest-single.h"
++
++#define R_I2C0_BASE 0x07081400
++#define TWI_DATA    0x08
++#define TWI_CNTR    0x0c
++#define TWI_STAT    0x10
++
++#define CNTR_BUS_ENABLE 0x40
++#define CNTR_START      0x20
++#define CNTR_STOP       0x10
++
++#define STAT_START          0x08
++#define STAT_ADDR_WR_ACK    0x18
++#define STAT_ADDR_WR_NACK   0x20
++#define STAT_DATA_TX_ACK    0x28
++#define STAT_ADDR_RD_ACK    0x40
++
++static uint32_t i2c_status(void)
++{
++    return qtest_readl(global_qtest, R_I2C0_BASE + TWI_STAT);
++}
++
++static void i2c_start(void)
++{
++    qtest_writel(global_qtest, R_I2C0_BASE + TWI_CNTR,
++                 CNTR_BUS_ENABLE | CNTR_START);
++    g_assert_cmphex(i2c_status(), ==, STAT_START);
++}
++
++static void i2c_stop(void)
++{
++    qtest_writel(global_qtest, R_I2C0_BASE + TWI_CNTR,
++                 CNTR_BUS_ENABLE | CNTR_STOP);
++}
++
++static void i2c_send(uint8_t value, uint32_t expected_status)
++{
++    qtest_writel(global_qtest, R_I2C0_BASE + TWI_DATA, value);
++    g_assert_cmphex(i2c_status(), ==, expected_status);
++}
++
++static void axp717_write(uint8_t reg, uint8_t value)
++{
++    i2c_start();
++    i2c_send(0x34 << 1, STAT_ADDR_WR_ACK);
++    i2c_send(reg, STAT_DATA_TX_ACK);
++    i2c_send(value, STAT_DATA_TX_ACK);
++    i2c_stop();
++}
++
++static uint8_t axp717_read(uint8_t reg)
++{
++    uint8_t value;
++
++    i2c_start();
++    i2c_send(0x34 << 1, STAT_ADDR_WR_ACK);
++    i2c_send(reg, STAT_DATA_TX_ACK);
++    i2c_stop();
++
++    i2c_start();
++    i2c_send((0x34 << 1) | 1, STAT_ADDR_RD_ACK);
++    value = qtest_readl(global_qtest, R_I2C0_BASE + TWI_DATA);
++    i2c_stop();
++
++    return value;
++}
++
++static void test_register_bank_and_unpopulated_nack(void)
++{
++    /* Positive paths: IRQ enable and regulator control registers persist. */
++    axp717_write(0x40, 0xa5);
++    g_assert_cmphex(axp717_read(0x40), ==, 0xa5);
++    axp717_write(0x90, 0x12);
++    axp717_write(0x91, 0x34);
++    g_assert_cmphex(axp717_read(0x90), ==, 0x12);
++    g_assert_cmphex(axp717_read(0x91), ==, 0x34);
++
++    /* IRQ status is W1C and starts clear; unmodelled registers read zero. */
++    axp717_write(0x48, 0xff);
++    g_assert_cmphex(axp717_read(0x48), ==, 0);
++    g_assert_cmphex(axp717_read(0x20), ==, 0);
++
++    /* Negative control: no device is populated at the adjacent address. */
++    i2c_start();
++    i2c_send(0x35 << 1, STAT_ADDR_WR_NACK);
++    i2c_stop();
++}
++
++int main(int argc, char **argv)
++{
++    int ret;
++
++    g_test_init(&argc, &argv, NULL);
++    qtest_start("-machine pocketforge-a133 -display none");
++    qtest_add_func("/pocketforge-a133/axp717/register-bank-and-nack",
++                   test_register_bank_and_unpopulated_nack);
++    ret = g_test_run();
++    qtest_end();
++
++    return ret;
++}
+-- 
+2.43.0
+

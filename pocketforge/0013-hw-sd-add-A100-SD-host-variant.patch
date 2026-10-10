@@ -1,0 +1,183 @@
+From fab2ed95bace4e024ef33ac61d94477802744215 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 19:05:19 -0400
+Subject: [PATCH 13/14] hw/sd: add A100 SD host variant
+
+Assisted-by: LLM
+---
+ hw/arm/Kconfig                   |  2 ++
+ hw/sd/Kconfig                    |  4 ++++
+ hw/sd/allwinner-sdhost.c         | 37 ++++++++++++++++++++++++++++----
+ hw/sd/meson.build                |  2 +-
+ include/hw/sd/allwinner-sdhost.h |  4 ++++
+ 5 files changed, 44 insertions(+), 5 deletions(-)
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 5d913ae..33cad2a 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -275,6 +275,7 @@ config POCKETFORGE_A133
+     default y
+     depends on TCG && AARCH64
+     select ALLWINNER_I2C
++    select ALLWINNER_SDHOST
+     select ARM_GIC
+     select AXP2XX_PMU
+     select DW_APB_UART
+@@ -408,6 +409,7 @@ config ALLWINNER_H3
+     select ALLWINNER_A10_PIT
+     select ALLWINNER_SUN8I_EMAC
+     select ALLWINNER_I2C
++    select ALLWINNER_SDHOST
+     select ALLWINNER_WDT
+     select SERIAL
+     select ARM_TIMER
+diff --git a/hw/sd/Kconfig b/hw/sd/Kconfig
+index 633b9af..d862cde 100644
+--- a/hw/sd/Kconfig
++++ b/hw/sd/Kconfig
+@@ -10,6 +10,10 @@ config SSI_SD
+ config SD
+     bool
+ 
++config ALLWINNER_SDHOST
++    bool
++    select SD
++
+ config SDHCI
+     bool
+     select SD
+diff --git a/hw/sd/allwinner-sdhost.c b/hw/sd/allwinner-sdhost.c
+index 1a576d6..b30cb86 100644
+--- a/hw/sd/allwinner-sdhost.c
++++ b/hw/sd/allwinner-sdhost.c
+@@ -328,6 +328,14 @@ static void write_descriptor(AwSdHostState *s, hwaddr desc_addr,
+                      MEMTXATTRS_UNSPECIFIED);
+ }
+ 
++static hwaddr allwinner_sdhost_dma_addr(AwSdHostState *s, uint32_t addr)
++{
++    AwSdHostClass *sc = AW_SDHOST_GET_CLASS(s);
++
++    /* Reconstruct the byte address before discarding alignment bits. */
++    return ((hwaddr)addr << sc->dma_addr_shift) & (hwaddr)DESC_SIZE_MASK;
++}
++
+ static uint32_t allwinner_sdhost_process_desc(AwSdHostState *s,
+                                               hwaddr desc_addr,
+                                               TransferDescriptor *desc,
+@@ -364,7 +372,8 @@ static uint32_t allwinner_sdhost_process_desc(AwSdHostState *s,
+         /* Write to SD bus */
+         if (is_write) {
+             dma_memory_read(&s->dma_as,
+-                            (desc->addr & DESC_SIZE_MASK) + num_done, buf,
++                            allwinner_sdhost_dma_addr(s, desc->addr) + num_done,
++                            buf,
+                             buf_bytes, MEMTXATTRS_UNSPECIFIED);
+             sdbus_write_data(&s->sdbus, buf, buf_bytes);
+ 
+@@ -372,7 +381,8 @@ static uint32_t allwinner_sdhost_process_desc(AwSdHostState *s,
+         } else {
+             sdbus_read_data(&s->sdbus, buf, buf_bytes);
+             dma_memory_write(&s->dma_as,
+-                             (desc->addr & DESC_SIZE_MASK) + num_done, buf,
++                             allwinner_sdhost_dma_addr(s, desc->addr) + num_done,
++                             buf,
+                              buf_bytes, MEMTXATTRS_UNSPECIFIED);
+         }
+         num_done += buf_bytes;
+@@ -388,7 +398,7 @@ static uint32_t allwinner_sdhost_process_desc(AwSdHostState *s,
+ static void allwinner_sdhost_dma(AwSdHostState *s)
+ {
+     TransferDescriptor desc;
+-    hwaddr desc_addr = s->desc_base;
++    hwaddr desc_addr = allwinner_sdhost_dma_addr(s, s->desc_base);
+     bool is_write = (s->command & SD_CMDR_WRITE);
+     uint32_t bytes_done = 0;
+ 
+@@ -421,7 +431,7 @@ static void allwinner_sdhost_dma(AwSdHostState *s)
+         if (desc.status & DESC_STATUS_LAST) {
+             break;
+         } else {
+-            desc_addr = desc.next;
++            desc_addr = allwinner_sdhost_dma_addr(s, desc.next);
+         }
+     }
+ 
+@@ -940,6 +950,18 @@ static void allwinner_sdhost_sun50i_a64_emmc_class_init(ObjectClass *klass,
+     sc->can_calibrate = true;
+ }
+ 
++static void allwinner_sdhost_sun50i_a100_class_init(ObjectClass *klass,
++                                                    void *data)
++{
++    AwSdHostClass *sc = AW_SDHOST_CLASS(klass);
++
++    /* Matches Linux's allwinner,sun50i-a100-mmc (sun20i_d1_cfg). */
++    sc->max_desc_size = 8 * KiB;
++    sc->dma_addr_shift = 2;
++    sc->is_sun4i = false;
++    sc->can_calibrate = true;
++}
++
+ static const TypeInfo allwinner_sdhost_info = {
+     .name          = TYPE_AW_SDHOST,
+     .parent        = TYPE_SYS_BUS_DEVICE,
+@@ -974,6 +996,12 @@ static const TypeInfo allwinner_sdhost_sun50i_a64_emmc_info = {
+     .class_init    = allwinner_sdhost_sun50i_a64_emmc_class_init,
+ };
+ 
++static const TypeInfo allwinner_sdhost_sun50i_a100_info = {
++    .name          = TYPE_AW_SDHOST_SUN50I_A100,
++    .parent        = TYPE_AW_SDHOST,
++    .class_init    = allwinner_sdhost_sun50i_a100_class_init,
++};
++
+ static const TypeInfo allwinner_sdhost_bus_info = {
+     .name = TYPE_AW_SDHOST_BUS,
+     .parent = TYPE_SD_BUS,
+@@ -988,6 +1016,7 @@ static void allwinner_sdhost_register_types(void)
+     type_register_static(&allwinner_sdhost_sun5i_info);
+     type_register_static(&allwinner_sdhost_sun50i_a64_info);
+     type_register_static(&allwinner_sdhost_sun50i_a64_emmc_info);
++    type_register_static(&allwinner_sdhost_sun50i_a100_info);
+     type_register_static(&allwinner_sdhost_bus_info);
+ }
+ 
+diff --git a/hw/sd/meson.build b/hw/sd/meson.build
+index abfac9e..25e1e33 100644
+--- a/hw/sd/meson.build
++++ b/hw/sd/meson.build
+@@ -8,6 +8,6 @@ system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_mmc.c'))
+ system_ss.add(when: 'CONFIG_PXA2XX', if_true: files('pxa2xx_mmci.c'))
+ system_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_sdhost.c'))
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_sdhci.c'))
+-system_ss.add(when: 'CONFIG_ALLWINNER_H3', if_true: files('allwinner-sdhost.c'))
++system_ss.add(when: 'CONFIG_ALLWINNER_SDHOST', if_true: files('allwinner-sdhost.c'))
+ system_ss.add(when: 'CONFIG_NPCM7XX', if_true: files('npcm7xx_sdhci.c'))
+ system_ss.add(when: 'CONFIG_CADENCE_SDHCI', if_true: files('cadence_sdhci.c'))
+diff --git a/include/hw/sd/allwinner-sdhost.h b/include/hw/sd/allwinner-sdhost.h
+index 1b95117..0af931a 100644
+--- a/include/hw/sd/allwinner-sdhost.h
++++ b/include/hw/sd/allwinner-sdhost.h
+@@ -44,6 +44,9 @@
+ /** Allwinner sun50i-a64 emmc */
+ #define TYPE_AW_SDHOST_SUN50I_A64_EMMC  TYPE_AW_SDHOST "-sun50i-a64-emmc"
+ 
++/** Allwinner sun50i-a100 SD/MMC */
++#define TYPE_AW_SDHOST_SUN50I_A100 TYPE_AW_SDHOST "-sun50i-a100"
++
+ /** @} */
+ 
+ /**
+@@ -137,6 +140,7 @@ struct AwSdHostClass {
+ 
+     /** Maximum buffer size in bytes per DMA descriptor */
+     size_t max_desc_size;
++    uint8_t dma_addr_shift;
+     bool   is_sun4i;
+ 
+     /** does the IP block support autocalibration? */
+-- 
+2.43.0
+

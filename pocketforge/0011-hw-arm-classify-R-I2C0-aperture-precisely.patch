@@ -1,0 +1,145 @@
+From ce8e70c674dead76850eeae4fe9861e583dc9f17 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 18:50:27 -0400
+Subject: [PATCH] hw/arm: classify R-I2C0 aperture precisely
+
+Expose the sun6i register bank as the live model and retain only the register-free tail of the DT reservation as an inert residual stub. Update the machine description and MMIO qtest to keep the distinction explicit.
+
+Assisted-by: LLM
+---
+ docs/pocketforge-a133-peripheral-stubs.md    | 25 +++++++---------
+ hw/arm/pocketforge_a133.c                    | 31 ++++++++++----------
+ tests/qtest/pocketforge-a133-mmio-map-test.c |  2 ++
+ 3 files changed, 28 insertions(+), 30 deletions(-)
+
+diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
+index 9aace6c..dff3152 100644
+--- a/docs/pocketforge-a133-peripheral-stubs.md
++++ b/docs/pocketforge-a133-peripheral-stubs.md
+@@ -38,26 +38,23 @@ reg range) found FOURTEEN more peripherals between there and userspace:
+ | TCON-TOP | `tcon-top@6510000`, `allwinner,sun50i-a100-tcon-top` | `0x06510000` (`0x1000`) | `drivers/gpu/drm/sun4i/sun8i_tcon_top.c`, `sun8i_tcon_top_probe()` | Display is DT-SKIP (replaced by the virtio-gpu graft) but the real DT still declares this pipeline enabled, so the DRM component framework still probes+binds it. Unconditional `writel()`s clearing two reset-default registers, no poll. |
+ | SID/eFuse | `efuse@3006000`, `allwinner,sun50i-a100-sid` | `0x03006000` (`0x1000`) | `drivers/nvmem/sunxi_sid.c`, `sunxi_sid_probe()` | Bulk-reads the register file via `__ioread32_copy()` into an nvmem cell; a straight copy loop, no readiness poll. |
+ | DE2 display-clocks | `bus@6000000/clock@0`, `allwinner,sun50i-a100-de2-clk` | `0x06000000` (`0x10000`) | `drivers/clk/sunxi-ng/*`, `ccu_div_recalc_rate()` | Child-probed under the DE2 bus container via `of_platform_populate()`. `clk_hw_register()`'s standard `recalc_rate` op does a plain `readl()`, no poll. |
+-| R-domain pinctrl | `pinctrl@7022000`, `allwinner,sun50i-a100-r-pinctrl` (`r_pio`) | `0x07022000` (`0x400`) | `drivers/pinctrl/sunxi/pinctrl-sunxi.c` (same driver as `&pio` above) | Same audit as the already-stubbed main pinctrl: unconditional read-modify-write, no poll. Also the gate for observing the AXP717 PMIC-absence path (its I2C pins route through `r_pio`). |
++| R-domain pinctrl | `pinctrl@7022000`, `allwinner,sun50i-a100-r-pinctrl` (`r_pio`) | `0x07022000` (`0x400`) | `drivers/pinctrl/sunxi/pinctrl-sunxi.c` (same driver as `&pio` above) | Same audit as the already-stubbed main pinctrl: unconditional read-modify-write, no poll. Its I2C pins route the AXP717 bus through `r_pio`. |
+ | PWM | `pwm@300a000`, `allwinner,sun50i-a100-pwm` | `0x0300a000` (`0x400`) | `drivers/pwm/pwm-sun4i.c`, `sun8i_pwm_get_state()` (via `pwm-backlight`'s `devm_pwm_get()`) | Plain `readl()` of the channel's period/duty register, no poll. |
+ | DE2 mixer0 | `bus@6000000/mixer@100000`, `allwinner,sun50i-a100-de2-mixer-0` | `0x06100000` (`0x100000`) | `drivers/gpu/drm/sun4i/sun8i_mixer.c`, `sun8i_mixer_bind()` | DRM component bind for the display-engine compositor (real DT still enables it; replaced functionally by virtio-gpu). Unconditional `regmap_write()` resetting layer/blend config, no poll. |
+ | TCON-LCD0 | `lcd-controller@6511000`, `allwinner,sun50i-a100-tcon-lcd` | `0x06511000` (`0x1000`) | `drivers/gpu/drm/sun4i/sun4i_tcon.c`, `sun4i_tcon_bind()` | Same DRM-bind class as mixer0/tcon-top; unconditional `regmap_write()`, no poll. |
+-| R-domain I2C0 | `i2c@7081400`, `allwinner,sun50i-a100-i2c` (`r_i2c0`, the AXP717 PMIC bus) | `0x07081400` (`0x400`) | `drivers/i2c/busses/i2c-mv64xxx.c`, `mv64xxx_i2c_hw_init()` | Unconditional `writel()`s (soft-reset, clock divider, address, control), no poll. **This is the AXP717 PMIC-absence graceful-degradation gate** -- see below. |
++| R-domain I2C0 | `i2c@7081400`, `allwinner,sun50i-a100-i2c` (`r_i2c0`, the AXP717 PMIC bus) | `0x07081400` (`0x400`) | `drivers/i2c/busses/i2c-mv64xxx.c` | Promoted from a stub to QEMU's `allwinner.i2c-sun6i` model for registers `0x00..0x23`, wired to SPI 113. Only the DT reservation's register-free `0x24..0x3ff` tail remains an inert stub. |
+ | Thermal sensor | `thermal-sensor@5070400`, `allwinner,sun50i-a100-ths` | `0x05070400` (`0x100`) | `drivers/thermal/sun8i_thermal.c`, `sun50i_h6_thermal_init()` | Unconditional `regmap_write()`, no poll. |
+ | USB OTG/MUSB | `usb@5100000`, `allwinner,sun50i-a100-musb` | `0x05100000` (`0x400`) | `drivers/usb/musb/sunxi.c`, `sunxi_musb_init()` | USB is explicitly SKIP (the infra-113 D10 cost this machine exists to avoid paying) -- this stub backs the single unconditional `writeb()` at probe time ONLY, it does not model USB. |
+ | USB PHY | `phy@5100400`, `allwinner,sun50i-a100-usb-phy` | `0x05100400`+`0x05101800`+`0x05200800` (`0x100` each: `phy_ctrl`, `pmu0`, `pmu1`) | `drivers/phy/allwinner/phy-sun4i-usb.c`, `sun4i_usb_phy_init()` | Same USB-SKIP class. Plain `readl()`-modify-`writel()` on `REG_HCI_PHY_CTL`/SIDDQ bits, no poll. Three disjoint reg ranges per the DT. |
+ | EHCI0/OHCI0/EHCI1/OHCI1 | `usb@5101000`, `usb@5101400`, `usb@5200000`, `usb@5200400` | `0x100` each | `drivers/usb/host/{ehci,ohci}-hcd.c` generic core | Same USB-SKIP class. Plain register init/reset writes; any hardware-completion wait uses the generic core's own bounded jiffies timeout (confirmed live: OHCI logs "USB HC reset timed out!" and fails its probe cleanly with `-1`, never hangs). |
+ 
+-### Regulator-less/PMIC-absence graceful degradation -- CONFIRMED (Phase C)
++### R-I2C0 and AXP717 promotion
+ 
+-With `r_i2c0` stubbed, the AXP717 PMIC driver (`axp20x-i2c`) binds at its DT
+-slave address, logs `AXP20x variant AXP717 found`, then its actual register
+-read/irq-chip-setup I2C transfer times out through `i2c-mv64xxx`'s own
+-bounded jiffies timeout (~2s, `mv64xxx: I2C bus locked ... time_left: 0`) and
+-fails cleanly with `-110` (`ETIMEDOUT`) -- `axp20x-i2c 0-0034: probe with
+-driver axp20x-i2c failed with error -110`. No wedge, no hang: boot proceeds
+-straight through to `Run /init as init process` seconds later. This is
+-exactly the "warn-and-continue" graceful degradation the real, regulator-less
+-hardware config exhibits (see `helper-core.dtsi`'s own comments on this),
+-now independently reproduced under `-M pocketforge-a133`. Full transcript:
+-`pocketforge-automation` `scripts/qemu-pocketforge-a133-ui-evidence/serial.txt`.
++The earlier stub-only diagnostic proved that MMC0 deferred on the real DT's
++CLDO3 regulator supplier. R-I2C0 is now a functional sun6i controller and an
++AXP717 slave is populated at the DT address `0x34`. The PMIC is deliberately a
++bounded software register bank: IRQ enable `0x40..0x44`, W1C IRQ status
++`0x48..0x4c`, regulator enable `0x80`, and regulator controls `0x83..0x9f`.
++Unmodelled registers read zero and ignore writes. Stored regulator values are
++guest-programmed state, not hardware measurements; the model generates no
++PMIC events and exposes no interrupt output.
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index b58cbde..fc0c9ee 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -47,8 +47,8 @@
+  * README already flagged this), the SoC syscon/version block, the DE2
+  * display pipeline (TCON-TOP/mixer0/TCON-LCD0, still probed+bound by the
+  * real DT even though rendering is replaced by the virtio-gpu graft
+- * below), SID/eFuse, R-domain pinctrl + I2C0 (the AXP717 PMIC bus -- see
+- * (3) below), PWM, the thermal sensor, and the full USB stack (MUSB/PHY/
++ * below), SID/eFuse, R-domain pinctrl, PWM, the thermal sensor, and the
++ * full USB stack (MUSB/PHY/
+  * enabled EHCI1/OHCI1 -- D10's original deferred cost, never functionally
+  * modeled, only register-backed so probe doesn't hard-abort; the disabled
+  * EHCI0/OHCI0 nodes are deliberately absent). Full
+@@ -59,13 +59,12 @@
+  * pocketforge_a133_create_virtio_mmio()/pocketforge_a133_modify_dtb()
+  * below for how a from-scratch machine loading a REAL, unmodified DT (no
+  * auto-generated FDT like -M virt has) still makes virtio-mmio
+- * discoverable. (3) the regulator-less/PMIC-absence graceful-degradation
+- * path (Phase B's other carried item) is independently confirmed reachable
+- * and non-wedging by this same boot: with r_i2c0 stubbed, the AXP717
+- * driver binds, its register read/irq-chip setup times out through the
+- * i2c core's own bounded jiffies timeout (~2s), and probe fails cleanly
+- * with -110 -- no hang, no abort, boot proceeds straight through to
+- * userspace. CI wiring (Phase D) remains out of scope. The GE8300 silicon
++ * discoverable. (3) R-I2C0 now uses QEMU's sun6i controller, and the AXP717
++ * exposes only the bounded IRQ/regulator register bank needed by the
++ * mainline MFD and regulator drivers. It synthesizes no PMIC events or
++ * interrupts. Only the register-free tail of the DT's 0x400-byte R-I2C0
++ * reservation remains a stub. CI wiring (Phase D) remains out of scope.
++ * The GE8300 silicon
+  * GPU / PowerVR blob is never modeled (aspirational) -- display output is
+  * entirely the open virtio-gpu graft (virgl/llvmpipe on the host side).
+  *
+@@ -114,7 +113,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133MachineState,
+ 
+ struct PocketForgeA133MachineState {
+     MachineState parent_obj;
+-    MemoryRegion r_i2c0_container;
+     I2CBus *r_i2c0_bus;
+     bool input;
+ };
+@@ -498,15 +496,16 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+ 
+     sysbus_realize_and_unref(sbd, &error_fatal);
+-    memory_region_init(&s->r_i2c0_container, OBJECT(s),
+-                       "pocketforge-a133.r_i2c0", PF_A133_R_I2C0_SIZE);
+-    memory_region_add_subregion(&s->r_i2c0_container, 0,
+-                                sysbus_mmio_get_region(sbd, 0));
+-    memory_region_add_subregion(get_system_memory(), PF_A133_R_I2C0_BASE,
+-                                &s->r_i2c0_container);
++    sysbus_mmio_map(sbd, 0, PF_A133_R_I2C0_BASE);
+     sysbus_connect_irq(sbd, 0, irq);
+     s->r_i2c0_bus = AW_I2C(dev)->bus;
+     i2c_slave_create_simple(s->r_i2c0_bus, "axp717_pmu", 0x34);
++
++    /* The DT reserves 0x400 bytes; the sun6i register bank ends at 0x23. */
++    pocketforge_a133_mmio_stub_create(
++        "pocketforge-a133.r_i2c0.reserved",
++        PF_A133_R_I2C0_BASE + AW_I2C_MEM_SIZE,
++        PF_A133_R_I2C0_SIZE - AW_I2C_MEM_SIZE);
+ }
+ 
+ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index c6720e5..7de0cc0 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -62,6 +62,7 @@ static const ExpectedRegion expected_regions[] = {
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+     { "allwinner.i2c",                     0x07081400, 0x24 },
++    { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },
+     { "virtio-mmio",                       0x0a000000, 0x200 },
+     { "virtio-mmio",                       0x0a000200, 0x200 },
+ };
+@@ -104,6 +105,7 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.r_intc",           0x07010320, 0xc },
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
++    { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },
+ };
+ 
+ static QTestState *mmio_start(void)
+-- 
+2.43.0
+
