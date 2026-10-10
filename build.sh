@@ -59,6 +59,36 @@ prepare_owned_build_dir() {
   mkdir "$dir"
 }
 
+verify_patch_stack_tree() (
+  local scratch expected_index actual_index expected_tree actual_tree patch
+
+  scratch=$(mktemp -d "$ROOT/build/patch-tree.XXXXXX")
+  trap 'find "$scratch" -mindepth 1 -delete; rmdir "$scratch"' EXIT
+  expected_index="$scratch/expected.index"
+  actual_index="$scratch/actual.index"
+
+  GIT_INDEX_FILE="$expected_index" git read-tree "$COMMIT"
+  for patch in "$ROOT"/pocketforge/*.patch; do
+    GIT_INDEX_FILE="$expected_index" git apply --cached "$patch"
+  done
+  expected_tree=$(GIT_INDEX_FILE="$expected_index" git write-tree)
+
+  GIT_INDEX_FILE="$actual_index" git read-tree "$COMMIT"
+  GIT_INDEX_FILE="$actual_index" git add -A -- . \
+    ":(exclude)$LINUX_USER_BUILD_DIR" \
+    ":(exclude)$LINUX_USER_BUILD_DIR/**" \
+    ":(exclude)$SYSTEM_BUILD_DIR" \
+    ":(exclude)$SYSTEM_BUILD_DIR/**"
+  actual_tree=$(GIT_INDEX_FILE="$actual_index" git write-tree)
+
+  if [ "$actual_tree" != "$expected_tree" ]; then
+    echo "FATAL: patched QEMU source tree $actual_tree != expected $expected_tree"
+    git diff --name-status "$expected_tree" "$actual_tree"
+    exit 1
+  fi
+  echo "== verified patched QEMU source tree: $actual_tree =="
+)
+
 mkdir -p "$ROOT/build"
 if [ ! -d "$SRC/.git" ]; then
   echo "== clone $REPO @ $TAG =="
@@ -181,6 +211,7 @@ fi
 
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
+verify_patch_stack_tree
 
 mkdir -p "$OUT"
 
