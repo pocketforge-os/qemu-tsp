@@ -1,14 +1,17 @@
-From c66cf952954d013802881f5f3d74dcc751192184 Mon Sep 17 00:00:00 2001
+From 0d757274a882001680a1a9d6ff509616979f647f Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Fri, 9 Oct 2026 22:59:35 -0400
+Date: Fri, 9 Oct 2026 23:13:12 -0400
 Subject: [PATCH 15/15] hw/arm: add PocketForge display and input ABI
 
 Assisted-by: LLM
 ---
- hw/arm/pocketforge_a133.c                   | 276 ++++++++++++
+ hw/arm/meson.build                          |   1 +
+ hw/arm/pocketforge_a133.c                   | 277 ++++++++++++
+ hw/arm/pocketforge_a133_qmp.c               |  54 +++
  hw/input/pocketforge_a133_input.c           | 245 +++++++++--
  hw/input/virtio-input.c                     |  57 +++
+ include/hw/arm/pocketforge_a133.h           |  19 +
  include/hw/input/pocketforge_a133_input.h   |  29 ++
  include/hw/virtio/virtio-input.h            |   3 +
  qapi/misc-target.json                       | 172 ++++++++
@@ -16,14 +19,27 @@ Assisted-by: LLM
  tests/qtest/meson.build                     |   3 +
  tests/qtest/pocketforge-a133-display-test.c | 443 ++++++++++++++++++++
  tests/qtest/pocketforge-a133-input-test.c   | 340 ++++++++++++++-
- 10 files changed, 1538 insertions(+), 32 deletions(-)
+ 13 files changed, 1613 insertions(+), 32 deletions(-)
+ create mode 100644 hw/arm/pocketforge_a133_qmp.c
+ create mode 100644 include/hw/arm/pocketforge_a133.h
  create mode 100644 tests/qtest/pocketforge-a133-display-test.c
 
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index 7a6ce2b..2e2b6e7 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -1,5 +1,6 @@
+ arm_ss = ss.source_set()
+ arm_ss.add(files('boot.c'), fdt)
++arm_ss.add(files('pocketforge_a133_qmp.c'))
+ arm_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
+ arm_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
+ arm_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index d2f67a3..4b3e809 100644
+index d2f67a3..115255c 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -86,9 +86,13 @@
+@@ -86,12 +86,17 @@
   */
  
  #include "qemu/osdep.h"
@@ -37,7 +53,11 @@ index d2f67a3..4b3e809 100644
  #include "cpu.h"
  #include "hw/arm/boot.h"
  #include "hw/arm/bsa.h"
-@@ -106,6 +110,7 @@
++#include "hw/arm/pocketforge_a133.h"
+ #include "hw/boards.h"
+ #include "hw/char/dw_apb_uart.h"
+ #include "hw/i2c/allwinner-i2c.h"
+@@ -106,6 +111,7 @@
  #include "hw/sd/sd.h"
  #include "hw/sysbus.h"
  #include "hw/virtio/virtio-mmio.h"
@@ -45,7 +65,7 @@ index d2f67a3..4b3e809 100644
  #include "exec/address-spaces.h"
  #include "sysemu/device_tree.h"
  #include "sysemu/blockdev.h"
-@@ -113,6 +118,9 @@
+@@ -113,6 +119,9 @@
  #include "sysemu/sysemu.h"
  #include "qemu/module.h"
  #include "chardev/char.h"
@@ -55,7 +75,7 @@ index d2f67a3..4b3e809 100644
  
  #define TYPE_POCKETFORGE_A133_MACHINE MACHINE_TYPE_NAME("pocketforge-a133")
  OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133MachineState,
-@@ -122,8 +130,29 @@ struct PocketForgeA133MachineState {
+@@ -122,8 +131,29 @@ struct PocketForgeA133MachineState {
      MachineState parent_obj;
      I2CBus *r_i2c0_bus;
      bool input;
@@ -85,7 +105,7 @@ index d2f67a3..4b3e809 100644
  /*
   * Addresses/IRQ taken verbatim from the real device tree
   * (arch/arm64/boot/dts/allwinner/sun50i-a100.dtsi, kernel-sunxi-6.x
-@@ -635,12 +664,32 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+@@ -635,12 +665,32 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
          sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
          sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, pic[irq]);
  
@@ -118,7 +138,7 @@ index d2f67a3..4b3e809 100644
              object_unref(OBJECT(input));
          }
      }
-@@ -687,6 +736,14 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -687,6 +737,14 @@ static void pocketforge_a133_init(MachineState *machine)
      int n;
      unsigned int i;
  
@@ -133,7 +153,7 @@ index d2f67a3..4b3e809 100644
      for (n = 0; n < PF_A133_NUM_CPUS; n++) {
          Object *cpuobj = object_new(machine->cpu_type);
  
-@@ -774,16 +831,234 @@ static void pocketforge_a133_set_input(Object *obj, bool value, Error **errp)
+@@ -774,16 +832,234 @@ static void pocketforge_a133_set_input(Object *obj, bool value, Error **errp)
      POCKETFORGE_A133_MACHINE(obj)->input = value;
  }
  
@@ -175,7 +195,7 @@ index d2f67a3..4b3e809 100644
 +    }
 +}
 +
-+PocketForgeInputInfo *qmp_query_pocketforge_input(Error **errp)
++PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
 +{
 +    PocketForgeInputInfo *info;
 +    PocketForgeA133MachineState *s;
@@ -256,9 +276,9 @@ index d2f67a3..4b3e809 100644
 +    return info;
 +}
 +
-+void qmp_pocketforge_input_send(const char *device,
-+                                PocketForgeInputEventList *events,
-+                                Error **errp)
++void pocketforge_a133_input_send_qmp(const char *device,
++                                     PocketForgeInputEventList *events,
++                                     Error **errp)
 +{
 +    PocketForgeA133MachineState *s;
 +    PocketForgeInputEventList *item;
@@ -292,7 +312,7 @@ index d2f67a3..4b3e809 100644
 +    g_free(raw);
 +}
 +
-+PocketForgeDisplayInfo *qmp_query_pocketforge_display(Error **errp)
++PocketForgeDisplayInfo *pocketforge_a133_query_display(Error **errp)
 +{
 +    PocketForgeA133MachineState *s;
 +    PocketForgeDisplayInfo *info;
@@ -368,7 +388,7 @@ index d2f67a3..4b3e809 100644
  }
  
  static const TypeInfo pocketforge_a133_machine_info = {
-@@ -791,6 +1066,7 @@ static const TypeInfo pocketforge_a133_machine_info = {
+@@ -791,6 +1067,7 @@ static const TypeInfo pocketforge_a133_machine_info = {
      .parent = TYPE_MACHINE,
      .instance_size = sizeof(PocketForgeA133MachineState),
      .instance_init = pocketforge_a133_instance_init,
@@ -376,6 +396,66 @@ index d2f67a3..4b3e809 100644
      .class_init = pocketforge_a133_machine_class_init,
  };
  
+diff --git a/hw/arm/pocketforge_a133_qmp.c b/hw/arm/pocketforge_a133_qmp.c
+new file mode 100644
+index 0000000..d7e48b3
+--- /dev/null
++++ b/hw/arm/pocketforge_a133_qmp.c
+@@ -0,0 +1,54 @@
++/*
++ * PocketForge A133 QMP command dispatch
++ *
++ * This code is licensed under the GPL.
++ */
++
++#include "qemu/osdep.h"
++#include CONFIG_DEVICES
++
++#if defined(TARGET_AARCH64) && defined(CONFIG_TCG)
++
++#include "qapi/error.h"
++#include "qapi/qapi-commands-misc-target.h"
++#include "qapi/qapi-types-misc-target.h"
++
++#ifdef CONFIG_POCKETFORGE_A133
++#include "hw/arm/pocketforge_a133.h"
++#endif
++
++PocketForgeInputInfo *qmp_query_pocketforge_input(Error **errp)
++{
++#ifdef CONFIG_POCKETFORGE_A133
++    return pocketforge_a133_query_input(errp);
++#else
++    error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
++              "PocketForge A133 input is not present");
++    return NULL;
++#endif
++}
++
++void qmp_pocketforge_input_send(const char *device,
++                                PocketForgeInputEventList *events,
++                                Error **errp)
++{
++#ifdef CONFIG_POCKETFORGE_A133
++    pocketforge_a133_input_send_qmp(device, events, errp);
++#else
++    error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
++              "PocketForge A133 input is not present");
++#endif
++}
++
++PocketForgeDisplayInfo *qmp_query_pocketforge_display(Error **errp)
++{
++#ifdef CONFIG_POCKETFORGE_A133
++    return pocketforge_a133_query_display(errp);
++#else
++    error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
++              "PocketForge A133 display is not present");
++    return NULL;
++#endif
++}
++
++#endif
 diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
 index 41ff314..d259e4c 100644
 --- a/hw/input/pocketforge_a133_input.c
@@ -783,6 +863,31 @@ index 7fef399..ab9f638 100644
  static void virtio_input_handle_evt(VirtIODevice *vdev, VirtQueue *vq)
  {
      /* nothing */
+diff --git a/include/hw/arm/pocketforge_a133.h b/include/hw/arm/pocketforge_a133.h
+new file mode 100644
+index 0000000..eda48ef
+--- /dev/null
++++ b/include/hw/arm/pocketforge_a133.h
+@@ -0,0 +1,19 @@
++/*
++ * PocketForge A133 machine QMP helpers
++ *
++ * This code is licensed under the GPL.
++ */
++
++#ifndef HW_ARM_POCKETFORGE_A133_H
++#define HW_ARM_POCKETFORGE_A133_H
++
++#include "qapi/error.h"
++#include "qapi/qapi-types-misc-target.h"
++
++PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp);
++void pocketforge_a133_input_send_qmp(const char *device,
++                                     PocketForgeInputEventList *events,
++                                     Error **errp);
++PocketForgeDisplayInfo *pocketforge_a133_query_display(Error **errp);
++
++#endif
 diff --git a/include/hw/input/pocketforge_a133_input.h b/include/hw/input/pocketforge_a133_input.h
 index e1b7e29..9b50213 100644
 --- a/include/hw/input/pocketforge_a133_input.h
@@ -1914,6 +2019,3 @@ index a25a74e..f7c7188 100644
  
      return g_test_run();
  }
--- 
-2.43.0
-
