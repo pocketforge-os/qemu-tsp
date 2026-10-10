@@ -8,8 +8,9 @@ device-free fidelity tests.
 It is a **BUILD / SIM-HOST TOOL ONLY** — it is **never shipped in a PocketForge device
 image**. The user-mode target lets the simulator run the identical arm64 app binary
 against a host-synthesized input device. The system target boots the owned A133 kernel
-and DT with source-owned models. The A133 input model and its deterministic host
-interface are documented in [docs/pocketforge-a133-input.md](docs/pocketforge-a133-input.md).
+and DT with source-owned models. The A133 display profile, D-Bus copy path, and
+versioned input ABI are documented at the one stable contract path:
+[docs/pocketforge-a133-input.md](docs/pocketforge-a133-input.md).
 
 ## Why this exists
 
@@ -80,6 +81,11 @@ For direct-kernel A133 boots, MMC0 accepts a raw SD image as
 image remain independent, identity-pinned inputs; this machine does not provide
 a BootROM/SPL firmware-from-SD path. MMC1 remains a register stub and disabled
 MMC2 is not instantiated.
+
+The machine owns its native 720x1280 virtio GPU by default. Use
+`-display dbus,p2p=yes` for copied `Scanout`/`Update` frames and do not add a
+second virtio GPU. Deliberately headless callers can select
+`-M pocketforge-a133,pocketforge-display=off`.
 
 The reusable real-image input tuple is `boot-mode=direct-kernel+sd`, an
 independently pinned `Image`, unmodified board DTB, unmodified initrd, and the
