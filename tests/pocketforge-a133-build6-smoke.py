@@ -595,17 +595,23 @@ def main() -> int:
             raise RuntimeError(f"negative-control:{negative}")
         print("QMP_NEGATIVE reason=invalid-parameter delivered=false", flush=True)
 
-        for triple in (
+        valid_reports = (
             event(1, 304, 1), event(1, 304, 0),
             event(3, 17, -1), event(3, 17, 0),
             event(3, 0, 0), event(3, 1, 4095),
             event(3, 3, 4095), event(3, 4, 0),
             event(3, 2, 255), event(3, 2, 0),
             event(3, 5, 255), event(3, 5, 0),
-        ):
-            response = send_report(qmp, triple)
-            if "return" not in response:
-                raise RuntimeError(f"positive-injection:{response}")
+        )
+        batch = []
+        for triple in valid_reports:
+            batch.extend((triple, event(0, 0, 0)))
+        response = qmp.command(
+            "pocketforge-input-send", {"device": "gamepad", "events": batch}
+        )
+        if "return" not in response:
+            raise RuntimeError(f"positive-injection:{response}")
+        print("QMP_POSITIVE reports=12 atomic=true", flush=True)
 
         console.until(b"PF_SMOKE_PASS ", 60.0)
         console.until(b"\n", 5.0)
