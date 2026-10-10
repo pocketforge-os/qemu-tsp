@@ -32,7 +32,7 @@ DTB and initrd are never modified.
 Reproduction
 ------------
 
-Build QEMU through patch 0022, then run inside the pinned qemu-test image:
+Build QEMU through patch 0024, then run inside the pinned qemu-test image:
 
   python3 tests/pocketforge-a133-build6-smoke.py \
     --qemu build/qemu-src/build-softmmu/qemu-system-aarch64 \
