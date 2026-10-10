@@ -1,0 +1,101 @@
+From: PocketForge CI <ci@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 09:00:00 +0000
+Subject: [PATCH 27/27] hw/arm: indent gamepad query capabilities
+
+Keep the existing gamepad capability construction inside its device-present
+guard after the power-key query extension wrapped that path.
+
+Assisted-by: LLM
+---
+ hw/arm/pocketforge_a133.c | 70 +++++++++++++++++++--------------------
+ 1 file changed, 35 insertions(+), 35 deletions(-)
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 6896910..bb46cb3 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -1003,45 +1003,45 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+         device->ready = pocketforge_a133_input_is_ready(s->input_device);
+         caps_tail = &device->caps;
+ 
+-    cap = g_new0(PocketForgeInputCaps, 1);
+-    cap->type = EV_SYN;
+-    cap->has_codes = true;
+-    code_tail = &cap->codes;
+-    {
+-        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
+-        code->code = SYN_REPORT;
+-        code->name = g_strdup("SYN_REPORT");
+-        QAPI_LIST_APPEND(code_tail, code);
+-    }
+-    QAPI_LIST_APPEND(caps_tail, cap);
++        cap = g_new0(PocketForgeInputCaps, 1);
++        cap->type = EV_SYN;
++        cap->has_codes = true;
++        code_tail = &cap->codes;
++        {
++            PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++            code->code = SYN_REPORT;
++            code->name = g_strdup("SYN_REPORT");
++            QAPI_LIST_APPEND(code_tail, code);
++        }
++        QAPI_LIST_APPEND(caps_tail, cap);
+ 
+-    cap = g_new0(PocketForgeInputCaps, 1);
+-    cap->type = EV_KEY;
+-    cap->has_codes = true;
+-    code_tail = &cap->codes;
+-    for (i = 0; i < pocketforge_a133_input_key_count; i++) {
+-        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
+-        code->code = pocketforge_a133_input_keys[i].code;
+-        code->name = g_strdup(pocketforge_a133_input_keys[i].name);
+-        QAPI_LIST_APPEND(code_tail, code);
+-    }
+-    QAPI_LIST_APPEND(caps_tail, cap);
++        cap = g_new0(PocketForgeInputCaps, 1);
++        cap->type = EV_KEY;
++        cap->has_codes = true;
++        code_tail = &cap->codes;
++        for (i = 0; i < pocketforge_a133_input_key_count; i++) {
++            PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++            code->code = pocketforge_a133_input_keys[i].code;
++            code->name = g_strdup(pocketforge_a133_input_keys[i].name);
++            QAPI_LIST_APPEND(code_tail, code);
++        }
++        QAPI_LIST_APPEND(caps_tail, cap);
+ 
+-    cap = g_new0(PocketForgeInputCaps, 1);
+-    cap->type = EV_ABS;
+-    cap->has_abs = true;
+-    abs_tail = &cap->abs;
+-    for (i = 0; i < pocketforge_a133_input_axis_count; i++) {
+-        PocketForgeInputAbsInfo *axis =
+-            g_new0(PocketForgeInputAbsInfo, 1);
+-        axis->code = pocketforge_a133_input_axes[i].code;
+-        axis->name = g_strdup(pocketforge_a133_input_axes[i].name);
+-        axis->min = pocketforge_a133_input_axes[i].minimum;
+-        axis->max = pocketforge_a133_input_axes[i].maximum;
+-        axis->fuzz = pocketforge_a133_input_axes[i].fuzz;
+-        axis->flat = pocketforge_a133_input_axes[i].flat;
+-        QAPI_LIST_APPEND(abs_tail, axis);
+-    }
++        cap = g_new0(PocketForgeInputCaps, 1);
++        cap->type = EV_ABS;
++        cap->has_abs = true;
++        abs_tail = &cap->abs;
++        for (i = 0; i < pocketforge_a133_input_axis_count; i++) {
++            PocketForgeInputAbsInfo *axis =
++                g_new0(PocketForgeInputAbsInfo, 1);
++            axis->code = pocketforge_a133_input_axes[i].code;
++            axis->name = g_strdup(pocketforge_a133_input_axes[i].name);
++            axis->min = pocketforge_a133_input_axes[i].minimum;
++            axis->max = pocketforge_a133_input_axes[i].maximum;
++            axis->fuzz = pocketforge_a133_input_axes[i].fuzz;
++            axis->flat = pocketforge_a133_input_axes[i].flat;
++            QAPI_LIST_APPEND(abs_tail, axis);
++        }
+         QAPI_LIST_APPEND(caps_tail, cap);
+         QAPI_LIST_APPEND(device_tail, device);
+     }
+-- 
+2.43.0
