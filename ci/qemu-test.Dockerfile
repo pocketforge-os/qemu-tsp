@@ -7,15 +7,18 @@ RUN apt-get update \
         bison \
         build-essential \
         ca-certificates \
+        e2fsprogs \
         flex \
         git \
         libfdt-dev \
         libglib2.0-dev \
         libpixman-1-dev \
         meson \
+        mtools \
         ninja-build \
         pkg-config \
         python3 \
         python3-venv \
+        xz-utils \
         zlib1g-dev \
     && find /var/lib/apt/lists -mindepth 1 -delete

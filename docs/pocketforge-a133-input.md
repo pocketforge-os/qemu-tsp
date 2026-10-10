@@ -137,6 +137,24 @@ one-control reports on one side, producing exactly 128 eight-byte frames, so
 every accepted maximum batch can eventually drain at steady state. Capacity is
 preflighted for both sides before state or either FIFO changes.
 
+### Release-kernel UART contract
+
+The build-6 `8250_dw` probe reads the DesignWare Component Parameter Register
+at byte offset `0xf4`. The model returns read-only `0x00010002`: a 32-bit APB
+data path and the model's 16-byte FIFO. This makes the driver select its normal
+16550A FIFO path instead of leaving termios ioctls unavailable. The release
+decoder's final LCR value is `0x13`; bit 4 selects even parity only when the
+parity-enable bit is set, so this is still 8N1. Input readiness therefore
+requires DLAB clear, word length 8, one stop bit, parity disabled, and a
+non-zero divisor, while ignoring parity-selection bits that are inactive.
+
+The qtests `uart-component-parameters` and `uart-8n1-eps-ignored` pin those
+details. The latter also rejects EV_SW and accepts BTN_SOUTH in the same live
+QEMU invocation. `tests/pocketforge-a133-build6-smoke.py` then proves the
+unmodified release kernel and its own `pf-input-decode.service` consume the MCU
+frames and emit the expected events on `TRIMUI Player1`; the pinned artifacts
+and transcript are recorded in `docs/pocketforge-a133-build6-smoke.txt`.
+
 ## Raw input grammar
 
 `pocketforge-input-send` is the primary injection form:

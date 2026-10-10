@@ -159,6 +159,16 @@ if grep -q '0x0a000200, 0x200' tests/qtest/pocketforge-a133-mmio-map-test.c; the
   git apply "$ROOT/pocketforge/0020-tests-update-A133-map-after-virtio-input-removal.patch"
 fi
 
+echo "== apply PocketForge patch: RED release-termios UART coverage =="
+if ! grep -q 'uart-component-parameters' tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0021-tests-cover-DW-UART-release-termios-contract.patch"
+fi
+
+echo "== apply PocketForge patch: DW UART component parameters =="
+if ! grep -q 'DW_UART_CPR_32BIT_FIFO16' hw/char/dw_apb_uart.c; then
+  git apply "$ROOT/pocketforge/0022-hw-char-model-DW-UART-component-parameters.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 

@@ -1,8 +1,8 @@
-PocketForge A133 build-6 smoke checkpoint
-==========================================
+PocketForge A133 build-6 MCU-input smoke
+=========================================
 
-Result: BLOCKED before guest input/display observation
-QEMU head: dc8cf811e64b1ad07539eed52ac13ec68150d5c4
+Result: PASS
+QEMU patch stack: through 0022-hw-char-model-DW-UART-component-parameters
 Run date: 2026-10-10 UTC
 Execution: TCG only, unprivileged Docker container, no device or bench
 
@@ -24,80 +24,58 @@ initrd.gz:
 rootfs.ext4 (partition 5, offset 127926272, length 1518338048):
   e76f7379c5684884da6469366b4e49103706a868ec3476d27d66530a2ef18af6
 
-The raw image was copied, its source digest was rechecked, and the copy was
-zero-extended to 2 GiB for QEMU SD-card geometry. The kernel, DTB and initrd
-were not modified. The root filesystem digest above is the byte-exact fifth
-partition extracted from the pinned raw image.
+The harness verifies every immutable source, copies the raw SD image, checks
+the byte-exact rootfs partition, and modifies only the disposable copy. It
+rechecks the source image before boot and deletes the copy at exit. The kernel,
+DTB and initrd are never modified.
 
 Reproduction
 ------------
 
-Run the identity and kernel-driver check after extracting the four files:
+Build QEMU through patch 0022, then run inside the pinned qemu-test image:
 
-  python3 tests/pocketforge-a133-build6-preflight.py \
-    --image Image --dtb dtb.bin --initrd initrd.gz --rootfs rootfs.ext4
+  python3 tests/pocketforge-a133-build6-smoke.py \
+    --qemu build/qemu-src/build-softmmu/qemu-system-aarch64 \
+    --image build/smoke/Image \
+    --dtb build/smoke/dtb.bin \
+    --initrd build/smoke/initrd.gz \
+    --sd build/smoke/Image.img \
+    --work build/smoke/run
 
-Observed output:
+The smoke waits for the guest's systemd service stage. It records whether the
+release image started `pf-input-decode.service` itself and starts that exact
+unit only when inactive. On this run the unit was already active
+(`decoder=auto`). The unrelated suspend path is masked on the QEMU-only kernel
+command line. `pf-input-broker.service` is stopped only if active and restored
+in the same invocation; it was inactive on this run.
+
+Observed concise output
+-----------------------
 
   ARTIFACT name=image sha256=db8a54a5c850afb3d1655a3e8062bbff77315f08cef1c1563611d676761d715d status=ok
   ARTIFACT name=dtb sha256=1a9042d839ee9d1548062efacc5dde332789c6dc846f21bb2c7877045d49b358 status=ok
   ARTIFACT name=initrd sha256=93504ef5954b7cda5fdeb16577353277a89ac8f12bb321cff227f059c54c9fe6 status=ok
+  ARTIFACT name=sd sha256=c2e684bda333be6784fa47839776ba6b805ecdd70585cfe841f268f3c9f117ae status=ok
   ARTIFACT name=rootfs sha256=e76f7379c5684884da6469366b4e49103706a868ec3476d27d66530a2ef18af6 status=ok
-  KCONFIG name=CONFIG_VIRTIO value=n
-  KCONFIG name=CONFIG_VIRTIO_MMIO value=n
-  KCONFIG name=CONFIG_VIRTIO_INPUT value=n
-  KCONFIG name=CONFIG_DRM_VIRTIO_GPU value=n
-  PREFLIGHT result=BLOCKED reason=guest-virtio-drivers-unavailable missing=CONFIG_VIRTIO,CONFIG_VIRTIO_MMIO,CONFIG_VIRTIO_INPUT,CONFIG_DRM_VIRTIO_GPU
+  QMP_DISPLAY width=720 height=1280 fourcc=XR24 presentation_rotation=90
+  QMP_INPUT abi=2.0 device=gamepad ready=true
+  QMP_NEGATIVE reason=invalid-parameter delivered=false
+  GUEST_INPUT uid=1001 device=TRIMUI_Player1 key=BTN_SOUTH:press,release hat=ABS_HAT0Y:-1,0 negative_ev_sw=absent broker_restored=true decoder=auto multi_user_active=false boot_gate=systemd-service-start
 
-Boot/QMP evidence
------------------
+Guest evtest evidence
+---------------------
 
-The real build-6 tuple booted from the modeled MMC0 to systemd. QEMU appended
-its two virtio-mmio nodes to the boot-time DT, but the exact kernel could not
-bind either node. `query-pocketforge-input` continued to return `ready:false`.
+The harness opens the release-created `TRIMUI Player1` event node as uid 1001,
+then sends the rejected EV_SW report and the four valid reports in the same QMP
+session. The serial transcript contains:
 
-The metadata query returned:
+  PF_EVTEST Event: ... type 1 (EV_KEY), code 304 (BTN_SOUTH), value 1
+  PF_EVTEST Event: ... type 1 (EV_KEY), code 304 (BTN_SOUTH), value 0
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 17 (ABS_HAT0Y), value -1
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 17 (ABS_HAT0Y), value 0
 
-  profile=hardware native=720x1280 preferred_fourcc=XR24
-  active_scanout=720x1280 stride=2880 fourcc=XR24
-  plane_rotation=0 presentation_rotation=90
-
-A GIO listener registered with `-display dbus` and received the copy-path
-Scanout below. Its dimensions, stride and byte count match the query exactly;
-pixman format 537004168 is `PIXMAN_x8r8g8b8`, the in-memory XR24 layout.
-
-  DBUS_SCANOUT width=720 height=1280 stride=2880 format=537004168 \
-    bytes=3686400 first=00000000
-
-This proves the headless D-Bus frame and geometry portion of the smoke. The
-initial frame is black, so it is not evidence that the guest bound
-virtio-gpu; the kernel configuration independently proves that it cannot.
-
-On a full boot of the same exact tuple, the required negative input control
-behaved as ABI 1.0 specifies. The display and input diagnostics were separate
-invocations; the missing guest drivers prevent the requested end-to-end
-single-invocation smoke:
-
-  request: type=5 code=0 value=1; SYN_REPORT
-  result:  GenericError
-  desc:    pocketforge-input: reason=invalid-parameter index=0: undeclared evdev type
-
-A valid BTN_SOUTH report then returned:
-
-  DeviceNotActive: PocketForge input guest driver is not ready
-
-Consequently, no guest evdev node exists from which to read the negative or
-positive events. Claiming either a D-Bus pixel frame or guest input readback
-would be a false pass.
-
-Required external prerequisite
-------------------------------
-
-Publish a replacement owned simulator kernel/rootfs tuple with virtio core,
-virtio-mmio, virtio-input and virtio-gpu built in. Requiring `=y` keeps the
-preflight fail-closed; accepting `=m` would additionally require proving module
-presence and dependency closure in the initrd/rootfs. Then rerun the full smoke
-against its newly pinned hashes:
-register the GIO listener, compare actual Scanout bytes to the display query,
-run the refused-event/no-read negative control, and inject/read back one key,
-both sticks, both triggers and the hat as uid debug.
+No EV_SW/SW_LID line occurs. The harness asserts both the stable QMP error
+prefix (`pocketforge-input: reason=invalid-parameter index=0:`) and absence of
+an EV_SW guest record before reporting PASS. Timeout failures include the
+serial tail, so a boot-order or guest-service failure cannot appear as a
+negative-control success.
