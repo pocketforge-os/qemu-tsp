@@ -1,0 +1,1057 @@
+From 6edc7c3da3ca8bec3fcf813e6a3d7d707c24a3a8 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 00:48:12 -0400
+Subject: [PATCH] hw/input: route A133 controls through gamepad MCU UARTs
+
+Replace the synthetic virtio-input transport with the release hardware path:
+bounded gamepad-MCU frame sources feeding the existing UART3 and UART4 RX
+FIFOs. Negotiate input ABI 2.0 for per-UART ordering and readiness, and expose
+only the exact digital and hat codes implemented by this revision.
+
+Assisted-by: LLM
+---
+ hw/arm/Kconfig                            |   1 -
+ hw/arm/pocketforge_a133.c                 |  43 +-
+ hw/char/dw_apb_uart.c                     |  56 ++-
+ hw/input/Kconfig                          |   2 +-
+ hw/input/pocketforge_a133_input.c         | 460 ++++++++++++----------
+ include/hw/char/dw_apb_uart.h             |   9 +
+ include/hw/input/pocketforge_a133_input.h |   9 +-
+ qapi/misc-target.json                     |   9 +-
+ tests/qtest/pocketforge-a133-input-test.c |   5 +
+ 9 files changed, 353 insertions(+), 241 deletions(-)
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 33cad2a..b0e1e8e 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -282,7 +282,6 @@ config POCKETFORGE_A133
+     select POCKETFORGE_A100_RTC
+     select POCKETFORGE_A133_INPUT
+     select POCKETFORGE_A133_MMIO_STUB
+-    select VIRTIO_INPUT
+ 
+ config SABRELITE
+     bool
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 115255c..c064a3b 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -135,6 +135,7 @@ struct PocketForgeA133MachineState {
+     char *display;
+     VirtIOGPUBase *gpu;
+     PocketForgeA133Input *input_device;
++    DWApbUartState *gamepad_uart[2];
+ };
+ 
+ #define PF_A133_NATIVE_WIDTH 720
+@@ -431,7 +432,7 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+ #define PF_A133_RAM_BASE        0x40000000
+ 
+ /*
+- * virtio-gpu + virtio-input graft (Phase C). Two virtio-mmio transport
++ * virtio-gpu graft (Phase C). One virtio-mmio transport
+  * slots at addresses/IRQs entirely outside the real SoC's MMIO map (real
+  * DT's highest declared reg end is well under 0x08000000; highest GIC_SPI
+  * is 143) -- these are QEMU-only synthetic devices with no real-hardware
+@@ -448,7 +449,7 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+ #define PF_A133_VIRTIO_MMIO_BASE   0x0a000000
+ #define PF_A133_VIRTIO_MMIO_SIZE   0x200
+ #define PF_A133_VIRTIO_MMIO_IRQ0   150 /* GIC_SPI 150: virtio-gpu */
+-#define PF_A133_VIRTIO_MMIO_COUNT  2   /* [0]=virtio-gpu, [1]=virtio-input */
++#define PF_A133_VIRTIO_MMIO_COUNT  1   /* [0]=virtio-gpu */
+ 
+ #define PF_A133_NUM_CPUS        4
+ #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
+@@ -684,15 +685,6 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+             object_unref(OBJECT(gpu));
+         }
+ 
+-        if (i == 1 && s->input) {
+-            DeviceState *input = qdev_new(TYPE_POCKETFORGE_A133_INPUT);
+-
+-            object_property_add_child(OBJECT(machine), "pocketforge-input",
+-                                      OBJECT(input));
+-            qdev_realize(input, BUS(&VIRTIO_MMIO(dev)->bus), &error_fatal);
+-            s->input_device = POCKETFORGE_A133_INPUT(input);
+-            object_unref(OBJECT(input));
+-        }
+     }
+ }
+ 
+@@ -772,8 +764,27 @@ static void pocketforge_a133_init(MachineState *machine)
+     for (i = 0; i < ARRAY_SIZE(pf_a133_uart_regions); i++) {
+         const PfA133UartRegion *uart = &pf_a133_uart_regions[i];
+ 
+-        dw_apb_uart_create(uart->base, pic[uart->irq],
+-                           serial_hd(uart->serial_index));
++        DeviceState *uart_dev = dw_apb_uart_create(
++            uart->base, pic[uart->irq], serial_hd(uart->serial_index));
++
++        if (uart->serial_index == 2) {
++            s->gamepad_uart[0] = DW_APB_UART(uart_dev);
++        } else if (uart->serial_index == 3) {
++            s->gamepad_uart[1] = DW_APB_UART(uart_dev);
++        }
++    }
++
++    if (s->input) {
++        DeviceState *input = qdev_new(TYPE_POCKETFORGE_A133_INPUT);
++
++        object_property_add_child(OBJECT(machine), "pocketforge-input",
++                                  OBJECT(input));
++        qdev_realize(input, NULL, &error_fatal);
++        s->input_device = POCKETFORGE_A133_INPUT(input);
++        pocketforge_a133_input_attach(s->input_device,
++                                      s->gamepad_uart[0],
++                                      s->gamepad_uart[1]);
++        object_unref(OBJECT(input));
+     }
+ 
+     pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
+@@ -891,7 +902,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     info = g_new0(PocketForgeInputInfo, 1);
+     device_tail = &info->devices;
+     info->abi_version = g_new0(PocketForgeAbiVersion, 1);
+-    info->abi_version->major = 1;
++    info->abi_version->major = 2;
+     info->abi_version->minor = 0;
+     info->max_batch_events = PF_A133_INPUT_BATCH_MAX;
+     s = POCKETFORGE_A133_MACHINE(current_machine);
+@@ -906,7 +917,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     device->vendor = 0x045e;
+     device->product = 0x028e;
+     device->version = 0x0110;
+-    device->ready = VIRTIO_INPUT(s->input_device)->active;
++    device->ready = pocketforge_a133_input_is_ready(s->input_device);
+     caps_tail = &device->caps;
+ 
+     cap = g_new0(PocketForgeInputCaps, 1);
+@@ -944,6 +955,8 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+         axis->name = g_strdup(pocketforge_a133_input_axes[i].name);
+         axis->min = pocketforge_a133_input_axes[i].minimum;
+         axis->max = pocketforge_a133_input_axes[i].maximum;
++        axis->fuzz = pocketforge_a133_input_axes[i].fuzz;
++        axis->flat = pocketforge_a133_input_axes[i].flat;
+         QAPI_LIST_APPEND(abs_tail, axis);
+     }
+     QAPI_LIST_APPEND(caps_tail, cap);
+diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
+index b507f07..26a1239 100644
+--- a/hw/char/dw_apb_uart.c
++++ b/hw/char/dw_apb_uart.c
+@@ -115,6 +115,45 @@ static void dw_apb_uart_update_lsr(DWApbUartState *s)
+     }
+ }
+ 
++bool dw_apb_uart_is_configured(DWApbUartState *s)
++{
++    return !(s->lcr & UART_LCR_DLAB) && (s->lcr & 0x3f) == 0x03 &&
++           (s->dll || s->dlm);
++}
++
++size_t dw_apb_uart_receive_bytes(DWApbUartState *s,
++                                 const uint8_t *buf, size_t size)
++{
++    size_t accepted = 0;
++
++    while (accepted < size && s->read_count < DW_APB_UART_FIFO_DEPTH) {
++        int slot = (s->read_pos + s->read_count) % DW_APB_UART_FIFO_DEPTH;
++
++        s->read_fifo[slot] = buf[accepted++];
++        s->read_count++;
++    }
++    dw_apb_uart_update_lsr(s);
++    dw_apb_uart_update_irq(s);
++    return accepted;
++}
++
++void dw_apb_uart_set_rx_ready(DWApbUartState *s,
++                              DWApbUartRxReady callback, void *opaque)
++{
++    s->rx_ready = callback;
++    s->rx_ready_opaque = opaque;
++    if (callback) {
++        callback(opaque, false);
++    }
++}
++
++static void dw_apb_uart_notify_rx_ready(DWApbUartState *s, bool reset)
++{
++    if (s->rx_ready) {
++        s->rx_ready(s->rx_ready_opaque, reset);
++    }
++}
++
+ static uint64_t dw_apb_uart_read(void *opaque, hwaddr offset, unsigned size)
+ {
+     DWApbUartState *s = opaque;
+@@ -133,6 +172,7 @@ static uint64_t dw_apb_uart_read(void *opaque, hwaddr offset, unsigned size)
+             dw_apb_uart_update_lsr(s);
+             dw_apb_uart_update_irq(s);
+             qemu_chr_fe_accept_input(&s->chr);
++            dw_apb_uart_notify_rx_ready(s, false);
+         }
+         break;
+     case DW_UART_REG_IER_DLM:
+@@ -182,6 +222,7 @@ static void dw_apb_uart_write(void *opaque, hwaddr offset,
+     case DW_UART_REG_RBR_THR_DLL:
+         if (s->lcr & UART_LCR_DLAB) {
+             s->dll = value;
++            dw_apb_uart_notify_rx_ready(s, false);
+             break;
+         }
+         ch = value;
+@@ -193,9 +234,11 @@ static void dw_apb_uart_write(void *opaque, hwaddr offset,
+     case DW_UART_REG_IER_DLM:
+         if (s->lcr & UART_LCR_DLAB) {
+             s->dlm = value;
++            dw_apb_uart_notify_rx_ready(s, false);
+         } else {
+             s->ier = value & 0x0f;
+             dw_apb_uart_update_irq(s);
++            dw_apb_uart_notify_rx_ready(s, false);
+         }
+         break;
+     case DW_UART_REG_IIR_FCR:
+@@ -219,12 +262,14 @@ static void dw_apb_uart_write(void *opaque, hwaddr offset,
+              * high forever (Codex review, tsp-mc9m.41.925.2.1 round 1).
+              */
+             dw_apb_uart_update_irq(s);
++            dw_apb_uart_notify_rx_ready(s, true);
+         }
+         if (value & 0x04) { /* XFIFOR: reset transmit FIFO -- nothing buffered */
+         }
+         break;
+     case DW_UART_REG_LCR:
+         s->lcr = value;
++        dw_apb_uart_notify_rx_ready(s, false);
+         break;
+     case DW_UART_REG_MCR:
+         s->mcr = value;
+@@ -257,16 +302,8 @@ static int dw_apb_uart_can_receive(void *opaque)
+ static void dw_apb_uart_receive(void *opaque, const uint8_t *buf, int size)
+ {
+     DWApbUartState *s = opaque;
+-    int slot;
+ 
+-    if (s->read_count >= DW_APB_UART_FIFO_DEPTH) {
+-        return;
+-    }
+-    slot = (s->read_pos + s->read_count) % DW_APB_UART_FIFO_DEPTH;
+-    s->read_fifo[slot] = buf[0];
+-    s->read_count++;
+-    dw_apb_uart_update_lsr(s);
+-    dw_apb_uart_update_irq(s);
++    dw_apb_uart_receive_bytes(s, buf, size);
+ }
+ 
+ static void dw_apb_uart_event(void *opaque, QEMUChrEvent event)
+@@ -307,6 +344,7 @@ static void dw_apb_uart_reset(DeviceState *dev)
+      * review, tsp-mc9m.41.925.2.1 round 1).
+      */
+     dw_apb_uart_update_irq(s);
++    dw_apb_uart_notify_rx_ready(s, true);
+ }
+ 
+ static void dw_apb_uart_realize(DeviceState *dev, Error **errp)
+diff --git a/hw/input/Kconfig b/hw/input/Kconfig
+index 83a7d46..1952192 100644
+--- a/hw/input/Kconfig
++++ b/hw/input/Kconfig
+@@ -38,7 +38,7 @@ config VIRTIO_INPUT_HOST
+ 
+ config POCKETFORGE_A133_INPUT
+     bool
+-    depends on VIRTIO_INPUT
++    depends on DW_APB_UART
+ 
+ config VHOST_USER_INPUT
+     bool
+diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
+index d259e4c..b6262ee 100644
+--- a/hw/input/pocketforge_a133_input.c
++++ b/hw/input/pocketforge_a133_input.c
+@@ -1,5 +1,5 @@
+ /*
+- * PocketForge A133 deterministic virtual controls
++ * PocketForge A133 gamepad MCU source
+  *
+  * SPDX-License-Identifier: GPL-2.0-or-later
+  */
+@@ -11,9 +11,12 @@
+ #include "hw/input/pocketforge_a133_input.h"
+ #include "migration/vmstate.h"
+ #include "standard-headers/linux/input.h"
+-#include "standard-headers/linux/virtio_config.h"
+ 
+ #define PF_A133_INPUT_EVENT_MAX 32
++#define PF_A133_MCU_FRAME_SIZE 8
++#define PF_A133_MCU_FIFO_SIZE 1024
++#define PF_A133_RIGHT 0
++#define PF_A133_LEFT 1
+ 
+ const PocketForgeA133InputKeyCap pocketforge_a133_input_keys[] = {
+     { BTN_SOUTH, "BTN_SOUTH" }, { BTN_EAST, "BTN_EAST" },
+@@ -26,19 +29,16 @@ const PocketForgeA133InputKeyCap pocketforge_a133_input_keys[] = {
+ const size_t pocketforge_a133_input_key_count =
+     ARRAY_SIZE(pocketforge_a133_input_keys);
+ 
++/* PR A accepts digital controls and hats; PR B adds the six analog axes. */
+ const PocketForgeA133InputAbsCap pocketforge_a133_input_axes[] = {
+-    { ABS_X, "ABS_X", 0, 4095 }, { ABS_Y, "ABS_Y", 0, 4095 },
+-    { ABS_RX, "ABS_RX", 0, 4095 }, { ABS_RY, "ABS_RY", 0, 4095 },
+-    { ABS_Z, "ABS_Z", 0, 255 }, { ABS_RZ, "ABS_RZ", 0, 255 },
+-    { ABS_HAT0X, "ABS_HAT0X", -1, 1 },
+-    { ABS_HAT0Y, "ABS_HAT0Y", -1, 1 },
++    { ABS_HAT0X, "ABS_HAT0X", -1, 1, 0, 0 },
++    { ABS_HAT0Y, "ABS_HAT0Y", -1, 1, 0, 0 },
+ };
+ 
+ const size_t pocketforge_a133_input_axis_count =
+     ARRAY_SIZE(pocketforge_a133_input_axes);
+ 
+-struct PocketForgeA133Input {
+-    VirtIOInput parent_obj;
++typedef struct PocketForgeA133ControlState {
+     bool l1;
+     bool r1;
+     bool menu;
+@@ -50,125 +50,173 @@ struct PocketForgeA133Input {
+     bool start;
+     int8_t hat_x;
+     int8_t hat_y;
+-};
++} PocketForgeA133ControlState;
+ 
+-#define PF_A133_ABS_CONFIG(_code, _min, _max) { \
+-    .select = VIRTIO_INPUT_CFG_ABS_INFO,       \
+-    .subsel = (_code),                        \
+-    .size = sizeof(virtio_input_absinfo),      \
+-    .u.abs = {                                \
+-        .min = const_le32((uint32_t)(_min)),   \
+-        .max = const_le32((uint32_t)(_max)),   \
+-    },                                        \
+-}
+-
+-static virtio_input_config pocketforge_a133_input_config[] = {
+-    {
+-        .select = VIRTIO_INPUT_CFG_ID_NAME,
+-        .size = sizeof(PF_A133_INPUT_NAME),
+-        .u.string = PF_A133_INPUT_NAME,
+-    }, {
+-        .select = VIRTIO_INPUT_CFG_ID_DEVIDS,
+-        .size = sizeof(struct virtio_input_devids),
+-        .u.ids = {
+-            .bustype = const_le16(BUS_USB),
+-            .vendor = const_le16(0x045e),
+-            .product = const_le16(0x028e),
+-            .version = const_le16(0x0110),
+-        },
+-    }, {
+-        .select = VIRTIO_INPUT_CFG_EV_BITS,
+-        .subsel = EV_KEY,
+-        .size = 40,
+-        .u.bitmap = {
+-            [BTN_SOUTH / 8] = 0xdb,
+-            [BTN_SELECT / 8] = 0x1c,
+-        },
+-    }, {
+-        .select = VIRTIO_INPUT_CFG_EV_BITS,
+-        .subsel = EV_ABS,
+-        .size = 3,
+-        .u.bitmap = {
+-            [0] = 0x3f,
+-            [2] = 0x03,
+-        },
+-    },
+-    PF_A133_ABS_CONFIG(ABS_X, 0, 4095),
+-    PF_A133_ABS_CONFIG(ABS_Y, 0, 4095),
+-    PF_A133_ABS_CONFIG(ABS_RX, 0, 4095),
+-    PF_A133_ABS_CONFIG(ABS_RY, 0, 4095),
+-    PF_A133_ABS_CONFIG(ABS_Z, 0, 255),
+-    PF_A133_ABS_CONFIG(ABS_RZ, 0, 255),
+-    PF_A133_ABS_CONFIG(ABS_HAT0X, -1, 1),
+-    PF_A133_ABS_CONFIG(ABS_HAT0Y, -1, 1),
+-    { /* end of list */ },
++struct PocketForgeA133Input {
++    DeviceState parent_obj;
++    PocketForgeA133ControlState state;
++    DWApbUartState *uart[2];
++    uint8_t fifo[2][PF_A133_MCU_FIFO_SIZE];
++    uint16_t fifo_pos[2];
++    uint16_t fifo_count[2];
++    bool initial_sent[2];
+ };
+ 
+ static void pocketforge_a133_input_clear(PocketForgeA133Input *s)
+ {
+-    s->l1 = false;
+-    s->r1 = false;
+-    s->menu = false;
+-    s->south = false;
+-    s->east = false;
+-    s->north = false;
+-    s->west = false;
+-    s->select = false;
+-    s->start = false;
+-    s->hat_x = 0;
+-    s->hat_y = 0;
++    memset(&s->state, 0, sizeof(s->state));
+ }
+ 
+ static bool pocketforge_a133_input_held(Object *obj, Error **errp)
+ {
+-    PocketForgeA133Input *s = POCKETFORGE_A133_INPUT(obj);
++    PocketForgeA133ControlState *state =
++        &POCKETFORGE_A133_INPUT(obj)->state;
+ 
+-    return s->l1 || s->r1 || s->menu || s->south || s->east ||
+-           s->north || s->west || s->select || s->start ||
+-           s->hat_x || s->hat_y;
++    return state->l1 || state->r1 || state->menu || state->south ||
++           state->east || state->north || state->west || state->select ||
++           state->start || state->hat_x || state->hat_y;
+ }
+ 
+-static bool pocketforge_a133_input_ready(Object *obj, Error **errp)
++bool pocketforge_a133_input_is_ready(PocketForgeA133Input *s)
+ {
+-    VirtIOInput *vinput = VIRTIO_INPUT(obj);
++    return s->uart[PF_A133_RIGHT] && s->uart[PF_A133_LEFT] &&
++           dw_apb_uart_is_configured(s->uart[PF_A133_RIGHT]) &&
++           dw_apb_uart_is_configured(s->uart[PF_A133_LEFT]) &&
++           s->initial_sent[PF_A133_RIGHT] && s->initial_sent[PF_A133_LEFT];
++}
+ 
+-    return vinput->active;
++static bool pocketforge_a133_input_ready(Object *obj, Error **errp)
++{
++    return pocketforge_a133_input_is_ready(POCKETFORGE_A133_INPUT(obj));
+ }
+ 
+-static bool *pocketforge_key_state(PocketForgeA133Input *s, uint16_t code)
++static void pocketforge_build_frame(const PocketForgeA133ControlState *state,
++                                    unsigned int side, uint8_t frame[8])
+ {
+-    switch (code) {
+-    case BTN_SOUTH: return &s->south;
+-    case BTN_EAST: return &s->east;
+-    case BTN_NORTH: return &s->north;
+-    case BTN_WEST: return &s->west;
+-    case BTN_TL: return &s->l1;
+-    case BTN_TR: return &s->r1;
+-    case BTN_SELECT: return &s->select;
+-    case BTN_START: return &s->start;
+-    case BTN_MODE: return &s->menu;
+-    default: return NULL;
++    uint8_t mask = 0;
++
++    if (side == PF_A133_RIGHT) {
++        mask |= state->r1 ? 0x01 : 0;
++        mask |= state->north ? 0x04 : 0;
++        mask |= state->west ? 0x08 : 0;
++        mask |= state->east ? 0x10 : 0;
++        mask |= state->south ? 0x20 : 0;
++        mask |= state->select ? 0x40 : 0;
++        mask |= state->start ? 0x80 : 0;
++    } else {
++        mask |= state->l1 ? 0x01 : 0;
++        mask |= state->hat_y < 0 ? 0x04 : 0;
++        mask |= state->hat_x < 0 ? 0x08 : 0;
++        mask |= state->hat_x > 0 ? 0x10 : 0;
++        mask |= state->hat_y > 0 ? 0x20 : 0;
++        mask |= state->menu ? 0x80 : 0;
+     }
++
++    frame[0] = 0xff;
++    frame[1] = 0x01;
++    frame[2] = mask;
++    frame[3] = 0x08;
++    frame[4] = 0x00;
++    frame[5] = 0x08;
++    frame[6] = 0x00;
++    frame[7] = 0xfe;
+ }
+ 
+-static const PocketForgeA133InputAbsCap *pocketforge_abs_cap(uint16_t code)
++static void pocketforge_fifo_put(PocketForgeA133Input *s, unsigned int side,
++                                 const uint8_t *bytes, size_t count)
+ {
+-    int i;
++    size_t tail = (s->fifo_pos[side] + s->fifo_count[side]) %
++                  PF_A133_MCU_FIFO_SIZE;
++    size_t first = MIN(count, PF_A133_MCU_FIFO_SIZE - tail);
++
++    g_assert(count <= PF_A133_MCU_FIFO_SIZE - s->fifo_count[side]);
++    memcpy(&s->fifo[side][tail], bytes, first);
++    memcpy(&s->fifo[side][0], bytes + first, count - first);
++    s->fifo_count[side] += count;
++}
++
++static void pocketforge_pump_side(PocketForgeA133Input *s, unsigned int side)
++{
++    uint8_t frame[PF_A133_MCU_FRAME_SIZE];
+ 
+-    for (i = 0; i < ARRAY_SIZE(pocketforge_a133_input_axes); i++) {
+-        if (pocketforge_a133_input_axes[i].code == code) {
+-            return &pocketforge_a133_input_axes[i];
++    if (!s->uart[side] || !dw_apb_uart_is_configured(s->uart[side])) {
++        return;
++    }
++    if (!s->initial_sent[side]) {
++        pocketforge_build_frame(&s->state, side, frame);
++        pocketforge_fifo_put(s, side, frame, sizeof(frame));
++        s->initial_sent[side] = true;
++    }
++
++    while (s->fifo_count[side]) {
++        size_t contiguous = MIN((size_t)s->fifo_count[side],
++                                PF_A133_MCU_FIFO_SIZE - s->fifo_pos[side]);
++        size_t accepted = dw_apb_uart_receive_bytes(
++            s->uart[side], &s->fifo[side][s->fifo_pos[side]], contiguous);
++
++        s->fifo_pos[side] = (s->fifo_pos[side] + accepted) %
++                            PF_A133_MCU_FIFO_SIZE;
++        s->fifo_count[side] -= accepted;
++        if (accepted < contiguous) {
++            break;
+         }
+     }
+-    return NULL;
+ }
+ 
+-static bool pocketforge_validate_event(PocketForgeA133Input *state,
++static void pocketforge_rx_ready(PocketForgeA133Input *s, unsigned int side,
++                                 bool reset)
++{
++    if (reset) {
++        s->fifo_pos[side] = 0;
++        s->fifo_count[side] = 0;
++        s->initial_sent[side] = false;
++    }
++    pocketforge_pump_side(s, side);
++}
++
++static void pocketforge_pump_right(void *opaque, bool reset)
++{
++    pocketforge_rx_ready(opaque, PF_A133_RIGHT, reset);
++}
++
++static void pocketforge_pump_left(void *opaque, bool reset)
++{
++    pocketforge_rx_ready(opaque, PF_A133_LEFT, reset);
++}
++
++void pocketforge_a133_input_attach(PocketForgeA133Input *s,
++                                   DWApbUartState *right,
++                                   DWApbUartState *left)
++{
++    s->uart[PF_A133_RIGHT] = right;
++    s->uart[PF_A133_LEFT] = left;
++    dw_apb_uart_set_rx_ready(right, pocketforge_pump_right, s);
++    dw_apb_uart_set_rx_ready(left, pocketforge_pump_left, s);
++}
++
++static bool *pocketforge_key_state(PocketForgeA133ControlState *s,
++                                   uint16_t code, unsigned int *side)
++{
++    switch (code) {
++    case BTN_SOUTH: *side = PF_A133_RIGHT; return &s->south;
++    case BTN_EAST: *side = PF_A133_RIGHT; return &s->east;
++    case BTN_NORTH: *side = PF_A133_RIGHT; return &s->north;
++    case BTN_WEST: *side = PF_A133_RIGHT; return &s->west;
++    case BTN_TR: *side = PF_A133_RIGHT; return &s->r1;
++    case BTN_SELECT: *side = PF_A133_RIGHT; return &s->select;
++    case BTN_START: *side = PF_A133_RIGHT; return &s->start;
++    case BTN_TL: *side = PF_A133_LEFT; return &s->l1;
++    case BTN_MODE: *side = PF_A133_LEFT; return &s->menu;
++    default: return NULL;
++    }
++}
++
++static bool pocketforge_validate_event(PocketForgeA133ControlState *state,
+                                        const PocketForgeA133InputEvent *event,
+-                                       size_t index, Error **errp)
++                                       size_t index, unsigned int *side,
++                                       Error **errp)
+ {
+     bool *key;
+-    const PocketForgeA133InputAbsCap *axis;
+     int8_t *hat;
+ 
+     if (event->type < 0 || event->type > UINT16_MAX ||
+@@ -187,7 +235,7 @@ static bool pocketforge_validate_event(PocketForgeA133Input *state,
+         return true;
+     }
+     if (event->type == EV_KEY) {
+-        key = pocketforge_key_state(state, event->code);
++        key = pocketforge_key_state(state, event->code, side);
+         if (!key) {
+             error_setg(errp, "pocketforge-input: reason=invalid-parameter "
+                        "index=%zu: undeclared EV_KEY code", index);
+@@ -202,30 +250,29 @@ static bool pocketforge_validate_event(PocketForgeA133Input *state,
+         *key = event->value;
+         return true;
+     }
+-    if (event->type == EV_ABS) {
+-        axis = pocketforge_abs_cap(event->code);
+-        if (!axis) {
++    if (event->type == EV_ABS &&
++        (event->code == ABS_HAT0X || event->code == ABS_HAT0Y)) {
++        if (event->value < -1 || event->value > 1) {
+             error_setg(errp, "pocketforge-input: reason=invalid-parameter "
+-                       "index=%zu: undeclared EV_ABS code", index);
++                       "index=%zu: ABS value outside advertised range", index);
+             return false;
+         }
+-        if (event->value < axis->minimum || event->value > axis->maximum) {
++        hat = event->code == ABS_HAT0X ? &state->hat_x : &state->hat_y;
++        if ((event->value == 0 && *hat == 0) ||
++            (event->value != 0 && *hat != 0)) {
+             error_setg(errp, "pocketforge-input: reason=invalid-parameter "
+-                       "index=%zu: ABS value outside advertised range", index);
++                       "index=%zu: hat transition is out of order", index);
+             return false;
+         }
+-        if (event->code == ABS_HAT0X || event->code == ABS_HAT0Y) {
+-            hat = event->code == ABS_HAT0X ? &state->hat_x : &state->hat_y;
+-            if ((event->value == 0 && *hat == 0) ||
+-                (event->value != 0 && *hat != 0)) {
+-                error_setg(errp, "pocketforge-input: reason=invalid-parameter "
+-                           "index=%zu: hat transition is out of order", index);
+-                return false;
+-            }
+-            *hat = event->value;
+-        }
++        *hat = event->value;
++        *side = PF_A133_LEFT;
+         return true;
+     }
++    if (event->type == EV_ABS) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                   "index=%zu: undeclared EV_ABS code", index);
++        return false;
++    }
+ 
+     error_setg(errp, "pocketforge-input: reason=invalid-parameter index=%zu: "
+                "undeclared evdev type", index);
+@@ -236,10 +283,14 @@ bool pocketforge_a133_input_send(PocketForgeA133Input *s,
+                                  const PocketForgeA133InputEvent *raw,
+                                  size_t count, Error **errp)
+ {
+-    PocketForgeA133Input next = *s;
+-    virtio_input_event *wire;
+-    size_t i;
++    PocketForgeA133ControlState next = s->state;
++    uint8_t frames[PF_A133_INPUT_BATCH_MAX / 2][2][PF_A133_MCU_FRAME_SIZE];
++    uint8_t frame_sides[PF_A133_INPUT_BATCH_MAX / 2];
++    size_t needed[2] = { 0, 0 };
++    size_t report_count = 0;
+     size_t report_events = 0;
++    uint8_t affected = 0;
++    size_t i;
+ 
+     if (!count || count > PF_A133_INPUT_BATCH_MAX) {
+         error_setg(errp, "pocketforge-input: reason=invalid-parameter index=0: "
+@@ -247,7 +298,9 @@ bool pocketforge_a133_input_send(PocketForgeA133Input *s,
+         return false;
+     }
+     for (i = 0; i < count; i++) {
+-        if (!pocketforge_validate_event(&next, &raw[i], i, errp)) {
++        unsigned int side = 0;
++
++        if (!pocketforge_validate_event(&next, &raw[i], i, &side, errp)) {
+             return false;
+         }
+         if (raw[i].type == EV_SYN) {
+@@ -256,9 +309,23 @@ bool pocketforge_a133_input_send(PocketForgeA133Input *s,
+                            "index=%zu: empty report", i);
+                 return false;
+             }
++            frame_sides[report_count] = affected;
++            if (affected & (1 << PF_A133_RIGHT)) {
++                pocketforge_build_frame(&next, PF_A133_RIGHT,
++                                        frames[report_count][PF_A133_RIGHT]);
++                needed[PF_A133_RIGHT] += PF_A133_MCU_FRAME_SIZE;
++            }
++            if (affected & (1 << PF_A133_LEFT)) {
++                pocketforge_build_frame(&next, PF_A133_LEFT,
++                                        frames[report_count][PF_A133_LEFT]);
++                needed[PF_A133_LEFT] += PF_A133_MCU_FRAME_SIZE;
++            }
++            report_count++;
+             report_events = 0;
++            affected = 0;
+         } else {
+             report_events++;
++            affected |= 1 << side;
+         }
+     }
+     if (raw[count - 1].type != EV_SYN || report_events) {
+@@ -266,37 +333,34 @@ bool pocketforge_a133_input_send(PocketForgeA133Input *s,
+                    "index=%zu: batch must end with SYN_REPORT", count - 1);
+         return false;
+     }
+-    if (!pocketforge_a133_input_ready(OBJECT(s), NULL)) {
++    if (!pocketforge_a133_input_is_ready(s)) {
+         error_set(errp, ERROR_CLASS_DEVICE_NOT_ACTIVE,
+-                         "PocketForge input guest driver is not ready");
++                  "PocketForge input UARTs are not ready");
+         return false;
+     }
+-
+-    wire = g_new(virtio_input_event, count);
+-    for (i = 0; i < count; i++) {
+-        wire[i].type = cpu_to_le16(raw[i].type);
+-        wire[i].code = cpu_to_le16(raw[i].code);
+-        wire[i].value = cpu_to_le32(raw[i].value);
++    for (i = 0; i < 2; i++) {
++        if (needed[i] > PF_A133_MCU_FIFO_SIZE - s->fifo_count[i]) {
++            error_setg(errp, "pocketforge-input: reason=resource-busy: "
++                       "MCU UART queue has insufficient capacity");
++            return false;
++        }
+     }
+-    if (!virtio_input_send_batch(VIRTIO_INPUT(s), wire, count)) {
+-        error_setg(errp, "pocketforge-input: reason=resource-busy: guest "
+-                   "event queue has insufficient capacity");
+-        g_free(wire);
+-        return false;
++
++    s->state = next;
++    for (i = 0; i < report_count; i++) {
++        if (frame_sides[i] & (1 << PF_A133_RIGHT)) {
++            pocketforge_fifo_put(s, PF_A133_RIGHT,
++                                 frames[i][PF_A133_RIGHT],
++                                 PF_A133_MCU_FRAME_SIZE);
++        }
++        if (frame_sides[i] & (1 << PF_A133_LEFT)) {
++            pocketforge_fifo_put(s, PF_A133_LEFT,
++                                 frames[i][PF_A133_LEFT],
++                                 PF_A133_MCU_FRAME_SIZE);
++        }
+     }
+-    g_free(wire);
+-
+-    s->l1 = next.l1;
+-    s->r1 = next.r1;
+-    s->menu = next.menu;
+-    s->south = next.south;
+-    s->east = next.east;
+-    s->north = next.north;
+-    s->west = next.west;
+-    s->select = next.select;
+-    s->start = next.start;
+-    s->hat_x = next.hat_x;
+-    s->hat_y = next.hat_y;
++    pocketforge_pump_side(s, PF_A133_RIGHT);
++    pocketforge_pump_side(s, PF_A133_LEFT);
+     return true;
+ }
+ 
+@@ -319,10 +383,7 @@ static void pocketforge_a133_input_set_event(Object *obj, const char *value,
+     const char *action;
+     char *control;
+     bool press;
+-    bool *key_state = NULL;
+-    int8_t *axis_state = NULL;
+-    int8_t axis_value = 0;
+-    uint16_t type;
++    uint16_t type = EV_KEY;
+     uint16_t code;
+     int32_t event_value;
+ 
+@@ -352,101 +413,82 @@ static void pocketforge_a133_input_set_event(Object *obj, const char *value,
+         return;
+     }
+ 
+-    type = EV_KEY;
+     if (!strcmp(control, "l1")) {
+-        key_state = &s->l1;
+         code = BTN_TL;
+     } else if (!strcmp(control, "r1")) {
+-        key_state = &s->r1;
+         code = BTN_TR;
+     } else if (!strcmp(control, "menu")) {
+-        key_state = &s->menu;
+         code = BTN_MODE;
+     } else if (!strcmp(control, "dpad-left")) {
+-        axis_state = &s->hat_x;
+-        axis_value = -1;
+         type = EV_ABS;
+         code = ABS_HAT0X;
++        event_value = press ? -1 : 0;
+     } else if (!strcmp(control, "dpad-right")) {
+-        axis_state = &s->hat_x;
+-        axis_value = 1;
+         type = EV_ABS;
+         code = ABS_HAT0X;
++        event_value = press ? 1 : 0;
+     } else if (!strcmp(control, "dpad-up")) {
+-        axis_state = &s->hat_y;
+-        axis_value = -1;
+         type = EV_ABS;
+         code = ABS_HAT0Y;
++        event_value = press ? -1 : 0;
+     } else if (!strcmp(control, "dpad-down")) {
+-        axis_state = &s->hat_y;
+-        axis_value = 1;
+         type = EV_ABS;
+         code = ABS_HAT0Y;
++        event_value = press ? 1 : 0;
+     } else {
+         error_setg(errp, "pocketforge-input: reason=invalid-parameter: "
+                    "unsupported control '%s'", control);
+         g_free(control);
+         return;
+     }
+-
+-    if ((key_state && *key_state == press) ||
+-        (axis_state && ((press && *axis_state != 0) ||
+-                        (!press && *axis_state != axis_value)))) {
+-        error_setg(errp, "pocketforge-input: reason=invalid-parameter: "
+-                   "event is out of order: %s",
+-                   value);
+-        g_free(control);
+-        return;
+-    }
+-
+-    event_value = axis_state ? (press ? axis_value : 0) : press;
+-    if (pocketforge_a133_input_emit(s, type, code, event_value, errp)) {
+-        if (key_state) {
+-            *key_state = press;
+-        } else {
+-            *axis_state = press ? axis_value : 0;
+-        }
++    if (type == EV_KEY) {
++        event_value = press;
+     }
++    pocketforge_a133_input_emit(s, type, code, event_value, errp);
+     g_free(control);
+ }
+ 
+-static void pocketforge_a133_input_change_active(VirtIOInput *vinput)
++static void pocketforge_a133_input_reset(DeviceState *dev)
+ {
+-    if (!vinput->active) {
+-        pocketforge_a133_input_clear(POCKETFORGE_A133_INPUT(vinput));
+-    }
++    PocketForgeA133Input *s = POCKETFORGE_A133_INPUT(dev);
++
++    pocketforge_a133_input_clear(s);
++    memset(s->fifo, 0, sizeof(s->fifo));
++    memset(s->fifo_pos, 0, sizeof(s->fifo_pos));
++    memset(s->fifo_count, 0, sizeof(s->fifo_count));
++    memset(s->initial_sent, 0, sizeof(s->initial_sent));
+ }
+ 
+ static int pocketforge_a133_input_post_load(void *opaque, int version_id)
+ {
+     PocketForgeA133Input *s = opaque;
+-    VirtIOInput *vinput = VIRTIO_INPUT(s);
+-    VirtIODevice *vdev = VIRTIO_DEVICE(s);
+ 
+-    vinput->active = vdev->status & VIRTIO_CONFIG_S_DRIVER_OK;
+-    if (!vinput->active) {
+-        pocketforge_a133_input_clear(s);
+-    }
++    pocketforge_pump_side(s, PF_A133_RIGHT);
++    pocketforge_pump_side(s, PF_A133_LEFT);
+     return 0;
+ }
+ 
+ static const VMStateDescription vmstate_pocketforge_a133_input = {
+-    .name = "virtio-input/pocketforge-a133",
++    .name = "pocketforge-a133-mcu-input",
+     .minimum_version_id = 1,
+-    .version_id = 2,
++    .version_id = 1,
+     .fields = (VMStateField[]) {
+-        VMSTATE_VIRTIO_DEVICE,
+-        VMSTATE_BOOL(l1, PocketForgeA133Input),
+-        VMSTATE_BOOL(r1, PocketForgeA133Input),
+-        VMSTATE_BOOL(menu, PocketForgeA133Input),
+-        VMSTATE_BOOL_V(south, PocketForgeA133Input, 2),
+-        VMSTATE_BOOL_V(east, PocketForgeA133Input, 2),
+-        VMSTATE_BOOL_V(north, PocketForgeA133Input, 2),
+-        VMSTATE_BOOL_V(west, PocketForgeA133Input, 2),
+-        VMSTATE_BOOL_V(select, PocketForgeA133Input, 2),
+-        VMSTATE_BOOL_V(start, PocketForgeA133Input, 2),
+-        VMSTATE_INT8(hat_x, PocketForgeA133Input),
+-        VMSTATE_INT8(hat_y, PocketForgeA133Input),
++        VMSTATE_BOOL(state.l1, PocketForgeA133Input),
++        VMSTATE_BOOL(state.r1, PocketForgeA133Input),
++        VMSTATE_BOOL(state.menu, PocketForgeA133Input),
++        VMSTATE_BOOL(state.south, PocketForgeA133Input),
++        VMSTATE_BOOL(state.east, PocketForgeA133Input),
++        VMSTATE_BOOL(state.north, PocketForgeA133Input),
++        VMSTATE_BOOL(state.west, PocketForgeA133Input),
++        VMSTATE_BOOL(state.select, PocketForgeA133Input),
++        VMSTATE_BOOL(state.start, PocketForgeA133Input),
++        VMSTATE_INT8(state.hat_x, PocketForgeA133Input),
++        VMSTATE_INT8(state.hat_y, PocketForgeA133Input),
++        VMSTATE_UINT8_2DARRAY(fifo, PocketForgeA133Input, 2,
++                             PF_A133_MCU_FIFO_SIZE),
++        VMSTATE_UINT16_ARRAY(fifo_pos, PocketForgeA133Input, 2),
++        VMSTATE_UINT16_ARRAY(fifo_count, PocketForgeA133Input, 2),
++        VMSTATE_BOOL_ARRAY(initial_sent, PocketForgeA133Input, 2),
+         VMSTATE_END_OF_LIST()
+     },
+     .post_load = pocketforge_a133_input_post_load,
+@@ -454,9 +496,6 @@ static const VMStateDescription vmstate_pocketforge_a133_input = {
+ 
+ static void pocketforge_a133_input_init(Object *obj)
+ {
+-    VirtIOInput *vinput = VIRTIO_INPUT(obj);
+-
+-    virtio_input_init_config(vinput, pocketforge_a133_input_config);
+     object_property_add_str(obj, "event", NULL,
+                             pocketforge_a133_input_set_event);
+     object_property_add_bool(obj, "ready", pocketforge_a133_input_ready, NULL);
+@@ -466,16 +505,15 @@ static void pocketforge_a133_input_init(Object *obj)
+ static void pocketforge_a133_input_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+-    VirtIOInputClass *vic = VIRTIO_INPUT_CLASS(klass);
+ 
+-    dc->desc = "PocketForge A133 deterministic controls";
++    dc->desc = "PocketForge A133 gamepad MCU source";
++    dc->reset = pocketforge_a133_input_reset;
+     dc->vmsd = &vmstate_pocketforge_a133_input;
+-    vic->change_active = pocketforge_a133_input_change_active;
+ }
+ 
+ static const TypeInfo pocketforge_a133_input_info = {
+     .name = TYPE_POCKETFORGE_A133_INPUT,
+-    .parent = TYPE_VIRTIO_INPUT,
++    .parent = TYPE_DEVICE,
+     .instance_size = sizeof(PocketForgeA133Input),
+     .instance_init = pocketforge_a133_input_init,
+     .class_init = pocketforge_a133_input_class_init,
+diff --git a/include/hw/char/dw_apb_uart.h b/include/hw/char/dw_apb_uart.h
+index 0d91852..c5824e6 100644
+--- a/include/hw/char/dw_apb_uart.h
++++ b/include/hw/char/dw_apb_uart.h
+@@ -39,6 +39,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(DWApbUartState, DW_APB_UART)
+ /* Depth of the emulated receive FIFO (real IP is usually 16 or 64 deep). */
+ #define DW_APB_UART_FIFO_DEPTH 16
+ 
++typedef void (*DWApbUartRxReady)(void *opaque, bool reset);
++
+ struct DWApbUartState {
+     SysBusDevice parent_obj;
+ 
+@@ -62,8 +64,15 @@ struct DWApbUartState {
+ 
+     CharBackend chr;
+     qemu_irq irq;
++    DWApbUartRxReady rx_ready;
++    void *rx_ready_opaque;
+ };
+ 
+ DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr);
++bool dw_apb_uart_is_configured(DWApbUartState *s);
++size_t dw_apb_uart_receive_bytes(DWApbUartState *s,
++                                 const uint8_t *buf, size_t size);
++void dw_apb_uart_set_rx_ready(DWApbUartState *s,
++                              DWApbUartRxReady callback, void *opaque);
+ 
+ #endif /* HW_DW_APB_UART_H */
+diff --git a/include/hw/input/pocketforge_a133_input.h b/include/hw/input/pocketforge_a133_input.h
+index 9b50213..e05f219 100644
+--- a/include/hw/input/pocketforge_a133_input.h
++++ b/include/hw/input/pocketforge_a133_input.h
+@@ -7,7 +7,8 @@
+ #ifndef HW_INPUT_POCKETFORGE_A133_INPUT_H
+ #define HW_INPUT_POCKETFORGE_A133_INPUT_H
+ 
+-#include "hw/virtio/virtio-input.h"
++#include "hw/qdev-core.h"
++#include "hw/char/dw_apb_uart.h"
+ 
+ #define TYPE_POCKETFORGE_A133_INPUT "pocketforge-a133-input"
+ #define PF_A133_INPUT_NAME "TRIMUI Player1"
+@@ -24,6 +25,8 @@ typedef struct PocketForgeA133InputAbsCap {
+     const char *name;
+     int32_t minimum;
+     int32_t maximum;
++    int32_t fuzz;
++    int32_t flat;
+ } PocketForgeA133InputAbsCap;
+ 
+ typedef struct PocketForgeA133InputEvent {
+@@ -40,5 +43,9 @@ extern const size_t pocketforge_a133_input_axis_count;
+ bool pocketforge_a133_input_send(PocketForgeA133Input *input,
+                                  const PocketForgeA133InputEvent *events,
+                                  size_t count, Error **errp);
++void pocketforge_a133_input_attach(PocketForgeA133Input *input,
++                                   DWApbUartState *right,
++                                   DWApbUartState *left);
++bool pocketforge_a133_input_is_ready(PocketForgeA133Input *input);
+ 
+ #endif
+diff --git a/qapi/misc-target.json b/qapi/misc-target.json
+index 0913fdd..e315451 100644
+--- a/qapi/misc-target.json
++++ b/qapi/misc-target.json
+@@ -326,11 +326,14 @@
+ # @name: diagnostic symbolic name
+ # @min: inclusive minimum
+ # @max: inclusive maximum
++# @fuzz: input noise tolerance
++# @flat: input dead-zone size
+ #
+ # Since: 8.2
+ ##
+ { 'struct': 'PocketForgeInputAbsInfo',
+-  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int' },
++  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int',
++            'fuzz': 'int', 'flat': 'int' },
+   'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
+ 
+ ##
+@@ -356,8 +359,8 @@
+ # @vendor: guest-visible vendor identifier
+ # @product: guest-visible product identifier
+ # @version: guest-visible version identifier
+-# @ready: whether the guest virtio driver is active
+-# @caps: advertised evdev capabilities
++# @ready: whether all physical transports can accept an input batch
++# @caps: exact event codes accepted by @pocketforge-input-send
+ #
+ # Since: 8.2
+ ##
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index 5195a1b..4bd1f53 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -16,6 +16,7 @@
+ 
+ #define UART_RBR_DLL 0x00
+ #define UART_IER_DLM 0x04
++#define UART_IIR_FCR 0x08
+ #define UART_LCR     0x0c
+ #define UART_LSR     0x14
+ #define UART_LSR_DR  0x01
+@@ -124,6 +125,8 @@ static bool query_has_abs(QDict *device, int code, int min, int max)
+             if (qdict_get_int(axis, "code") == code) {
+                 g_assert_cmpint(qdict_get_int(axis, "min"), ==, min);
+                 g_assert_cmpint(qdict_get_int(axis, "max"), ==, max);
++                g_assert_cmpint(qdict_get_int(axis, "fuzz"), ==, 0);
++                g_assert_cmpint(qdict_get_int(axis, "flat"), ==, 0);
+                 return true;
+             }
+         }
+@@ -188,6 +191,8 @@ static void test_mcu_frames_and_negative_control(void)
+ 
+     uart_configure(qts, PF_UART3_BASE);
+     uart_assert_frame(qts, PF_UART3_BASE, centered);
++    qtest_writel(qts, PF_UART3_BASE + UART_IIR_FCR, 0x02);
++    uart_assert_frame(qts, PF_UART3_BASE, centered);
+     uart_assert_empty(qts, PF_UART4_BASE);
+     response = qtest_qmp(qts,
+         "{ 'execute': 'query-pocketforge-input' }");
+-- 
+2.43.0
+

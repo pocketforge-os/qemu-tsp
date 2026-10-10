@@ -4,6 +4,11 @@ Status: approved Phase 1 design for `tsp-mc9m.41.984.54.12`, including gpu-14's
 four amendments. This document incorporates the four-message pfvd/QEMU thread
 and `pfvd-abi-requirements.txt`; Phase 2 follows this approved contract.
 
+Input transport update (2026-10-10): the unmodified release kernel has no
+virtio support, so the former virtio-input transport and ABI 1 input semantics
+are superseded by the real UART3/UART4 gamepad-MCU model and input ABI 2.0 in
+`docs/pocketforge-a133-input.md`. The display design below remains current.
+
 ## 1. Scope and fixed decisions
 
 The v1 pfvd backend will use `-M pocketforge-a133` with:

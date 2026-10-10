@@ -1,0 +1,66 @@
+From ef0db0d36a30a05c7ffdf925ffddc283efa5c512 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 04:07:12 -0400
+Subject: [PATCH 22/22] hw/char: model DW UART component parameters
+
+Report the 32-bit APB width and 16-byte FIFO used by the model, and accept inactive EPS selection in the release decoder 8N1 termios state.
+
+Assisted-by: LLM
+---
+ hw/char/dw_apb_uart.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
+index 26a1239..9885b18 100644
+--- a/hw/char/dw_apb_uart.c
++++ b/hw/char/dw_apb_uart.c
+@@ -54,6 +54,7 @@ DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr)
+ #define DW_UART_REG_MSR          0x06
+ #define DW_UART_REG_SCR          0x07
+ #define DW_UART_REG_USR          0x1f  /* DesignWare-specific */
++#define DW_UART_REG_CPR          0x3d  /* Component Parameter Register */
+ 
+ #define DW_UART_MMIO_SIZE        0x400 /* exact sun50i-a100.dtsi aperture */
+ 
+@@ -87,6 +88,9 @@ DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr)
+ #define DW_UART_USR_RFNE 0x08
+ #define DW_UART_USR_RFF  0x10
+ 
++/* 32-bit APB data path and a 16-byte FIFO, matching this model. */
++#define DW_UART_CPR_32BIT_FIFO16 0x00010002
++
+ static void dw_apb_uart_update_irq(DWApbUartState *s)
+ {
+     bool pending = false;
+@@ -117,7 +121,8 @@ static void dw_apb_uart_update_lsr(DWApbUartState *s)
+ 
+ bool dw_apb_uart_is_configured(DWApbUartState *s)
+ {
+-    return !(s->lcr & UART_LCR_DLAB) && (s->lcr & 0x3f) == 0x03 &&
++    /* EPS/stick-parity selection is irrelevant while parity is disabled. */
++    return !(s->lcr & UART_LCR_DLAB) && (s->lcr & 0x0f) == 0x03 &&
+            (s->dll || s->dlm);
+ }
+ 
+@@ -202,6 +207,9 @@ static uint64_t dw_apb_uart_read(void *opaque, hwaddr offset, unsigned size)
+             r |= DW_UART_USR_RFNE;
+         }
+         break;
++    case DW_UART_REG_CPR:
++        r = DW_UART_CPR_32BIT_FIFO16;
++        break;
+     default:
+         qemu_log_mask(LOG_UNIMP,
+                       "dw-apb-uart: unimplemented read reg 0x%02x\n",
+@@ -282,6 +290,7 @@ static void dw_apb_uart_write(void *opaque, hwaddr offset,
+         s->scr = value;
+         break;
+     case DW_UART_REG_USR:
++    case DW_UART_REG_CPR:
+         /* Read-only status register; writes are ignored. */
+         break;
+     default:
+-- 
+2.43.0
+

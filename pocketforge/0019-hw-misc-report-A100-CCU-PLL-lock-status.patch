@@ -1,0 +1,83 @@
+From fef1378c5f4d7d4f7cccab3dcae1c1d7c9a73fba Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 01:33:10 -0400
+Subject: [PATCH] hw/misc: report A100 CCU PLL lock status
+
+Assisted-by: LLM
+---
+ hw/misc/pocketforge_a133_mmio_stub.c         | 30 ++++++++++++++++++++
+ include/hw/misc/pocketforge_a133_mmio_stub.h |  9 +++---
+ 2 files changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/hw/misc/pocketforge_a133_mmio_stub.c b/hw/misc/pocketforge_a133_mmio_stub.c
+index 233ee5f..f9e81b2 100644
+--- a/hw/misc/pocketforge_a133_mmio_stub.c
++++ b/hw/misc/pocketforge_a133_mmio_stub.c
+@@ -14,6 +14,25 @@
+ #include "qapi/error.h"
+ #include "qemu/module.h"
+ 
++#define PF_A133_CCU_PLL_ENABLE (UINT32_C(1) << 31)
++#define PF_A133_CCU_PLL_LOCK   (UINT32_C(1) << 28)
++
++static bool pf_a133_ccu_pll_reg(hwaddr offset)
++{
++    static const hwaddr pll_offsets[] = {
++        0x000, 0x010, 0x020, 0x028, 0x030, 0x040,
++        0x048, 0x050, 0x058, 0x060, 0x068, 0x078,
++    };
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(pll_offsets); i++) {
++        if (offset == pll_offsets[i]) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ DeviceState *pocketforge_a133_mmio_stub_create(const char *name, hwaddr addr,
+                                                uint32_t size)
+ {
+@@ -42,6 +61,17 @@ static uint64_t pf_a133_mmio_stub_read(void *opaque, hwaddr offset,
+         return 0;
+     }
+     memcpy(&val, s->storage + offset, size);
++    /*
++     * A100 PLLs assert LOCK once software sets ENABLE.  Build 6 enables all
++     * twelve PLLs and synchronously waits for this hardware-owned bit before
++     * dependent clocks (including the UART bus clocks) may probe.  The clock
++     * programming fields remain ordinary RAM-backed storage.
++     */
++    if (size == sizeof(uint32_t) &&
++        !strcmp(s->mmio_name, "pocketforge-a133.ccu") &&
++        pf_a133_ccu_pll_reg(offset) && (val & PF_A133_CCU_PLL_ENABLE)) {
++        val |= PF_A133_CCU_PLL_LOCK;
++    }
+     return val;
+ }
+ 
+diff --git a/include/hw/misc/pocketforge_a133_mmio_stub.h b/include/hw/misc/pocketforge_a133_mmio_stub.h
+index fb83035..f33dbb4 100644
+--- a/include/hw/misc/pocketforge_a133_mmio_stub.h
++++ b/include/hw/misc/pocketforge_a133_mmio_stub.h
+@@ -9,10 +9,11 @@
+  * base/size (from the committed sun50i-a100.dtsi): a write stores the value,
+  * a read returns whatever was last stored there (0 after reset/at boot,
+  * matching the real hardware's un-programmed-register state well enough for
+- * a driver that never depends on a specific POR value). No interrupt output,
+- * no side effects, no register-specific behavior -- deliberately not a real
+- * model of any of these IPs. See docs/pocketforge-a133-peripheral-stubs.md
+- * for the register audit that justifies "plain RAM suffices" per stub.
++ * a driver that never depends on a specific POR value). The main A100 CCU
++ * instance has one bounded exception: enabled PLL registers report their
++ * hardware-owned LOCK bit, which lets the release kernel finish clock probe.
++ * There are no interrupt outputs or other side effects. See
++ * docs/pocketforge-a133-peripheral-stubs.md for the per-stub register audit.
+  *
+  * This program is free software; you can redistribute it and/or modify it
+  * under the terms and conditions of the GNU General Public License,
+-- 
+2.43.0
+

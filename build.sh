@@ -16,6 +16,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
+STACK_HEAD=$(git -C "$ROOT" rev-parse HEAD)
+git -C "$ROOT" diff --quiet HEAD -- || {
+  echo "FATAL: refusing to stamp a dirty PocketForge worktree"
+  exit 1
+}
+git -C "$ROOT" diff --cached --quiet HEAD -- || {
+  echo "FATAL: refusing to stamp a dirty PocketForge index"
+  exit 1
+}
+STACK_PKGVERSION="pocketforge-qemu-tsp-head=$STACK_HEAD"
 REPO=$(sed -n 's/^repo *= *//p'   UPSTREAM)
 TAG=$(sed -n  's/^tag *= *//p'    UPSTREAM)
 COMMIT=$(sed -n 's/^commit *= *//p' UPSTREAM)
@@ -48,6 +58,36 @@ prepare_owned_build_dir() {
   esac
   mkdir "$dir"
 }
+
+verify_patch_stack_tree() (
+  local scratch expected_index actual_index expected_tree actual_tree patch
+
+  scratch=$(mktemp -d "$ROOT/build/patch-tree.XXXXXX")
+  trap 'find "$scratch" -mindepth 1 -delete; rmdir "$scratch"' EXIT
+  expected_index="$scratch/expected.index"
+  actual_index="$scratch/actual.index"
+
+  GIT_INDEX_FILE="$expected_index" git read-tree "$COMMIT"
+  for patch in "$ROOT"/pocketforge/*.patch; do
+    GIT_INDEX_FILE="$expected_index" git apply --cached "$patch"
+  done
+  expected_tree=$(GIT_INDEX_FILE="$expected_index" git write-tree)
+
+  GIT_INDEX_FILE="$actual_index" git read-tree "$COMMIT"
+  GIT_INDEX_FILE="$actual_index" git add -A -- . \
+    ":(exclude)$LINUX_USER_BUILD_DIR" \
+    ":(exclude)$LINUX_USER_BUILD_DIR/**" \
+    ":(exclude)$SYSTEM_BUILD_DIR" \
+    ":(exclude)$SYSTEM_BUILD_DIR/**"
+  actual_tree=$(GIT_INDEX_FILE="$actual_index" git write-tree)
+
+  if [ "$actual_tree" != "$expected_tree" ]; then
+    echo "FATAL: patched QEMU source tree $actual_tree != expected $expected_tree"
+    git diff --name-status "$expected_tree" "$actual_tree"
+    exit 1
+  fi
+  echo "== verified patched QEMU source tree: $actual_tree =="
+)
 
 mkdir -p "$ROOT/build"
 if [ ! -d "$SRC/.git" ]; then
@@ -134,15 +174,51 @@ if ! grep -q 'query-pocketforge-display' qapi/misc-target.json; then
   git apply "$ROOT/pocketforge/0015-hw-arm-add-PocketForge-display-and-input-ABI.patch"
 fi
 
+echo "== apply PocketForge patch: RED qtests for A133 MCU input ABI 2 =="
+if ! grep -q 'batch-capacity' tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0016-tests-cover-A133-MCU-input-ABI-2-transport.patch"
+fi
+
+echo "== apply PocketForge patch: A133 gamepad MCU UART source =="
+if ! grep -q 'PF_A133_MCU_FIFO_SIZE' hw/input/pocketforge_a133_input.c; then
+  git apply "$ROOT/pocketforge/0017-hw-input-route-A133-controls-through-gamepad-MCU-UARTs.patch"
+fi
+
+echo "== apply PocketForge patch: RED qtest for A100 CCU PLL lock status =="
+if ! grep -q 'ccu-pll-lock-contract' tests/qtest/pocketforge-a133-mmio-map-test.c; then
+  git apply "$ROOT/pocketforge/0018-tests-require-A100-CCU-PLL-lock-status.patch"
+fi
+
+echo "== apply PocketForge patch: A100 CCU PLL lock status =="
+if ! grep -q 'PF_A133_CCU_PLL_LOCK' hw/misc/pocketforge_a133_mmio_stub.c; then
+  git apply "$ROOT/pocketforge/0019-hw-misc-report-A100-CCU-PLL-lock-status.patch"
+fi
+
+echo "== apply PocketForge patch: A133 map after virtio-input removal =="
+if grep -q '0x0a000200, 0x200' tests/qtest/pocketforge-a133-mmio-map-test.c; then
+  git apply "$ROOT/pocketforge/0020-tests-update-A133-map-after-virtio-input-removal.patch"
+fi
+
+echo "== apply PocketForge patch: RED release-termios UART coverage =="
+if ! grep -q 'uart-component-parameters' tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0021-tests-cover-DW-UART-release-termios-contract.patch"
+fi
+
+echo "== apply PocketForge patch: DW UART component parameters =="
+if ! grep -q 'DW_UART_CPR_32BIT_FIFO16' hw/char/dw_apb_uart.c; then
+  git apply "$ROOT/pocketforge/0022-hw-char-model-DW-UART-component-parameters.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
+verify_patch_stack_tree
 
 mkdir -p "$OUT"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
   echo "== configure + build: aarch64-linux-user (static) =="
   prepare_owned_build_dir "$LINUX_USER_BUILD_DIR"
-  (cd "$LINUX_USER_BUILD_DIR" && ../configure --target-list=aarch64-linux-user --static --disable-system --without-default-features)
+  (cd "$LINUX_USER_BUILD_DIR" && ../configure --target-list=aarch64-linux-user --static --disable-system --without-default-features --with-pkgversion="$STACK_PKGVERSION")
   ninja -C "$LINUX_USER_BUILD_DIR" qemu-aarch64
   cp "$LINUX_USER_BUILD_DIR/qemu-aarch64" "$OUT/qemu-aarch64"
   echo "== done: $OUT/qemu-aarch64 =="
@@ -157,7 +233,7 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # harness, scripts/qemu-pocketforge-a133-ui.sh, to capture render evidence) -- without it
 # --without-default-features strips pixman along with every other UI backend and
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
-(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
+(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features --with-pkgversion="$STACK_PKGVERSION" -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-display-test \

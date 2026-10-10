@@ -1,0 +1,108 @@
+From 14dae977d1ad45678ab5f59ef0987d0fd416dc00 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 04:07:12 -0400
+Subject: [PATCH 21/22] tests: cover DW UART release termios contract
+
+Pin the component-parameter register and the release decoder final LCR before implementing support.
+
+Assisted-by: LLM
+---
+ tests/qtest/pocketforge-a133-input-test.c | 56 ++++++++++++++++++++++-
+ 1 file changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index 4bd1f53..4d5bbbb 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -12,6 +12,8 @@
+ 
+ #define PF_UART3_BASE 0x05000c00
+ #define PF_UART4_BASE 0x05001000
++#define PF_UART_CPR 0x00f4
++#define PF_UART_CPR_32BIT_FIFO16 0x00010002
+ #define PF_VIRTIO_INPUT_BASE 0x0a000200
+ 
+ #define UART_RBR_DLL 0x00
+@@ -25,12 +27,17 @@ static const uint8_t centered[] = {
+     0xff, 0x01, 0x00, 0x08, 0x00, 0x08, 0x00, 0xfe,
+ };
+ 
+-static void uart_configure(QTestState *qts, uint64_t base)
++static void uart_configure_lcr(QTestState *qts, uint64_t base, uint8_t lcr)
+ {
+     qtest_writel(qts, base + UART_LCR, 0x83); /* DLAB, 8N1 */
+     qtest_writel(qts, base + UART_RBR_DLL, 13);
+     qtest_writel(qts, base + UART_IER_DLM, 0);
+-    qtest_writel(qts, base + UART_LCR, 0x03); /* 8N1 */
++    qtest_writel(qts, base + UART_LCR, lcr);
++}
++
++static void uart_configure(QTestState *qts, uint64_t base)
++{
++    uart_configure_lcr(qts, base, 0x03); /* 8N1 */
+ }
+ 
+ static void uart_assert_frame(QTestState *qts, uint64_t base,
+@@ -172,6 +179,47 @@ static void test_query_and_transport(void)
+     qtest_quit(qts);
+ }
+ 
++static void test_uart_component_parameters(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++
++    g_assert_cmphex(qtest_readl(qts, PF_UART3_BASE + PF_UART_CPR), ==,
++                    PF_UART_CPR_32BIT_FIFO16);
++    g_assert_cmphex(qtest_readl(qts, PF_UART4_BASE + PF_UART_CPR), ==,
++                    PF_UART_CPR_32BIT_FIFO16);
++    qtest_writel(qts, PF_UART3_BASE + PF_UART_CPR, 0);
++    g_assert_cmphex(qtest_readl(qts, PF_UART3_BASE + PF_UART_CPR), ==,
++                    PF_UART_CPR_32BIT_FIFO16);
++    qtest_quit(qts);
++}
++
++static void test_uart_irrelevant_parity_selection(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    QDict *response;
++    QDict *device;
++
++    /* EPS is irrelevant while PEN is clear; Linux leaves it set for 8N1. */
++    uart_configure_lcr(qts, PF_UART3_BASE, 0x13);
++    uart_configure_lcr(qts, PF_UART4_BASE, 0x13);
++    response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    device = query_device(response);
++    g_assert_true(qdict_get_bool(device, "ready"));
++    qobject_unref(response);
++    uart_assert_frame(qts, PF_UART3_BASE, centered);
++    uart_assert_frame(qts, PF_UART4_BASE, centered);
++
++    response = raw_send(qts, EV_SW, SW_LID, 1);
++    assert_error_prefix(response,
++        "pocketforge-input: reason=invalid-parameter index=0:");
++    qobject_unref(response);
++    response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    qtest_quit(qts);
++}
++
+ static void test_mcu_frames_and_negative_control(void)
+ {
+     static const uint8_t right_south[] = {
+@@ -323,6 +371,10 @@ int main(int argc, char **argv)
+     g_test_init(&argc, &argv, NULL);
+     qtest_add_func("/aarch64/pocketforge-a133-input/query-transport",
+                    test_query_and_transport);
++    qtest_add_func("/aarch64/pocketforge-a133-input/uart-component-parameters",
++                   test_uart_component_parameters);
++    qtest_add_func("/aarch64/pocketforge-a133-input/uart-8n1-eps-ignored",
++                   test_uart_irrelevant_parity_selection);
+     qtest_add_func("/aarch64/pocketforge-a133-input/mcu-frames-negative",
+                    test_mcu_frames_and_negative_control);
+     qtest_add_func("/aarch64/pocketforge-a133-input/batch-capacity",
+-- 
+2.43.0
+
