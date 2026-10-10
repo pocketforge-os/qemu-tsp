@@ -16,6 +16,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
+STACK_HEAD=$(git -C "$ROOT" rev-parse HEAD)
+git -C "$ROOT" diff --quiet HEAD -- || {
+  echo "FATAL: refusing to stamp a dirty PocketForge worktree"
+  exit 1
+}
+git -C "$ROOT" diff --cached --quiet HEAD -- || {
+  echo "FATAL: refusing to stamp a dirty PocketForge index"
+  exit 1
+}
+STACK_PKGVERSION="pocketforge-qemu-tsp-head=$STACK_HEAD"
 REPO=$(sed -n 's/^repo *= *//p'   UPSTREAM)
 TAG=$(sed -n  's/^tag *= *//p'    UPSTREAM)
 COMMIT=$(sed -n 's/^commit *= *//p' UPSTREAM)
@@ -177,7 +187,7 @@ mkdir -p "$OUT"
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
   echo "== configure + build: aarch64-linux-user (static) =="
   prepare_owned_build_dir "$LINUX_USER_BUILD_DIR"
-  (cd "$LINUX_USER_BUILD_DIR" && ../configure --target-list=aarch64-linux-user --static --disable-system --without-default-features)
+  (cd "$LINUX_USER_BUILD_DIR" && ../configure --target-list=aarch64-linux-user --static --disable-system --without-default-features --with-pkgversion="$STACK_PKGVERSION")
   ninja -C "$LINUX_USER_BUILD_DIR" qemu-aarch64
   cp "$LINUX_USER_BUILD_DIR/qemu-aarch64" "$OUT/qemu-aarch64"
   echo "== done: $OUT/qemu-aarch64 =="
@@ -192,7 +202,7 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # harness, scripts/qemu-pocketforge-a133-ui.sh, to capture render evidence) -- without it
 # --without-default-features strips pixman along with every other UI backend and
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
-(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
+(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features --with-pkgversion="$STACK_PKGVERSION" -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-display-test \
