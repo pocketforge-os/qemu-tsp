@@ -1,0 +1,215 @@
+From 1333ff17de2a03332e3b49080d1eb6e26c587031 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 05:00:17 -0400
+Subject: [PATCH 2/2] hw/input: model A133 MCU sticks and triggers
+
+Assisted-by: LLM
+---
+ hw/arm/pocketforge_a133.c         |  2 +-
+ hw/input/pocketforge_a133_input.c | 99 +++++++++++++++++++++++++++----
+ 2 files changed, 90 insertions(+), 11 deletions(-)
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index c064a3b..5026871 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -903,7 +903,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     device_tail = &info->devices;
+     info->abi_version = g_new0(PocketForgeAbiVersion, 1);
+     info->abi_version->major = 2;
+-    info->abi_version->minor = 0;
++    info->abi_version->minor = 1;
+     info->max_batch_events = PF_A133_INPUT_BATCH_MAX;
+     s = POCKETFORGE_A133_MACHINE(current_machine);
+     if (!s->input_device) {
+diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
+index b6262ee..bc49632 100644
+--- a/hw/input/pocketforge_a133_input.c
++++ b/hw/input/pocketforge_a133_input.c
+@@ -29,8 +29,13 @@ const PocketForgeA133InputKeyCap pocketforge_a133_input_keys[] = {
+ const size_t pocketforge_a133_input_key_count =
+     ARRAY_SIZE(pocketforge_a133_input_keys);
+ 
+-/* PR A accepts digital controls and hats; PR B adds the six analog axes. */
+ const PocketForgeA133InputAbsCap pocketforge_a133_input_axes[] = {
++    { ABS_X, "ABS_X", 0, 4095, 0, 0 },
++    { ABS_Y, "ABS_Y", 0, 4095, 0, 0 },
++    { ABS_RX, "ABS_RX", 0, 4095, 0, 0 },
++    { ABS_RY, "ABS_RY", 0, 4095, 0, 0 },
++    { ABS_Z, "ABS_Z", 0, 255, 0, 0 },
++    { ABS_RZ, "ABS_RZ", 0, 255, 0, 0 },
+     { ABS_HAT0X, "ABS_HAT0X", -1, 1, 0, 0 },
+     { ABS_HAT0Y, "ABS_HAT0Y", -1, 1, 0, 0 },
+ };
+@@ -48,6 +53,12 @@ typedef struct PocketForgeA133ControlState {
+     bool west;
+     bool select;
+     bool start;
++    bool l2;
++    bool r2;
++    uint16_t lx;
++    uint16_t ly;
++    uint16_t rx;
++    uint16_t ry;
+     int8_t hat_x;
+     int8_t hat_y;
+ } PocketForgeA133ControlState;
+@@ -65,6 +76,10 @@ struct PocketForgeA133Input {
+ static void pocketforge_a133_input_clear(PocketForgeA133Input *s)
+ {
+     memset(&s->state, 0, sizeof(s->state));
++    s->state.lx = 2048;
++    s->state.ly = 2048;
++    s->state.rx = 2048;
++    s->state.ry = 2048;
+ }
+ 
+ static bool pocketforge_a133_input_held(Object *obj, Error **errp)
+@@ -74,7 +89,8 @@ static bool pocketforge_a133_input_held(Object *obj, Error **errp)
+ 
+     return state->l1 || state->r1 || state->menu || state->south ||
+            state->east || state->north || state->west || state->select ||
+-           state->start || state->hat_x || state->hat_y;
++           state->start || state->l2 || state->r2 || state->hat_x ||
++           state->hat_y;
+ }
+ 
+ bool pocketforge_a133_input_is_ready(PocketForgeA133Input *s)
+@@ -97,6 +113,7 @@ static void pocketforge_build_frame(const PocketForgeA133ControlState *state,
+ 
+     if (side == PF_A133_RIGHT) {
+         mask |= state->r1 ? 0x01 : 0;
++        mask |= state->r2 ? 0x02 : 0;
+         mask |= state->north ? 0x04 : 0;
+         mask |= state->west ? 0x08 : 0;
+         mask |= state->east ? 0x10 : 0;
+@@ -105,6 +122,7 @@ static void pocketforge_build_frame(const PocketForgeA133ControlState *state,
+         mask |= state->start ? 0x80 : 0;
+     } else {
+         mask |= state->l1 ? 0x01 : 0;
++        mask |= state->l2 ? 0x02 : 0;
+         mask |= state->hat_y < 0 ? 0x04 : 0;
+         mask |= state->hat_x < 0 ? 0x08 : 0;
+         mask |= state->hat_x > 0 ? 0x10 : 0;
+@@ -115,10 +133,17 @@ static void pocketforge_build_frame(const PocketForgeA133ControlState *state,
+     frame[0] = 0xff;
+     frame[1] = 0x01;
+     frame[2] = mask;
+-    frame[3] = 0x08;
+-    frame[4] = 0x00;
+-    frame[5] = 0x08;
+-    frame[6] = 0x00;
++    if (side == PF_A133_RIGHT) {
++        frame[3] = state->rx >> 8;
++        frame[4] = state->rx;
++        frame[5] = state->ry >> 8;
++        frame[6] = state->ry;
++    } else {
++        frame[3] = state->lx >> 8;
++        frame[4] = state->lx;
++        frame[5] = state->ly >> 8;
++        frame[6] = state->ly;
++    }
+     frame[7] = 0xfe;
+ }
+ 
+@@ -218,6 +243,7 @@ static bool pocketforge_validate_event(PocketForgeA133ControlState *state,
+ {
+     bool *key;
+     int8_t *hat;
++    uint16_t *stick;
+ 
+     if (event->type < 0 || event->type > UINT16_MAX ||
+         event->code < 0 || event->code > UINT16_MAX ||
+@@ -269,9 +295,55 @@ static bool pocketforge_validate_event(PocketForgeA133ControlState *state,
+         return true;
+     }
+     if (event->type == EV_ABS) {
+-        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
+-                   "index=%zu: undeclared EV_ABS code", index);
+-        return false;
++        switch (event->code) {
++        case ABS_X:
++            stick = &state->lx;
++            *side = PF_A133_LEFT;
++            break;
++        case ABS_Y:
++            stick = &state->ly;
++            *side = PF_A133_LEFT;
++            break;
++        case ABS_RX:
++            stick = &state->rx;
++            *side = PF_A133_RIGHT;
++            break;
++        case ABS_RY:
++            stick = &state->ry;
++            *side = PF_A133_RIGHT;
++            break;
++        case ABS_Z:
++            if (event->value != 0 && event->value != 255) {
++                error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                           "index=%zu: binary trigger accepts only endpoints",
++                           index);
++                return false;
++            }
++            state->l2 = event->value;
++            *side = PF_A133_LEFT;
++            return true;
++        case ABS_RZ:
++            if (event->value != 0 && event->value != 255) {
++                error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                           "index=%zu: binary trigger accepts only endpoints",
++                           index);
++                return false;
++            }
++            state->r2 = event->value;
++            *side = PF_A133_RIGHT;
++            return true;
++        default:
++            error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                       "index=%zu: undeclared EV_ABS code", index);
++            return false;
++        }
++        if (event->value < 0 || event->value > 4095) {
++            error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                       "index=%zu: ABS value outside advertised range", index);
++            return false;
++        }
++        *stick = event->value;
++        return true;
+     }
+ 
+     error_setg(errp, "pocketforge-input: reason=invalid-parameter index=%zu: "
+@@ -471,7 +543,7 @@ static int pocketforge_a133_input_post_load(void *opaque, int version_id)
+ static const VMStateDescription vmstate_pocketforge_a133_input = {
+     .name = "pocketforge-a133-mcu-input",
+     .minimum_version_id = 1,
+-    .version_id = 1,
++    .version_id = 2,
+     .fields = (VMStateField[]) {
+         VMSTATE_BOOL(state.l1, PocketForgeA133Input),
+         VMSTATE_BOOL(state.r1, PocketForgeA133Input),
+@@ -482,6 +554,12 @@ static const VMStateDescription vmstate_pocketforge_a133_input = {
+         VMSTATE_BOOL(state.west, PocketForgeA133Input),
+         VMSTATE_BOOL(state.select, PocketForgeA133Input),
+         VMSTATE_BOOL(state.start, PocketForgeA133Input),
++        VMSTATE_BOOL_V(state.l2, PocketForgeA133Input, 2),
++        VMSTATE_BOOL_V(state.r2, PocketForgeA133Input, 2),
++        VMSTATE_UINT16_V(state.lx, PocketForgeA133Input, 2),
++        VMSTATE_UINT16_V(state.ly, PocketForgeA133Input, 2),
++        VMSTATE_UINT16_V(state.rx, PocketForgeA133Input, 2),
++        VMSTATE_UINT16_V(state.ry, PocketForgeA133Input, 2),
+         VMSTATE_INT8(state.hat_x, PocketForgeA133Input),
+         VMSTATE_INT8(state.hat_y, PocketForgeA133Input),
+         VMSTATE_UINT8_2DARRAY(fifo, PocketForgeA133Input, 2,
+@@ -496,6 +574,7 @@ static const VMStateDescription vmstate_pocketforge_a133_input = {
+ 
+ static void pocketforge_a133_input_init(Object *obj)
+ {
++    pocketforge_a133_input_clear(POCKETFORGE_A133_INPUT(obj));
+     object_property_add_str(obj, "event", NULL,
+                             pocketforge_a133_input_set_event);
+     object_property_add_bool(obj, "ready", pocketforge_a133_input_ready, NULL);
+-- 
+2.43.0
+

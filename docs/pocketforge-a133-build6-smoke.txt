@@ -2,7 +2,7 @@ PocketForge A133 build-6 MCU-input smoke
 =========================================
 
 Result: PASS
-QEMU patch stack: through 0022-hw-char-model-DW-UART-component-parameters
+QEMU patch stack: through 0024-hw-input-model-A133-MCU-sticks-and-triggers
 Run date: 2026-10-10 UTC
 Execution: TCG only, unprivileged Docker container, no device or bench
 
@@ -32,7 +32,7 @@ DTB and initrd are never modified.
 Reproduction
 ------------
 
-Build QEMU through patch 0022, then run inside the pinned qemu-test image:
+Build QEMU through patch 0024, then run inside the pinned qemu-test image:
 
   python3 tests/pocketforge-a133-build6-smoke.py \
     --qemu build/qemu-src/build-softmmu/qemu-system-aarch64 \
@@ -58,24 +58,35 @@ Observed concise output
   ARTIFACT name=sd sha256=c2e684bda333be6784fa47839776ba6b805ecdd70585cfe841f268f3c9f117ae status=ok
   ARTIFACT name=rootfs sha256=e76f7379c5684884da6469366b4e49103706a868ec3476d27d66530a2ef18af6 status=ok
   QMP_DISPLAY width=720 height=1280 fourcc=XR24 presentation_rotation=90
-  QMP_INPUT abi=2.0 device=gamepad ready=true
+  QMP_INPUT abi=2.1 device=gamepad ready=true
   QMP_NEGATIVE reason=invalid-parameter delivered=false
-  GUEST_INPUT uid=1001 device=TRIMUI_Player1 key=BTN_SOUTH:press,release hat=ABS_HAT0Y:-1,0 negative_ev_sw=absent broker_restored=true decoder=auto multi_user_active=false boot_gate=systemd-service-start
+  QMP_POSITIVE reports=12 atomic=true
+  GUEST_INPUT uid=1001 device=TRIMUI_Player1 key=BTN_SOUTH:press,release hat=ABS_HAT0Y:-1,0 sticks=ABS_X:0,ABS_Y:4095,ABS_RX:4095,ABS_RY:0 triggers=ABS_Z:255,0,ABS_RZ:255,0 ranges=sticks:0..4095,triggers:0..255 negative_ev_sw=absent broker_restored=true decoder=auto multi_user_active=false boot_gate=systemd-service-start
 
 Guest evtest evidence
 ---------------------
 
 The harness opens the release-created `TRIMUI Player1` event node as uid 1001,
-then sends the rejected EV_SW report and the four valid reports in the same QMP
-session. The serial transcript contains:
+then sends the rejected EV_SW report and one atomically accepted batch containing
+twelve explicitly framed valid reports in the same QMP session. The serial
+transcript contains:
 
   PF_EVTEST Event: ... type 1 (EV_KEY), code 304 (BTN_SOUTH), value 1
   PF_EVTEST Event: ... type 1 (EV_KEY), code 304 (BTN_SOUTH), value 0
   PF_EVTEST Event: ... type 3 (EV_ABS), code 17 (ABS_HAT0Y), value -1
   PF_EVTEST Event: ... type 3 (EV_ABS), code 17 (ABS_HAT0Y), value 0
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 0 (ABS_X), value 0
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 1 (ABS_Y), value 4095
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 3 (ABS_RX), value 4095
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 4 (ABS_RY), value 0
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 2 (ABS_Z), value 255
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 2 (ABS_Z), value 0
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 5 (ABS_RZ), value 255
+  PF_EVTEST Event: ... type 3 (EV_ABS), code 5 (ABS_RZ), value 0
 
 No EV_SW/SW_LID line occurs. The harness asserts both the stable QMP error
-prefix (`pocketforge-input: reason=invalid-parameter index=0:`) and absence of
-an EV_SW guest record before reporting PASS. Timeout failures include the
-serial tail, so a boot-order or guest-service failure cannot appear as a
-negative-control success.
+prefix (`pocketforge-input: reason=invalid-parameter index=0:`), the exact
+guest-reported ranges and identity, every event above, and absence of an EV_SW
+guest record before reporting PASS. Timeout failures include the serial tail,
+so a boot-order or guest-service failure cannot appear as a negative-control
+success.
