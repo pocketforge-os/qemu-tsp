@@ -291,10 +291,13 @@ The grammar and behavior are:
    `held` properties remain; `held` covers pressed keys and non-zero hats, not
    centered/non-centered analog axes.
 
-The real modern virtio-mmio queue reports 1024 entries to the build-6 guest,
-and build-6 Linux negotiates/writes 1024. The ABI maximum is therefore
-`min(256, 1024) = 256`; it is bounded below the capacity that can succeed at
-steady state rather than admitting a permanently impossible request.
+The real modern virtio-mmio queue reports 1024 entries to the qtest guest
+driver. The ABI maximum is therefore `min(256, 1024) = 256`; it is bounded
+below the capacity that can succeed at steady state rather than admitting a
+permanently impossible request. The post-merge smoke found that the pinned
+build-6 kernel has virtio core, virtio-mmio, virtio-input and virtio-gpu
+disabled, so that artifact cannot negotiate the queue. See
+`docs/pocketforge-a133-build6-smoke.txt` for the exact hashes and prerequisite.
 
 The raw integer grammar is intentionally device-neutral. A future machine can
 advertise EV_SW or touch/ABS_MT codes in another queried device and accept the

@@ -123,10 +123,14 @@ independently identified device, or capabilities; clients may ignore additions
 from a newer minor but must reject an unknown major. Removing an existing
 capability is not a compatible minor change.
 
-The build-6 guest's modern virtio-mmio event queue exposes and negotiates 1024
-descriptors. ABI 1.0 caps a command at `min(256, queue capacity) = 256` triples,
-so every accepted batch can succeed at steady state rather than being
-permanently too large for the queue.
+The QEMU modern virtio-mmio event queue exposes 1024 descriptors, as verified
+by the qtest guest driver. ABI 1.0 caps a command at
+`min(256, queue capacity) = 256` triples, so every accepted batch can succeed
+at steady state rather than being permanently too large for the queue. The
+pinned build-6 image cannot negotiate that queue: its kernel has virtio core,
+virtio-mmio, virtio-input and virtio-gpu disabled. The exact artifact evidence
+and the required simulator-kernel prerequisite are recorded in
+`docs/pocketforge-a133-build6-smoke.txt`.
 
 ## Raw input grammar
 

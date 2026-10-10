@@ -1,0 +1,103 @@
+PocketForge A133 build-6 smoke checkpoint
+==========================================
+
+Result: BLOCKED before guest input/display observation
+QEMU head: dc8cf811e64b1ad07539eed52ac13ec68150d5c4
+Run date: 2026-10-10 UTC
+Execution: TCG only, unprivileged Docker container, no device or bench
+
+Pinned artifact identities
+--------------------------
+
+ImageSource.json:
+  ef573704f42e759b27bd3ba280aad0607d117cf278310b32ddbcb079992edba5
+Image.img.xz:
+  cfb0699ff6b450af21542ad1736e896f3201d734bbf9ba6b00b47c9011a3796f
+Image.img:
+  c2e684bda333be6784fa47839776ba6b805ecdd70585cfe841f268f3c9f117ae
+Image:
+  db8a54a5c850afb3d1655a3e8062bbff77315f08cef1c1563611d676761d715d
+dtb.bin:
+  1a9042d839ee9d1548062efacc5dde332789c6dc846f21bb2c7877045d49b358
+initrd.gz:
+  93504ef5954b7cda5fdeb16577353277a89ac8f12bb321cff227f059c54c9fe6
+rootfs.ext4 (partition 5, offset 127926272, length 1518338048):
+  e76f7379c5684884da6469366b4e49103706a868ec3476d27d66530a2ef18af6
+
+The raw image was copied, its source digest was rechecked, and the copy was
+zero-extended to 2 GiB for QEMU SD-card geometry. The kernel, DTB and initrd
+were not modified. The root filesystem digest above is the byte-exact fifth
+partition extracted from the pinned raw image.
+
+Reproduction
+------------
+
+Run the identity and kernel-driver check after extracting the four files:
+
+  python3 tests/pocketforge-a133-build6-preflight.py \
+    --image Image --dtb dtb.bin --initrd initrd.gz --rootfs rootfs.ext4
+
+Observed output:
+
+  ARTIFACT name=image sha256=db8a54a5c850afb3d1655a3e8062bbff77315f08cef1c1563611d676761d715d status=ok
+  ARTIFACT name=dtb sha256=1a9042d839ee9d1548062efacc5dde332789c6dc846f21bb2c7877045d49b358 status=ok
+  ARTIFACT name=initrd sha256=93504ef5954b7cda5fdeb16577353277a89ac8f12bb321cff227f059c54c9fe6 status=ok
+  ARTIFACT name=rootfs sha256=e76f7379c5684884da6469366b4e49103706a868ec3476d27d66530a2ef18af6 status=ok
+  KCONFIG name=CONFIG_VIRTIO value=n
+  KCONFIG name=CONFIG_VIRTIO_MMIO value=n
+  KCONFIG name=CONFIG_VIRTIO_INPUT value=n
+  KCONFIG name=CONFIG_DRM_VIRTIO_GPU value=n
+  PREFLIGHT result=BLOCKED reason=guest-virtio-drivers-unavailable missing=CONFIG_VIRTIO,CONFIG_VIRTIO_MMIO,CONFIG_VIRTIO_INPUT,CONFIG_DRM_VIRTIO_GPU
+
+Boot/QMP evidence
+-----------------
+
+The real build-6 tuple booted from the modeled MMC0 to systemd. QEMU appended
+its two virtio-mmio nodes to the boot-time DT, but the exact kernel could not
+bind either node. `query-pocketforge-input` continued to return `ready:false`.
+
+The metadata query returned:
+
+  profile=hardware native=720x1280 preferred_fourcc=XR24
+  active_scanout=720x1280 stride=2880 fourcc=XR24
+  plane_rotation=0 presentation_rotation=90
+
+A GIO listener registered with `-display dbus` and received the copy-path
+Scanout below. Its dimensions, stride and byte count match the query exactly;
+pixman format 537004168 is `PIXMAN_x8r8g8b8`, the in-memory XR24 layout.
+
+  DBUS_SCANOUT width=720 height=1280 stride=2880 format=537004168 \
+    bytes=3686400 first=00000000
+
+This proves the headless D-Bus frame and geometry portion of the smoke. The
+initial frame is black, so it is not evidence that the guest bound
+virtio-gpu; the kernel configuration independently proves that it cannot.
+
+On a full boot of the same exact tuple, the required negative input control
+behaved as ABI 1.0 specifies. The display and input diagnostics were separate
+invocations; the missing guest drivers prevent the requested end-to-end
+single-invocation smoke:
+
+  request: type=5 code=0 value=1; SYN_REPORT
+  result:  GenericError
+  desc:    pocketforge-input: reason=invalid-parameter index=0: undeclared evdev type
+
+A valid BTN_SOUTH report then returned:
+
+  DeviceNotActive: PocketForge input guest driver is not ready
+
+Consequently, no guest evdev node exists from which to read the negative or
+positive events. Claiming either a D-Bus pixel frame or guest input readback
+would be a false pass.
+
+Required external prerequisite
+------------------------------
+
+Publish a replacement owned simulator kernel/rootfs tuple with virtio core,
+virtio-mmio, virtio-input and virtio-gpu built in. Requiring `=y` keeps the
+preflight fail-closed; accepting `=m` would additionally require proving module
+presence and dependency closure in the initrd/rootfs. Then rerun the full smoke
+against its newly pinned hashes:
+register the GIO listener, compare actual Scanout bytes to the display query,
+run the refused-event/no-read negative control, and inject/read back one key,
+both sticks, both triggers and the hat as uid debug.
