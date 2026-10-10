@@ -8,6 +8,8 @@
 # normal dynamically-linked system emulator and cannot be built --static on most hosts).
 #   Build deps (Ubuntu 24.04): git meson ninja-build pkg-config python3 gcc \
 #                              libglib2.0-dev zlib1g-dev libpixman-1-dev flex bison
+# libglib2.0-dev supplies GIO and pulls in libglib2.0-dev-bin, including
+# gdbus-codegen, for the non-GL D-Bus display build.
 # Set QEMU_TSP_SKIP_LINUX_USER=1 to skip the linux-user leg (faster iteration on the
 # softmmu machine only); it is NOT skipped by default so a plain ./build.sh still produces
 # both targets.
@@ -127,6 +129,11 @@ if [ ! -f tests/qtest/pocketforge-a133-mmc-test.c ]; then
   git apply "$ROOT/pocketforge/0014-hw-arm-connect-A133-MMC0-to-SD-media.patch"
 fi
 
+echo "== apply PocketForge patch: display and versioned input ABI =="
+if ! grep -q 'query-pocketforge-display' qapi/misc-target.json; then
+  git apply "$ROOT/pocketforge/0015-hw-arm-add-PocketForge-display-and-input-ABI.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 
@@ -150,9 +157,10 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # harness, scripts/qemu-pocketforge-a133-ui.sh, to capture render evidence) -- without it
 # --without-default-features strips pixman along with every other UI backend and
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
-(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled)
+(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
+  tests/qtest/pocketforge-a133-display-test \
   tests/qtest/pocketforge-a133-input-test \
   tests/qtest/pocketforge-a133-mmio-map-test \
   tests/qtest/pocketforge-a133-r-i2c-test \
@@ -160,6 +168,7 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-mmc-test
 meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a100-rtc-test \
+  qtest-aarch64/pocketforge-a133-display-test \
   qtest-aarch64/pocketforge-a133-input-test \
   qtest-aarch64/pocketforge-a133-mmio-map-test \
   qtest-aarch64/pocketforge-a133-r-i2c-test \
