@@ -160,7 +160,7 @@ if ! grep -q 'ccu-pll-lock-contract' tests/qtest/pocketforge-a133-mmio-map-test.
 fi
 
 echo "== apply PocketForge patch: A100 CCU PLL lock status =="
-if ! grep -q 'pf_a133_ccu_pll_has_lock' hw/misc/pocketforge_a133_mmio_stub.c; then
+if ! grep -q 'PF_A133_CCU_PLL_LOCK' hw/misc/pocketforge_a133_mmio_stub.c; then
   git apply "$ROOT/pocketforge/0019-hw-misc-report-A100-CCU-PLL-lock-status.patch"
 fi
 
