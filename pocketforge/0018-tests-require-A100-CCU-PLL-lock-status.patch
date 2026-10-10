@@ -1,0 +1,53 @@
+From 627538500503ca3c20496d98378e47c18f74bfca Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 01:32:35 -0400
+Subject: [PATCH] tests: require A100 CCU PLL lock status
+
+Assisted-by: LLM
+---
+ tests/qtest/pocketforge-a133-mmio-map-test.c | 21 ++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index de7685d..b929ad5 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -193,6 +193,25 @@ static void test_uart_model_contract(void)
+     qtest_quit(qts);
+ }
+ 
++static void test_ccu_pll_lock_contract(void)
++{
++    static const uint64_t ccu = 0x03001000;
++    static const uint32_t pll_enable = UINT32_C(1) << 31;
++    static const uint32_t pll_lock = UINT32_C(1) << 28;
++    QTestState *qts = mmio_start();
++
++    /* A100 CCU PLLs assert LOCK after software enables the PLL. */
++    qtest_writel(qts, ccu + 0x020, pll_enable);
++    g_assert_cmphex(qtest_readl(qts, ccu + 0x020) & pll_lock,
++                    ==, pll_lock);
++
++    /* Negative control: LOCK must not be synthesized while disabled. */
++    qtest_writel(qts, ccu + 0x020, 0);
++    g_assert_cmphex(qtest_readl(qts, ccu + 0x020) & pll_lock, ==, 0);
++
++    qtest_quit(qts);
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -202,6 +221,8 @@ int main(int argc, char **argv)
+                    test_stub_storage_and_reset);
+     qtest_add_func("/pocketforge-a133-mmio/uart-model-contract",
+                    test_uart_model_contract);
++    qtest_add_func("/pocketforge-a133-mmio/ccu-pll-lock-contract",
++                   test_ccu_pll_lock_contract);
+ 
+     return g_test_run();
+ }
+-- 
+2.43.0
+

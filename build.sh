@@ -134,6 +134,31 @@ if ! grep -q 'query-pocketforge-display' qapi/misc-target.json; then
   git apply "$ROOT/pocketforge/0015-hw-arm-add-PocketForge-display-and-input-ABI.patch"
 fi
 
+echo "== apply PocketForge patch: RED qtests for A133 MCU input ABI 2 =="
+if ! grep -q 'batch-capacity' tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0016-tests-cover-A133-MCU-input-ABI-2-transport.patch"
+fi
+
+echo "== apply PocketForge patch: A133 gamepad MCU UART source =="
+if ! grep -q 'PF_A133_MCU_FIFO_SIZE' hw/input/pocketforge_a133_input.c; then
+  git apply "$ROOT/pocketforge/0017-hw-input-route-A133-controls-through-gamepad-MCU-UARTs.patch"
+fi
+
+echo "== apply PocketForge patch: RED qtest for A100 CCU PLL lock status =="
+if ! grep -q 'ccu-pll-lock-contract' tests/qtest/pocketforge-a133-mmio-map-test.c; then
+  git apply "$ROOT/pocketforge/0018-tests-require-A100-CCU-PLL-lock-status.patch"
+fi
+
+echo "== apply PocketForge patch: A100 CCU PLL lock status =="
+if ! grep -q 'pf_a133_ccu_pll_has_lock' hw/misc/pocketforge_a133_mmio_stub.c; then
+  git apply "$ROOT/pocketforge/0019-hw-misc-report-A100-CCU-PLL-lock-status.patch"
+fi
+
+echo "== apply PocketForge patch: A133 map after virtio-input removal =="
+if grep -q '0x0a000200, 0x200' tests/qtest/pocketforge-a133-mmio-map-test.c; then
+  git apply "$ROOT/pocketforge/0020-tests-update-A133-map-after-virtio-input-removal.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 

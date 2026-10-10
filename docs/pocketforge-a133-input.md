@@ -15,8 +15,11 @@ fails with `pocketforge-display: reason=duplicate-gpu:` if it does. `off` leaves
 transport 0 empty. The profile cannot change after machine initialization.
 
 `pocketforge-input-device=on|off` defaults to `on`. It places the deterministic
-gamepad on modern virtio-mmio transport 1. With `off`, that transport reports no
-device, `query-pocketforge-input` returns an empty `devices` list, and injection
+gamepad MCU source behind the real DT's RX-only DW APB UART3 (right half) and
+UART4 (left half). It does not add a guest-visible device or DT node. The
+unmodified release image's `pf-input-decode.service` consumes the MCU frames
+and creates its normal `TRIMUI Player1` uinput node. With `off`, the source is
+absent, `query-pocketforge-input` returns an empty `devices` list, and injection
 returns `DeviceNotFound`.
 
 The copy-only v1 display is enabled at build time with `-Dgio=enabled
@@ -69,14 +72,14 @@ XR24=`PIXMAN_x8r8g8b8`, XB24=`PIXMAN_x8b8g8r8`, and
 AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 `reason=unsupported-format` token.
 
-## Input capability query (ABI 1.0)
+## Input capability query (ABI 2.0)
 
 `query-pocketforge-input` reports the batch limit and every injectible device:
 
 ```json
 {
   "return": {
-    "abi_version": {"major": 1, "minor": 0},
+    "abi_version": {"major": 2, "minor": 0},
     "max_batch_events": 256,
     "devices": [{
       "id": "gamepad",
@@ -100,14 +103,10 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
           {"code": 316, "name": "BTN_MODE"}
         ]},
         {"type": 3, "abs": [
-          {"code": 0, "name": "ABS_X", "min": 0, "max": 4095},
-          {"code": 1, "name": "ABS_Y", "min": 0, "max": 4095},
-          {"code": 2, "name": "ABS_Z", "min": 0, "max": 255},
-          {"code": 3, "name": "ABS_RX", "min": 0, "max": 4095},
-          {"code": 4, "name": "ABS_RY", "min": 0, "max": 4095},
-          {"code": 5, "name": "ABS_RZ", "min": 0, "max": 255},
-          {"code": 16, "name": "ABS_HAT0X", "min": -1, "max": 1},
-          {"code": 17, "name": "ABS_HAT0Y", "min": -1, "max": 1}
+          {"code": 16, "name": "ABS_HAT0X", "min": -1, "max": 1,
+           "fuzz": 0, "flat": 0},
+          {"code": 17, "name": "ABS_HAT0Y", "min": -1, "max": 1,
+           "fuzz": 0, "flat": 0}
         ]}
       ]
     }]
@@ -115,22 +114,28 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 }
 ```
 
-`ready` means the guest has set virtio `DRIVER_OK`. ABI major 1 fixes command
-names, required fields, numeric evdev meaning, explicit framing, validation,
-ordering, and atomic failure behavior. A major change removes or reinterprets
-one of those rules. A minor change may add optional response fields, a new
-independently identified device, or capabilities; clients may ignore additions
-from a newer minor but must reject an unknown major. Removing an existing
-capability is not a compatible minor change.
+`caps` is per device and is the exact allow-list accepted by
+`pocketforge-input-send`, so clients can disable controls unavailable in a
+tier. ABI 2.0 exposes the nine digital controls and the two hat axes. The guest
+decoder's eventual uinput node also declares the four 12-bit stick axes and two
+8-bit triggers, but QEMU does not advertise or accept those until the MCU
+analog follow-up lands as an additive ABI 2 minor revision. All ABS entries
+include `fuzz` and `flat`; both are zero for this device.
 
-The QEMU modern virtio-mmio event queue exposes 1024 descriptors, as verified
-by the qtest guest driver. ABI 1.0 caps a command at
-`min(256, queue capacity) = 256` triples, so every accepted batch can succeed
-at steady state rather than being permanently too large for the queue. The
-pinned build-6 image cannot negotiate that queue: its kernel has virtio core,
-virtio-mmio, virtio-input and virtio-gpu disabled. The exact artifact evidence
-and the required simulator-kernel prerequisite are recorded in
-`docs/pocketforge-a133-build6-smoke.txt`.
+`ready` means both physical UART streams have been configured by the guest and
+have accepted their initial centered/all-released frame. ABI major 2 fixes
+command names, required fields, numeric evdev meaning, explicit framing,
+validation, per-stream ordering, and atomic failure behavior. A major change
+removes or reinterprets one of those rules. A minor change may add optional
+response fields, a new independently identified device, or capabilities;
+clients may ignore additions from a newer minor but must reject an unknown
+major. Removing an existing capability is not a compatible minor change.
+
+Each UART source has a bounded 1024-byte pending FIFO in addition to the real
+model's 16-byte RX FIFO. A 256-triple maximum batch can contain at most 128
+one-control reports on one side, producing exactly 128 eight-byte frames, so
+every accepted maximum batch can eventually drain at steady state. Capacity is
+preflighted for both sides before state or either FIFO changes.
 
 ## Raw input grammar
 
@@ -157,12 +162,14 @@ EV_ABS values must be inside the advertised inclusive range. EV_KEY accepts
 only 0 and 1 and rejects duplicate press or release-before-press. Hat release
 to zero is explicit. QEMU never synthesizes a release.
 
-QEMU validates the whole array on temporary state before it claims a guest
-descriptor. It then preflights capacity for the complete array. Any validation
-or capacity failure delivers no prefix, changes no held state, and consumes no
-descriptor. An accepted array reaches the guest in array order with its
-SYN_REPORT boundaries intact. QMP execution on the main loop prevents a second
-producer from interleaving a report.
+QEMU validates the whole array on temporary state, snapshots at most one
+complete frame for each affected UART at every SYN_REPORT, and preflights both
+bounded FIFOs. Any validation or capacity failure delivers no byte prefix and
+changes no held state. Frames are strictly ordered within each UART stream and
+each frame is complete. UART3 and UART4 are independent physical streams, so
+ABI 2.0 makes no guest-observable cross-stream ordering promise when one batch
+touches both. QMP execution on the main loop prevents another producer from
+interleaving a frame.
 
 The numeric form is device-neutral. A future machine can advertise touch or
 EV_SW without changing this command, but this machine advertises neither and
@@ -170,8 +177,8 @@ rejects both.
 
 ## Failure contract
 
-ABI 1.0 adds no core QAPI `ErrorClass` values. Unknown/disabled devices return
-`DeviceNotFound`, and an input device that has not reached `DRIVER_OK` returns
+ABI 2.0 adds no core QAPI `ErrorClass` values. Unknown/disabled devices return
+`DeviceNotFound`, and an input device whose two UARTs are not ready returns
 `DeviceNotActive`. Other errors use `GenericError` with one stable token at the
 start of `desc`:
 
@@ -200,14 +207,17 @@ Its exact grammar is `<control>:<press|release>`. Controls are `dpad-left`,
 one string to its raw EV_ABS/EV_KEY triple plus SYN_REPORT, then calls the same
 validator, capacity preflight, and commit routine as the raw command. The
 read-only `held` property covers pressed keys and non-zero hats. Reset clears
-held state; automation must still send explicit releases for accepted presses.
+held state and pending frames; automation must still send explicit releases
+for accepted presses.
 
 ## Power, volume, touch, and switches
 
 Power and volume are not gamepad capabilities. The owned A133 platform
 descriptor at commit `5c21b42520e82c45088778aba2088379a163696a` assigns
 `KEY_VOLUMEUP`/`KEY_VOLUMEDOWN` to the separate `sunxi-keyboard` input. The
-owned build-6 kernel creates an `axp20x-pek` child for `KEY_POWER`; the bounded
-QEMU AXP717 model intentionally generates no PMIC event or IRQ. Touch and the
-hall/gpio switch are also unmodeled. ABI 1.0 therefore exposes only `gamepad`
-and does not invent power, volume, touch, or EV_SW on that device.
+exact build-6 DT leaves its LRADC disabled, so no runtime enablement is assumed.
+The owned build-6 kernel creates an `axp20x-pek` child for `KEY_POWER`; the
+bounded QEMU AXP717 model intentionally generates no PMIC event or IRQ until
+the dedicated PMIC follow-up. Touch and the hall/gpio switch are also
+unmodeled. ABI 2.0 therefore exposes only `gamepad` and does not invent power,
+volume, touch, or EV_SW on that device.

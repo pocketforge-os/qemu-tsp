@@ -1,0 +1,1075 @@
+From ef7c95ed74dedfb5a88e0847fd51424d75255b07 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 00:43:34 -0400
+Subject: [PATCH] tests: cover A133 MCU input ABI 2 transport
+
+Assisted-by: LLM
+---
+ tests/qtest/pocketforge-a133-input-test.c | 946 +++++-----------------
+ 1 file changed, 217 insertions(+), 729 deletions(-)
+
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index f7c7188..5195a1b 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -1,840 +1,328 @@
+ /*
+- * QTest coverage for the PocketForge A133 virtual input device
++ * QTest coverage for the PocketForge A133 MCU gamepad transport
+  *
+  * SPDX-License-Identifier: GPL-2.0-or-later
+  */
+ 
+ #include "qemu/osdep.h"
+-#include "qemu/bitops.h"
+-#include "qemu/bswap.h"
+ #include "libqtest.h"
+-#include "libqos/libqos-malloc.h"
+-#include "libqos/virtio-mmio.h"
+ #include "qapi/qmp/qdict.h"
+ #include "qapi/qmp/qlist.h"
+-
+ #include "standard-headers/linux/input.h"
+-#include "standard-headers/linux/virtio_config.h"
+-#include "standard-headers/linux/virtio_ids.h"
+-#include "standard-headers/linux/virtio_input.h"
+-
+-#define PF_A133_INPUT_MMIO_BASE 0x0a000200
+-#define PF_A133_RAM_BASE 0x40000000
+-#define PF_A133_RAM_END  0x41000000
+-#define PF_A133_INPUT_PATH "/machine/pocketforge-input"
+-#define VIRTIO_MMIO_QUEUE_READY     0x044
+-#define VIRTIO_MMIO_QUEUE_DESC_LOW  0x080
+-#define VIRTIO_MMIO_QUEUE_DESC_HIGH 0x084
+-#define VIRTIO_MMIO_QUEUE_AVAIL_LOW 0x090
+-#define VIRTIO_MMIO_QUEUE_AVAIL_HIGH 0x094
+-#define VIRTIO_MMIO_QUEUE_USED_LOW  0x0a0
+-#define VIRTIO_MMIO_QUEUE_USED_HIGH 0x0a4
+-typedef struct InputFixture {
+-    QTestState *qts;
+-    QVirtioMMIODevice mmio;
+-    QGuestAllocator alloc;
+-    QVirtQueue *vq;
+-    char *trace_path;
+-} InputFixture;
+-
+-typedef struct EventBuffers {
+-    uint64_t addr[2];
+-    uint32_t head[2];
+-} EventBuffers;
+-
+-typedef struct ControlCase {
+-    const char *name;
+-    uint16_t type;
+-    uint16_t code;
+-    int32_t pressed;
+-} ControlCase;
+-
+-static const ControlCase controls[] = {
+-    { "dpad-up", EV_ABS, ABS_HAT0Y, -1 },
+-    { "dpad-down", EV_ABS, ABS_HAT0Y, 1 },
+-    { "dpad-left", EV_ABS, ABS_HAT0X, -1 },
+-    { "dpad-right", EV_ABS, ABS_HAT0X, 1 },
+-    { "l1", EV_KEY, BTN_TL, 1 },
+-    { "r1", EV_KEY, BTN_TR, 1 },
+-    { "menu", EV_KEY, BTN_MODE, 1 },
+-};
+-
+-static QVirtQueue *setup_modern_queue(InputFixture *f, uint16_t index)
+-{
+-    QVirtQueue *vq = g_new0(QVirtQueue, 1);
+-    uint64_t addr;
+-
+-    vq->vdev = &f->mmio.vdev;
+-    vq->index = index;
+-    vq->align = 4096;
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 QVIRTIO_MMIO_QUEUE_SEL, index);
+-    vq->size = qtest_readl(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                           QVIRTIO_MMIO_QUEUE_NUM_MAX);
+-    g_assert_cmpuint(vq->size, >, 0);
+-    vq->num_free = vq->size;
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 QVIRTIO_MMIO_QUEUE_NUM, vq->size);
+-
+-    addr = guest_alloc(&f->alloc, qvring_size(vq->size, vq->align));
+-    qvring_init(f->qts, &f->alloc, vq, addr);
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 VIRTIO_MMIO_QUEUE_DESC_LOW, vq->desc);
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 VIRTIO_MMIO_QUEUE_DESC_HIGH, vq->desc >> 32);
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 VIRTIO_MMIO_QUEUE_AVAIL_LOW, vq->avail);
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 VIRTIO_MMIO_QUEUE_AVAIL_HIGH, vq->avail >> 32);
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 VIRTIO_MMIO_QUEUE_USED_LOW, vq->used);
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 VIRTIO_MMIO_QUEUE_USED_HIGH, vq->used >> 32);
+-    qtest_writel(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 VIRTIO_MMIO_QUEUE_READY, 1);
+-    return vq;
+-}
+-
+-static void input_fixture_init_common(InputFixture *f, bool setup_queue,
+-                                      bool trace_queue)
+-{
+-    GError *gerror = NULL;
+-    char *args;
+-    uint64_t features;
+-    int fd;
+-
+-    memset(f, 0, sizeof(*f));
+-    if (trace_queue) {
+-        fd = g_file_open_tmp("pocketforge-input-XXXXXX.log",
+-                             &f->trace_path, &gerror);
+-        g_assert_no_error(gerror);
+-        g_assert_cmpint(fd, >=, 0);
+-        close(fd);
+-        args = g_strdup_printf("-machine pocketforge-a133 -nodefaults "
+-                               "-trace enable=virtqueue_pop,file=%s",
+-                               f->trace_path);
+-    } else {
+-        args = g_strdup("-machine pocketforge-a133 -nodefaults");
+-    }
+-    f->qts = qtest_init(args);
+-    g_free(args);
+-    g_assert_cmphex(qtest_readl(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                               QVIRTIO_MMIO_DEVICE_ID), ==, VIRTIO_ID_INPUT);
+-
+-    qvirtio_mmio_init_device(&f->mmio, f->qts,
+-                             PF_A133_INPUT_MMIO_BASE, 4096);
+-    qvirtio_start_device(&f->mmio.vdev);
+-    features = qvirtio_get_features(&f->mmio.vdev);
+-    features &= ~(QVIRTIO_F_BAD_FEATURE |
+-                  BIT_ULL(VIRTIO_RING_F_INDIRECT_DESC) |
+-                  BIT_ULL(VIRTIO_RING_F_EVENT_IDX) |
+-                  BIT_ULL(VIRTIO_F_RING_PACKED));
+-    qvirtio_set_features(&f->mmio.vdev, features);
+-
+-    if (setup_queue) {
+-        alloc_init(&f->alloc, ALLOC_NO_FLAGS, PF_A133_RAM_BASE,
+-                   PF_A133_RAM_END, 4096);
+-        f->vq = setup_modern_queue(f, 0);
+-        qvirtio_set_driver_ok(&f->mmio.vdev);
+-    }
+-}
+ 
+-static void input_fixture_init(InputFixture *f, bool setup_queue)
+-{
+-    input_fixture_init_common(f, setup_queue, false);
+-}
++#define PF_UART3_BASE 0x05000c00
++#define PF_UART4_BASE 0x05001000
++#define PF_VIRTIO_INPUT_BASE 0x0a000200
+ 
+-static void input_fixture_stop(InputFixture *f)
+-{
+-    qvirtio_reset(&f->mmio.vdev);
+-    if (f->vq) {
+-        qvirtqueue_cleanup(f->mmio.vdev.bus, f->vq, &f->alloc);
+-        alloc_destroy(&f->alloc);
+-    }
+-    qtest_quit(f->qts);
+-}
++#define UART_RBR_DLL 0x00
++#define UART_IER_DLM 0x04
++#define UART_LCR     0x0c
++#define UART_LSR     0x14
++#define UART_LSR_DR  0x01
+ 
+-static void input_fixture_destroy(InputFixture *f)
+-{
+-    input_fixture_stop(f);
+-    if (f->trace_path) {
+-        g_assert_cmpint(g_remove(f->trace_path), ==, 0);
+-        g_clear_pointer(&f->trace_path, g_free);
+-    }
+-}
+-
+-static char *input_fixture_take_trace(InputFixture *f)
+-{
+-    GError *gerror = NULL;
+-    char *contents;
+-
+-    input_fixture_stop(f);
+-    g_assert_true(g_file_get_contents(f->trace_path, &contents, NULL,
+-                                      &gerror));
+-    g_assert_no_error(gerror);
+-    g_assert_cmpint(g_remove(f->trace_path), ==, 0);
+-    g_clear_pointer(&f->trace_path, g_free);
+-    return contents;
+-}
+-
+-static void select_config(InputFixture *f, uint8_t select, uint8_t subsel)
+-{
+-    qtest_writeb(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 QVIRTIO_MMIO_DEVICE_SPECIFIC, select);
+-    qtest_writeb(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                 QVIRTIO_MMIO_DEVICE_SPECIFIC + 1, subsel);
+-}
+-
+-static uint8_t config_readb(InputFixture *f, uint64_t offset)
+-{
+-    return qtest_readb(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                       QVIRTIO_MMIO_DEVICE_SPECIFIC + offset);
+-}
+-
+-static uint16_t config_readw(InputFixture *f, uint64_t offset)
+-{
+-    return qtest_readw(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                       QVIRTIO_MMIO_DEVICE_SPECIFIC + offset);
+-}
++static const uint8_t centered[] = {
++    0xff, 0x01, 0x00, 0x08, 0x00, 0x08, 0x00, 0xfe,
++};
+ 
+-static uint32_t config_readl(InputFixture *f, uint64_t offset)
++static void uart_configure(QTestState *qts, uint64_t base)
+ {
+-    return qtest_readl(f->qts, PF_A133_INPUT_MMIO_BASE +
+-                       QVIRTIO_MMIO_DEVICE_SPECIFIC + offset);
++    qtest_writel(qts, base + UART_LCR, 0x83); /* DLAB, 8N1 */
++    qtest_writel(qts, base + UART_RBR_DLL, 13);
++    qtest_writel(qts, base + UART_IER_DLM, 0);
++    qtest_writel(qts, base + UART_LCR, 0x03); /* 8N1 */
+ }
+ 
+-static void assert_capability(InputFixture *f, uint8_t type, uint16_t code)
++static void uart_assert_frame(QTestState *qts, uint64_t base,
++                              const uint8_t expected[8])
+ {
+-    uint8_t byte;
+-
+-    select_config(f, VIRTIO_INPUT_CFG_EV_BITS, type);
+-    g_assert_cmpuint(config_readb(f, 2), >, code / 8);
+-    byte = config_readb(f, 8 + code / 8);
+-    g_assert_true(byte & BIT(code % 8));
+-}
++    int i;
+ 
+-static void assert_abs_range(InputFixture *f, uint8_t code,
+-                             int32_t minimum, int32_t maximum)
+-{
+-    select_config(f, VIRTIO_INPUT_CFG_ABS_INFO, code);
+-    g_assert_cmpuint(config_readb(f, 2), ==,
+-                     sizeof(struct virtio_input_absinfo));
+-    g_assert_cmpint((int32_t)config_readl(f, 8), ==, minimum);
+-    g_assert_cmpint((int32_t)config_readl(f, 12), ==, maximum);
++    for (i = 0; i < 8; i++) {
++        g_assert_cmphex(qtest_readl(qts, base + UART_LSR) & UART_LSR_DR,
++                        ==, UART_LSR_DR);
++        g_assert_cmphex(qtest_readl(qts, base + UART_RBR_DLL) & 0xff,
++                        ==, expected[i]);
++    }
+ }
+ 
+-static bool inject(InputFixture *f, const char *event)
++static void uart_assert_empty(QTestState *qts, uint64_t base)
+ {
+-    QDict *response;
+-    bool success;
+-
+-    response = qtest_qmp(f->qts,
+-                         "{ 'execute': 'qom-set', 'arguments': {"
+-                         " 'path': %s, 'property': 'event', 'value': %s } }",
+-                         PF_A133_INPUT_PATH, event);
+-    success = qdict_haskey(response, "return");
+-    g_assert_true(success || qdict_haskey(response, "error"));
+-    if (!success) {
+-        QDict *error = qdict_get_qdict(response, "error");
+-
+-        g_test_message("injection '%s' rejected: %s", event,
+-                       qdict_get_str(error, "desc"));
+-    }
+-    qobject_unref(response);
+-    return success;
++    g_assert_cmphex(qtest_readl(qts, base + UART_LSR) & UART_LSR_DR, ==, 0);
+ }
+ 
+-static QDict *raw_send(InputFixture *f, uint16_t type, uint16_t code,
+-                       int32_t value)
++static QDict *raw_send(QTestState *qts, int type, int code, int value)
+ {
+-    return qtest_qmp(f->qts,
+-                     "{ 'execute': 'pocketforge-input-send',"
+-                     " 'arguments': { 'device': 'gamepad', 'events': ["
+-                     " { 'type': %u, 'code': %u, 'value': %d },"
+-                     " { 'type': %u, 'code': %u, 'value': 0 } ] } }",
+-                     type, code, value, EV_SYN, SYN_REPORT);
++    return qtest_qmp(qts,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'gamepad', 'events': ["
++        " { 'type': %d, 'code': %d, 'value': %d },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
++        type, code, value);
+ }
+ 
+-static void assert_raw_error(InputFixture *f, uint16_t type, uint16_t code,
+-                             int32_t value, const char *token)
++static void assert_error_prefix(QDict *response, const char *prefix)
+ {
+-    QDict *response = raw_send(f, type, code, value);
+     QDict *error = qdict_get_qdict(response, "error");
+ 
+     g_assert_nonnull(error);
+-    g_assert_true(g_str_has_prefix(qdict_get_str(error, "desc"), token));
+-    qobject_unref(response);
++    g_assert_true(g_str_has_prefix(qdict_get_str(error, "desc"), prefix));
+ }
+ 
+-static void assert_queue_idle(InputFixture *f)
++static QDict *query_device(QDict *response)
+ {
+-    QDict *response;
+-    QDict *status;
++    QDict *result = qdict_get_qdict(response, "return");
++    QList *devices = qdict_get_qlist(result, "devices");
++    const QListEntry *entry = qlist_first(devices);
+ 
+-    response = qtest_qmp(f->qts,
+-                         "{ 'execute': 'x-query-virtio-queue-status',"
+-                         " 'arguments': { 'path': %s, 'queue': 0 } }",
+-                         PF_A133_INPUT_PATH);
+-    g_assert_true(qdict_haskey(response, "return"));
+-    status = qdict_get_qdict(response, "return");
+-    g_test_message("queue after rejection: last-avail=%" PRId64
+-                   " inuse=%" PRId64,
+-                   qdict_get_int(status, "last-avail-idx"),
+-                   qdict_get_int(status, "inuse"));
+-    g_assert_cmpint(qdict_get_int(status, "last-avail-idx"), ==, 0);
+-    g_assert_cmpint(qdict_get_int(status, "inuse"), ==, 0);
+-    qobject_unref(response);
++    g_assert_nonnull(entry);
++    g_assert_null(qlist_next(entry));
++    return qobject_to(QDict, qlist_entry_obj(entry));
+ }
+ 
+-static void add_event_buffer_len(InputFixture *f, EventBuffers *buffers,
+-                                 unsigned int index, size_t len)
++static bool query_has_code(QDict *device, int type, int code)
+ {
+-    uint8_t zero[2 * sizeof(struct virtio_input_event)] = { 0 };
+-
+-    g_assert_cmpuint(index, <, ARRAY_SIZE(buffers->addr));
+-    g_assert_cmpuint(len, >, 0);
+-    g_assert_cmpuint(len, <=, sizeof(zero));
+-    buffers->addr[index] = guest_alloc(&f->alloc, len);
+-    qtest_memwrite(f->qts, buffers->addr[index], zero, len);
+-    buffers->head[index] = qvirtqueue_add(f->qts, f->vq,
+-                                          buffers->addr[index],
+-                                          len, true, false);
+-    qvirtqueue_kick(f->qts, &f->mmio.vdev, f->vq,
+-                    buffers->head[index]);
+-}
++    QList *caps = qdict_get_qlist(device, "caps");
++    const QListEntry *cap_entry;
+ 
+-static void add_event_buffer(InputFixture *f, EventBuffers *buffers,
+-                             unsigned int index)
+-{
+-    add_event_buffer_len(f, buffers, index, sizeof(struct virtio_input_event));
+-}
++    QLIST_FOREACH_ENTRY(caps, cap_entry) {
++        QDict *cap = qobject_to(QDict, qlist_entry_obj(cap_entry));
++        QList *codes;
++        const QListEntry *code_entry;
+ 
+-static EventBuffers add_event_buffers(InputFixture *f)
+-{
+-    EventBuffers buffers = { 0 };
+-    int i;
++        if (qdict_get_int(cap, "type") != type ||
++            !(codes = qdict_get_qlist(cap, "codes"))) {
++            continue;
++        }
++        QLIST_FOREACH_ENTRY(codes, code_entry) {
++            QDict *item = qobject_to(QDict, qlist_entry_obj(code_entry));
+ 
+-    for (i = 0; i < 2; i++) {
+-        add_event_buffer(f, &buffers, i);
++            if (qdict_get_int(item, "code") == code) {
++                return true;
++            }
++        }
+     }
+-    return buffers;
++    return false;
+ }
+ 
+-static void assert_event_pair(InputFixture *f, const EventBuffers *buffers,
+-                              uint16_t type, uint16_t code, int32_t value)
++static bool query_has_abs(QDict *device, int code, int min, int max)
+ {
+-    struct virtio_input_event event;
+-    uint32_t head;
+-    uint32_t len;
+-
+-    g_assert_true(qvirtqueue_get_buf(f->qts, f->vq, &head, &len));
+-    g_assert_cmpuint(head, ==, buffers->head[0]);
+-    g_assert_cmpuint(len, ==, sizeof(event));
+-    qtest_memread(f->qts, buffers->addr[0], &event, sizeof(event));
+-    g_assert_cmpuint(le16_to_cpu(event.type), ==, type);
+-    g_assert_cmpuint(le16_to_cpu(event.code), ==, code);
+-    g_assert_cmpint((int32_t)le32_to_cpu(event.value), ==, value);
+-
+-    g_assert_true(qvirtqueue_get_buf(f->qts, f->vq, &head, &len));
+-    g_assert_cmpuint(head, ==, buffers->head[1]);
+-    g_assert_cmpuint(len, ==, sizeof(event));
+-    qtest_memread(f->qts, buffers->addr[1], &event, sizeof(event));
+-    g_assert_cmpuint(le16_to_cpu(event.type), ==, EV_SYN);
+-    g_assert_cmpuint(le16_to_cpu(event.code), ==, SYN_REPORT);
+-    g_assert_cmpuint(le32_to_cpu(event.value), ==, 0);
+-}
++    QList *caps = qdict_get_qlist(device, "caps");
++    const QListEntry *cap_entry;
+ 
+-static unsigned int count_trace_events(const char *trace, const char *event)
+-{
+-    unsigned int count = 0;
++    QLIST_FOREACH_ENTRY(caps, cap_entry) {
++        QDict *cap = qobject_to(QDict, qlist_entry_obj(cap_entry));
++        QList *axes;
++        const QListEntry *axis_entry;
+ 
+-    while ((trace = strstr(trace, event))) {
+-        count++;
+-        trace += strlen(event);
++        if (qdict_get_int(cap, "type") != EV_ABS ||
++            !(axes = qdict_get_qlist(cap, "abs"))) {
++            continue;
++        }
++        QLIST_FOREACH_ENTRY(axes, axis_entry) {
++            QDict *axis = qobject_to(QDict, qlist_entry_obj(axis_entry));
++
++            if (qdict_get_int(axis, "code") == code) {
++                g_assert_cmpint(qdict_get_int(axis, "min"), ==, min);
++                g_assert_cmpint(qdict_get_int(axis, "max"), ==, max);
++                return true;
++            }
++        }
+     }
+-    return count;
++    return false;
+ }
+ 
+-static void test_identity_and_capabilities(void)
++static void test_query_and_transport(void)
+ {
+-    const uint16_t keys[] = {
++    static const int keys[] = {
+         BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TL, BTN_TR,
+         BTN_SELECT, BTN_START, BTN_MODE,
+     };
+-    const uint16_t axes[] = {
+-        ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y,
+-    };
+-    InputFixture f;
+-    char name[sizeof("TRIMUI Player1")];
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    QDict *response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    QDict *result = qdict_get_qdict(response, "return");
++    QDict *version = qdict_get_qdict(result, "abi_version");
++    QDict *device = query_device(response);
+     int i;
+ 
+-    input_fixture_init(&f, false);
+-
+-    select_config(&f, VIRTIO_INPUT_CFG_ID_NAME, 0);
+-    g_assert_cmpuint(config_readb(&f, 2), ==, sizeof(name));
+-    for (i = 0; i < sizeof(name); i++) {
+-        name[i] = config_readb(&f, 8 + i);
+-    }
+-    g_assert_cmpstr(name, ==, "TRIMUI Player1");
+-
+-    select_config(&f, VIRTIO_INPUT_CFG_ID_DEVIDS, 0);
+-    g_assert_cmpuint(config_readw(&f, 8), ==, BUS_USB);
+-    g_assert_cmphex(config_readw(&f, 10), ==, 0x045e);
+-    g_assert_cmphex(config_readw(&f, 12), ==, 0x028e);
+-    g_assert_cmphex(config_readw(&f, 14), ==, 0x0110);
+-
++    g_assert_cmpint(qdict_get_int(version, "major"), ==, 2);
++    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 0);
++    g_assert_cmpint(qdict_get_int(result, "max_batch_events"), ==, 256);
++    g_assert_cmpstr(qdict_get_str(device, "id"), ==, "gamepad");
++    g_assert_cmpstr(qdict_get_str(device, "name"), ==, "TRIMUI Player1");
++    g_assert_cmpint(qdict_get_int(device, "bustype"), ==, BUS_USB);
++    g_assert_cmpint(qdict_get_int(device, "vendor"), ==, 0x045e);
++    g_assert_cmpint(qdict_get_int(device, "product"), ==, 0x028e);
++    g_assert_cmpint(qdict_get_int(device, "version"), ==, 0x0110);
++    g_assert_false(qdict_get_bool(device, "ready"));
++    g_assert_true(query_has_code(device, EV_SYN, SYN_REPORT));
+     for (i = 0; i < ARRAY_SIZE(keys); i++) {
+-        assert_capability(&f, EV_KEY, keys[i]);
+-    }
+-    for (i = 0; i < ARRAY_SIZE(axes); i++) {
+-        assert_capability(&f, EV_ABS, axes[i]);
++        g_assert_true(query_has_code(device, EV_KEY, keys[i]));
+     }
++    g_assert_true(query_has_abs(device, ABS_HAT0X, -1, 1));
++    g_assert_true(query_has_abs(device, ABS_HAT0Y, -1, 1));
++    g_assert_false(query_has_abs(device, ABS_X, 0, 4095));
++    qobject_unref(response);
+ 
+-    assert_abs_range(&f, ABS_X, 0, 4095);
+-    assert_abs_range(&f, ABS_Y, 0, 4095);
+-    assert_abs_range(&f, ABS_RX, 0, 4095);
+-    assert_abs_range(&f, ABS_RY, 0, 4095);
+-    assert_abs_range(&f, ABS_Z, 0, 255);
+-    assert_abs_range(&f, ABS_RZ, 0, 255);
+-    assert_abs_range(&f, ABS_HAT0X, -1, 1);
+-    assert_abs_range(&f, ABS_HAT0Y, -1, 1);
+-
+-    input_fixture_destroy(&f);
++    /* The former machine-owned virtio-input transport is gone. */
++    g_assert_cmphex(qtest_readl(qts, PF_VIRTIO_INPUT_BASE + 0x008), ==, 0);
++    qtest_quit(qts);
+ }
+ 
+-static void test_ordered_injection(void)
++static void test_mcu_frames_and_negative_control(void)
+ {
+-    InputFixture f;
+-    EventBuffers buffers;
+-    char *event;
+-    int i;
+-
+-    input_fixture_init(&f, true);
+-    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "ready"));
+-    g_assert_false(inject(&f, "dpad-up:press"));
+-
+-    buffers = add_event_buffers(&f);
+-    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "ready"));
+-    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
+-    g_assert_false(inject(&f, ""));
+-    g_assert_false(inject(&f, "south:press"));
+-    g_assert_false(inject(&f, "dpad-up:tap"));
+-    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
+-
+-    g_assert_true(inject(&f, "dpad-left:press"));
+-    assert_event_pair(&f, &buffers, EV_ABS, ABS_HAT0X, -1);
+-    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-
+-    buffers = add_event_buffers(&f);
+-    g_assert_false(inject(&f, "dpad-right:press"));
+-    g_assert_false(inject(&f, "dpad-left:press"));
+-    g_assert_true(inject(&f, "dpad-left:release"));
+-    assert_event_pair(&f, &buffers, EV_ABS, ABS_HAT0X, 0);
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-    g_assert_false(inject(&f, "dpad-left:release"));
+-
+-    for (i = 0; i < ARRAY_SIZE(controls); i++) {
+-        buffers = add_event_buffers(&f);
+-        event = g_strdup_printf("%s:press", controls[i].name);
+-        g_assert_true(inject(&f, event));
+-        g_free(event);
+-        assert_event_pair(&f, &buffers, controls[i].type,
+-                          controls[i].code, controls[i].pressed);
+-        g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-
+-        buffers = add_event_buffers(&f);
+-        event = g_strdup_printf("%s:release", controls[i].name);
+-        g_assert_true(inject(&f, event));
+-        g_free(event);
+-        assert_event_pair(&f, &buffers, controls[i].type,
+-                          controls[i].code, 0);
+-        g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-    }
+-
+-    input_fixture_destroy(&f);
+-}
++    static const uint8_t right_south[] = {
++        0xff, 0x01, 0x20, 0x08, 0x00, 0x08, 0x00, 0xfe,
++    };
++    static const uint8_t left_up[] = {
++        0xff, 0x01, 0x04, 0x08, 0x00, 0x08, 0x00, 0xfe,
++    };
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    QDict *response;
++    QDict *device;
+ 
+-static void test_reset_and_late_injection(void)
+-{
+-    InputFixture f;
+-    EventBuffers buffers;
+-
+-    input_fixture_init(&f, true);
+-    buffers = add_event_buffers(&f);
+-    g_assert_true(inject(&f, "menu:press"));
+-    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 1);
+-    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-
+-    qvirtio_reset(&f.mmio.vdev);
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "ready"));
+-    g_assert_false(inject(&f, "menu:release"));
+-
+-    qvirtqueue_cleanup(f.mmio.vdev.bus, f.vq, &f.alloc);
+-    f.vq = NULL;
+-    alloc_destroy(&f.alloc);
+-    qtest_quit(f.qts);
+-}
++    response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
++    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
++                                 "class"), ==, "DeviceNotActive");
++    qobject_unref(response);
+ 
+-static void test_one_buffer_atomicity(void)
+-{
+-    InputFixture f;
+-    EventBuffers buffers = { 0 };
+-    QDict *response;
+-    QDict *error;
+-    char *trace;
++    uart_configure(qts, PF_UART3_BASE);
++    uart_assert_frame(qts, PF_UART3_BASE, centered);
++    uart_assert_empty(qts, PF_UART4_BASE);
++    response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    device = query_device(response);
++    g_assert_false(qdict_get_bool(device, "ready"));
++    qobject_unref(response);
+ 
+-    input_fixture_init_common(&f, true, true);
+-    add_event_buffer(&f, &buffers, 0);
+-    response = raw_send(&f, EV_KEY, BTN_MODE, 1);
+-    error = qdict_get_qdict(response, "error");
+-    g_assert_nonnull(error);
+-    g_assert_true(g_str_has_prefix(qdict_get_str(error, "desc"),
+-                                  "pocketforge-input: "
+-                                  "reason=resource-busy:"));
++    uart_configure(qts, PF_UART4_BASE);
++    uart_assert_frame(qts, PF_UART4_BASE, centered);
++    response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    device = query_device(response);
++    g_assert_true(qdict_get_bool(device, "ready"));
+     qobject_unref(response);
+-    assert_queue_idle(&f);
+-    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-
+-    g_assert_false(inject(&f, "menu:press"));
+-    assert_queue_idle(&f);
+-    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-    add_event_buffer(&f, &buffers, 1);
+-    g_assert_true(inject(&f, "menu:press"));
+-    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 1);
+-    g_assert_true(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-
+-    buffers = add_event_buffers(&f);
+-    g_assert_true(inject(&f, "menu:release"));
+-    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 0);
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-
+-    trace = input_fixture_take_trace(&f);
+-    g_assert_cmpuint(count_trace_events(trace, "virtqueue_pop"), ==, 4);
+-    g_free(trace);
+-}
+ 
+-static void test_undersized_buffer_atomicity(void)
+-{
+-    InputFixture f;
+-    EventBuffers buffers = { 0 };
+-    QDict *response;
+-    QDict *error;
++    /* Negative and positive controls share one invocation. */
++    response = raw_send(qts, EV_SW, SW_LID, 1);
++    assert_error_prefix(response,
++        "pocketforge-input: reason=invalid-parameter index=0:");
++    qobject_unref(response);
++    uart_assert_empty(qts, PF_UART3_BASE);
++    uart_assert_empty(qts, PF_UART4_BASE);
+ 
+-    input_fixture_init(&f, true);
+-    add_event_buffer_len(&f, &buffers, 0, 4);
+-    add_event_buffer_len(&f, &buffers, 1, 12);
+-    response = raw_send(&f, EV_KEY, BTN_MODE, 1);
+-    error = qdict_get_qdict(response, "error");
+-    g_assert_nonnull(error);
+-    g_assert_true(g_str_has_prefix(qdict_get_str(error, "desc"),
+-                                  "pocketforge-input: "
+-                                  "reason=resource-busy:"));
++    response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
++    g_assert_true(qdict_haskey(response, "return"));
+     qobject_unref(response);
+-    assert_queue_idle(&f);
+-    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-    input_fixture_destroy(&f);
+-
+-    input_fixture_init(&f, true);
+-    buffers = add_event_buffers(&f);
+-    response = raw_send(&f, EV_KEY, BTN_MODE, 1);
++    uart_assert_frame(qts, PF_UART3_BASE, right_south);
++    uart_assert_empty(qts, PF_UART4_BASE);
++
++    response = raw_send(qts, EV_ABS, ABS_HAT0Y, -1);
+     g_assert_true(qdict_haskey(response, "return"));
+     qobject_unref(response);
+-    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 1);
+-    buffers = add_event_buffers(&f);
+-    response = raw_send(&f, EV_KEY, BTN_MODE, 0);
++    uart_assert_frame(qts, PF_UART4_BASE, left_up);
++    uart_assert_empty(qts, PF_UART3_BASE);
++
++    /* QOM sugar remains on the same validation/delivery path. */
++    response = qtest_qmp(qts,
++        "{ 'execute': 'qom-set', 'arguments': {"
++        " 'path': '/machine/pocketforge-input',"
++        " 'property': 'event', 'value': 'r1:press' } }");
+     g_assert_true(qdict_haskey(response, "return"));
+     qobject_unref(response);
+-    assert_event_pair(&f, &buffers, EV_KEY, BTN_MODE, 0);
+-    input_fixture_destroy(&f);
++    {
++        static const uint8_t right_south_r1[] = {
++            0xff, 0x01, 0x21, 0x08, 0x00, 0x08, 0x00, 0xfe,
++        };
++        uart_assert_frame(qts, PF_UART3_BASE, right_south_r1);
++    }
++    qtest_quit(qts);
+ }
+ 
+-static void test_no_device(void)
++static void test_batch_atomic_capacity(void)
+ {
+-    QTestState *qts;
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    GString *request;
+     QDict *response;
++    int i;
+ 
+-    qts = qtest_init("-machine pocketforge-a133,pocketforge-input-device=off "
+-                     "-nodefaults");
+-    g_assert_cmphex(qtest_readl(qts, PF_A133_INPUT_MMIO_BASE +
+-                               QVIRTIO_MMIO_DEVICE_ID), ==, 0);
+-    response = qtest_qmp(qts,
+-                         "{ 'execute': 'qom-set', 'arguments': {"
+-                         " 'path': %s, 'property': 'event',"
+-                         " 'value': 'menu:press' } }",
+-                         PF_A133_INPUT_PATH);
+-    g_assert_true(qdict_haskey(response, "error"));
+-    qobject_unref(response);
++    uart_configure(qts, PF_UART3_BASE);
++    uart_configure(qts, PF_UART4_BASE);
++    uart_assert_frame(qts, PF_UART3_BASE, centered);
++    uart_assert_frame(qts, PF_UART4_BASE, centered);
+ 
+-    response = qtest_qmp(qts,
+-                         "{ 'execute': 'query-pocketforge-input' }");
+-    g_assert_true(qlist_empty(qdict_get_qlist(
+-        qdict_get_qdict(response, "return"), "devices")));
++    request = g_string_new(
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'gamepad', 'events': [");
++    for (i = 0; i < 128; i++) {
++        g_string_append_printf(request,
++            "%s{ 'type': 1, 'code': 304, 'value': %d },",
++            i ? "," : "", !(i & 1));
++        g_string_append(request,
++            "{ 'type': 0, 'code': 0, 'value': 0 }");
++    }
++    g_string_append(request, "] } }");
++    qtest_qmp_send_raw(qts, "%s\n", request->str);
++    response = qtest_qmp_receive(qts);
++    g_assert_true(qdict_haskey(response, "return"));
+     qobject_unref(response);
++    g_string_free(request, true);
+ 
+     response = qtest_qmp(qts,
+-                         "{ 'execute': 'pocketforge-input-send',"
+-                         " 'arguments': { 'device': 'gamepad', 'events': ["
+-                         " { 'type': 1, 'code': 304, 'value': 1 },"
+-                         " { 'type': 0, 'code': 0, 'value': 0 } ] } }");
+-    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
+-                                 "class"), ==, "DeviceNotFound");
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'gamepad', 'events': ["
++        " { 'type': 1, 'code': 304, 'value': 1 },"
++        " { 'type': 0, 'code': 0, 'value': 0 },"
++        " { 'type': 1, 'code': 304, 'value': 0 },"
++        " { 'type': 0, 'code': 0, 'value': 0 },"
++        " { 'type': 1, 'code': 304, 'value': 1 },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }");
++    assert_error_prefix(response,
++        "pocketforge-input: reason=resource-busy:");
+     qobject_unref(response);
++    g_assert_false(qtest_qom_get_bool(qts, "/machine/pocketforge-input",
++                                      "held"));
+     qtest_quit(qts);
+ }
+ 
+-static void test_display_off(void)
++static void test_disabled_and_non_machine(void)
+ {
+     QTestState *qts;
+     QDict *response;
+     QDict *result;
+ 
+-    qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off "
++    qts = qtest_init("-machine pocketforge-a133,pocketforge-input-device=off "
+                      "-nodefaults");
+-    g_assert_cmphex(qtest_readl(qts, 0x0a000000 +
+-                               QVIRTIO_MMIO_DEVICE_ID), ==, 0);
+     response = qtest_qmp(qts,
+-                         "{ 'execute': 'query-pocketforge-display' }");
++        "{ 'execute': 'query-pocketforge-input' }");
+     result = qdict_get_qdict(response, "return");
+-    g_assert_cmpstr(qdict_get_str(result, "profile"), ==, "off");
+-    g_assert_false(qdict_haskey(result, "active_scanout"));
++    g_assert_true(qlist_empty(qdict_get_qlist(result, "devices")));
+     qobject_unref(response);
+-    qtest_quit(qts);
+-}
+-
+-static void test_duplicate_gpu_rejected(void)
+-{
+-    const char *binary = g_getenv("QTEST_QEMU_BINARY");
+-    g_autofree char *stderr_text = NULL;
+-    g_autoptr(GError) error = NULL;
+-    char *argv[] = {
+-        (char *)binary, (char *)"-accel", (char *)"qtest",
+-        (char *)"-machine", (char *)"pocketforge-a133",
+-        (char *)"-nodefaults", (char *)"-display", (char *)"none",
+-        (char *)"-device", (char *)"virtio-gpu-device", NULL,
+-    };
+-    int status;
+-
+-    g_assert_nonnull(binary);
+-    g_assert_true(g_spawn_sync(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL,
+-                              NULL, &stderr_text, &status, &error));
+-    g_assert_no_error(error);
+-    g_assert_true(WIFEXITED(status));
+-    g_assert_cmpint(WEXITSTATUS(status), ==, 1);
+-    g_assert_nonnull(strstr(stderr_text,
+-                           "pocketforge-display: reason=duplicate-gpu:"));
+-}
+-
+-static void test_invalid_display_profile_rejected(void)
+-{
+-    const char *binary = g_getenv("QTEST_QEMU_BINARY");
+-    g_autofree char *stderr_text = NULL;
+-    g_autoptr(GError) error = NULL;
+-    char *argv[] = {
+-        (char *)binary, (char *)"-accel", (char *)"qtest",
+-        (char *)"-machine",
+-        (char *)"pocketforge-a133,pocketforge-display=landscape",
+-        (char *)"-nodefaults", (char *)"-display", (char *)"none", NULL,
+-    };
+-    int status;
+-
+-    g_assert_nonnull(binary);
+-    g_assert_true(g_spawn_sync(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL,
+-                              NULL, &stderr_text, &status, &error));
+-    g_assert_no_error(error);
+-    g_assert_true(WIFEXITED(status));
+-    g_assert_cmpint(WEXITSTATUS(status), ==, 1);
+-    g_assert_nonnull(strstr(stderr_text,
+-                           "pocketforge-display: "
+-                           "reason=invalid-parameter:"));
+-}
+-
+-static void test_qmp_contract_available(void)
+-{
+-    QTestState *qts;
+-    QDict *response;
+-    QDict *result;
+-    QDict *scanout;
+-
+-    qts = qtest_init("-machine pocketforge-a133 -nodefaults");
+-    response = qtest_qmp(qts,
+-                         "{ 'execute': 'query-pocketforge-input' }");
+-    g_assert_true(qdict_haskey(response, "return"));
+-    qobject_unref(response);
+-
+-    response = qtest_qmp(qts,
+-                         "{ 'execute': 'query-pocketforge-display' }");
+-    g_assert_true(qdict_haskey(response, "return"));
+-    result = qdict_get_qdict(response, "return");
+-    g_assert_cmpint(qdict_get_int(result, "native_width"), ==, 720);
+-    g_assert_cmpint(qdict_get_int(result, "native_height"), ==, 1280);
+-    g_assert_cmpint(qdict_get_int(result, "presentation_rotation"), ==, 90);
+-    scanout = qdict_get_qdict(result, "active_scanout");
+-    if (scanout) {
+-        g_test_message("initial scanout: %" PRId64 "x%" PRId64,
+-                       qdict_get_int(scanout, "width"),
+-                       qdict_get_int(scanout, "height"));
+-    }
++    response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
++    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
++                                 "class"), ==, "DeviceNotFound");
+     qobject_unref(response);
+     qtest_quit(qts);
+-}
+-
+-static void test_non_pocketforge_query_rejected(void)
+-{
+-    QTestState *qts;
+-    QDict *response;
+ 
+     qts = qtest_init("-machine virt -nodefaults");
+     response = qtest_qmp(qts,
+-                         "{ 'execute': 'query-pocketforge-input' }");
++        "{ 'execute': 'query-pocketforge-input' }");
+     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
+                                  "class"), ==, "DeviceNotFound");
+     qobject_unref(response);
+     qtest_quit(qts);
+ }
+ 
+-static void test_raw_qmp_abi(void)
+-{
+-    static const ControlCase keys[] = {
+-        { NULL, EV_KEY, BTN_SOUTH, 1 }, { NULL, EV_KEY, BTN_EAST, 1 },
+-        { NULL, EV_KEY, BTN_NORTH, 1 }, { NULL, EV_KEY, BTN_WEST, 1 },
+-        { NULL, EV_KEY, BTN_TL, 1 }, { NULL, EV_KEY, BTN_TR, 1 },
+-        { NULL, EV_KEY, BTN_SELECT, 1 }, { NULL, EV_KEY, BTN_START, 1 },
+-        { NULL, EV_KEY, BTN_MODE, 1 },
+-    };
+-    static const ControlCase axes[] = {
+-        { NULL, EV_ABS, ABS_X, 4095 }, { NULL, EV_ABS, ABS_Y, 0 },
+-        { NULL, EV_ABS, ABS_RX, 2048 }, { NULL, EV_ABS, ABS_RY, 1024 },
+-        { NULL, EV_ABS, ABS_Z, 255 }, { NULL, EV_ABS, ABS_RZ, 0 },
+-    };
+-    InputFixture f;
+-    EventBuffers buffers;
+-    QDict *response;
+-    QDict *result;
+-    QDict *version;
+-    GString *oversize;
+-    int i;
+-
+-    input_fixture_init(&f, true);
+-    g_assert_cmpuint(f.vq->size, ==, 1024);
+-    response = qtest_qmp(f.qts,
+-                         "{ 'execute': 'query-pocketforge-input' }");
+-    result = qdict_get_qdict(response, "return");
+-    version = qdict_get_qdict(result, "abi_version");
+-    g_assert_cmpint(qdict_get_int(version, "major"), ==, 1);
+-    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 0);
+-    g_assert_cmpint(qdict_get_int(result, "max_batch_events"), ==, 256);
+-    qobject_unref(response);
+-
+-    for (i = 0; i < ARRAY_SIZE(keys); i++) {
+-        buffers = add_event_buffers(&f);
+-        response = raw_send(&f, keys[i].type, keys[i].code, 1);
+-        g_assert_true(qdict_haskey(response, "return"));
+-        qobject_unref(response);
+-        assert_event_pair(&f, &buffers, EV_KEY, keys[i].code, 1);
+-
+-        buffers = add_event_buffers(&f);
+-        response = raw_send(&f, keys[i].type, keys[i].code, 0);
+-        g_assert_true(qdict_haskey(response, "return"));
+-        qobject_unref(response);
+-        assert_event_pair(&f, &buffers, EV_KEY, keys[i].code, 0);
+-    }
+-    for (i = 0; i < ARRAY_SIZE(axes); i++) {
+-        buffers = add_event_buffers(&f);
+-        response = raw_send(&f, axes[i].type, axes[i].code, axes[i].pressed);
+-        g_assert_true(qdict_haskey(response, "return"));
+-        qobject_unref(response);
+-        assert_event_pair(&f, &buffers, EV_ABS, axes[i].code, axes[i].pressed);
+-    }
+-    buffers = add_event_buffers(&f);
+-    response = raw_send(&f, EV_ABS, ABS_HAT0X, -1);
+-    g_assert_true(qdict_haskey(response, "return"));
+-    qobject_unref(response);
+-    assert_event_pair(&f, &buffers, EV_ABS, ABS_HAT0X, -1);
+-    buffers = add_event_buffers(&f);
+-    response = raw_send(&f, EV_ABS, ABS_HAT0X, 0);
+-    g_assert_true(qdict_haskey(response, "return"));
+-    qobject_unref(response);
+-    assert_event_pair(&f, &buffers, EV_ABS, ABS_HAT0X, 0);
+-
+-    assert_raw_error(&f, EV_MSC, 0, 0,
+-                     "pocketforge-input: reason=invalid-parameter index=0:");
+-    assert_raw_error(&f, EV_KEY, KEY_POWER, 1,
+-                     "pocketforge-input: reason=invalid-parameter index=0:");
+-    assert_raw_error(&f, EV_ABS, ABS_X, 4096,
+-                     "pocketforge-input: reason=invalid-parameter index=0:");
+-
+-    response = qtest_qmp(f.qts,
+-                         "{ 'execute': 'pocketforge-input-send',"
+-                         " 'arguments': { 'device': 'gamepad', 'events': ["
+-                         " { 'type': 1, 'code': 304, 'value': 1 } ] } }");
+-    g_assert_true(g_str_has_prefix(
+-        qdict_get_str(qdict_get_qdict(response, "error"), "desc"),
+-        "pocketforge-input: reason=invalid-parameter index=0:"));
+-    qobject_unref(response);
+-
+-    response = qtest_qmp(f.qts,
+-                         "{ 'execute': 'pocketforge-input-send',"
+-                         " 'arguments': { 'device': 'gamepad', 'events': ["
+-                         " { 'type': 0, 'code': 0, 'value': 0 } ] } }");
+-    g_assert_true(g_str_has_prefix(
+-        qdict_get_str(qdict_get_qdict(response, "error"), "desc"),
+-        "pocketforge-input: reason=invalid-parameter index=0:"));
+-    qobject_unref(response);
+-
+-    oversize = g_string_new(
+-        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
+-        " 'device': 'gamepad', 'events': [");
+-    for (i = 0; i < 257; i++) {
+-        g_string_append_printf(oversize, "%s{ 'type': 0, 'code': 0, "
+-                               "'value': 0 }", i ? "," : "");
+-    }
+-    g_string_append(oversize, "] } }");
+-    qtest_qmp_send_raw(f.qts, "%s\n", oversize->str);
+-    response = qtest_qmp_receive(f.qts);
+-    g_string_free(oversize, TRUE);
+-    g_test_message("oversize rejection: %s",
+-                   qdict_get_str(qdict_get_qdict(response, "error"), "desc"));
+-    g_assert_true(g_str_has_prefix(
+-        qdict_get_str(qdict_get_qdict(response, "error"), "desc"),
+-        "pocketforge-input: reason=invalid-parameter index=0:"));
+-    qobject_unref(response);
+-
+-    g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
+-    g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
+-    input_fixture_destroy(&f);
+-}
+-
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/identity-capabilities",
+-                   test_identity_and_capabilities);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/ordered-injection",
+-                   test_ordered_injection);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/reset-late-injection",
+-                   test_reset_and_late_injection);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/one-buffer-atomicity",
+-                   test_one_buffer_atomicity);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/undersized-buffer-atomicity",
+-                   test_undersized_buffer_atomicity);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/no-device",
+-                   test_no_device);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/display-off",
+-                   test_display_off);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/duplicate-gpu",
+-                   test_duplicate_gpu_rejected);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/invalid-display-profile",
+-                   test_invalid_display_profile_rejected);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/qmp-contract-available",
+-                   test_qmp_contract_available);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/non-pocketforge-query",
+-                   test_non_pocketforge_query_rejected);
+-    qtest_add_func("/aarch64/pocketforge-a133-input/raw-qmp-abi",
+-                   test_raw_qmp_abi);
+-
++    qtest_add_func("/aarch64/pocketforge-a133-input/query-transport",
++                   test_query_and_transport);
++    qtest_add_func("/aarch64/pocketforge-a133-input/mcu-frames-negative",
++                   test_mcu_frames_and_negative_control);
++    qtest_add_func("/aarch64/pocketforge-a133-input/batch-capacity",
++                   test_batch_atomic_capacity);
++    qtest_add_func("/aarch64/pocketforge-a133-input/disabled-non-machine",
++                   test_disabled_and_non_machine);
+     return g_test_run();
+ }
+-- 
+2.43.0
+

@@ -16,10 +16,9 @@ EXPECTED = {
 }
 
 REQUIRED_CONFIG = (
-    "CONFIG_VIRTIO",
-    "CONFIG_VIRTIO_MMIO",
-    "CONFIG_VIRTIO_INPUT",
-    "CONFIG_DRM_VIRTIO_GPU",
+    "CONFIG_SERIAL_8250",
+    "CONFIG_SERIAL_8250_DW",
+    "CONFIG_INPUT_UINPUT",
 )
 
 
@@ -55,8 +54,8 @@ def embedded_config(image: Path) -> dict[str, str]:
 
 def unavailable_drivers(config: dict[str, str]) -> list[str]:
     """Return drivers that are not guaranteed available at early boot."""
-    # Built-ins make READY self-contained. Accepting "m" would also need
-    # module-presence and dependency checks in both initrd and rootfs.
+    # The shipped decoder starts before a module-presence check can be made;
+    # built-ins keep READY fail-closed and self-contained.
     return [name for name in REQUIRED_CONFIG if config.get(name, "n") != "y"]
 
 
@@ -89,7 +88,7 @@ def main() -> int:
         print("PREFLIGHT result=BLOCKED reason=artifact-identity-mismatch")
         return 1
     if missing:
-        print("PREFLIGHT result=BLOCKED reason=guest-virtio-drivers-unavailable "
+        print("PREFLIGHT result=BLOCKED reason=guest-mcu-drivers-unavailable "
               f"missing={','.join(missing)}")
         return 1
     print("PREFLIGHT result=READY")
