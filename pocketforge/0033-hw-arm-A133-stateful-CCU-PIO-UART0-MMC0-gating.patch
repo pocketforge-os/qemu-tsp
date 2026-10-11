@@ -1,0 +1,719 @@
+From 5896a60c1f976a68308787618de884bc0d08e4ca Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sun, 11 Oct 2026 11:35:00 +0000
+Subject: [PATCH 33/33] hw: arm: A133 stateful CCU and PIO gating of UART0 and
+ MMC0
+
+Replace the permissive RAM-backed stub apertures at CCU 0x03001000 and
+PIO 0x0300b000 with stateful devices modeling exactly the early-boot
+register behavior the pinned A133 SPL relies on: retained whole-window
+storage with byte/half/word access, PLL LOCK synthesis at the twelve PLL
+control words once ENABLE is set, and gate/reset-release state at UART
++0x90c and MMC0 +0x84c.  The PIO device tracks the legacy-stride function
+cells 0x028 (PB9/PB10) and 0x0b4 (PF0..PF5).  The machine enables the
+DW-APB UART0 and the reused allwinner-sdhost-sun50i-a100 MMIO windows
+only while the CCU gate/reset word (bits 0 and 16) and the matching PIO
+function-2 nibbles are all programmed; disabled windows read 0 and drop
+writes, matching an unclocked/unmuxed bus.  Both devices carry vmstate
+and pulse the gate recompute on writes, reset, and post-load.
+
+Direct-kernel boots (-kernel) model the firmware-left state via a
+machine-set preboot property: reset restores open gates and muxed pins
+so the build-6 kernel console and SD path are untouched.  BootROM and
+qtest boots start closed and must run the SPL sequence.
+
+Bead: tsp-mc9m.41.984.54.11.2
+Assisted-by: LLM
+---
+ hw/arm/Kconfig                         |   2 +
+ hw/arm/pocketforge_a133.c              |  61 ++++++-
+ hw/misc/Kconfig                        |   6 +
+ hw/misc/meson.build                    |   2 +
+ hw/misc/pocketforge_a133_ccu.c         | 216 +++++++++++++++++++++++++
+ hw/misc/pocketforge_a133_pio.c         | 180 +++++++++++++++++++++
+ include/hw/misc/pocketforge_a133_ccu.h |  49 ++++++
+ include/hw/misc/pocketforge_a133_pio.h |  47 ++++++
+ 8 files changed, 561 insertions(+), 2 deletions(-)
+ create mode 100644 hw/misc/pocketforge_a133_ccu.c
+ create mode 100644 hw/misc/pocketforge_a133_pio.c
+ create mode 100644 include/hw/misc/pocketforge_a133_ccu.h
+ create mode 100644 include/hw/misc/pocketforge_a133_pio.h
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index b0e1e8e..de98b11 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -281,7 +281,9 @@ config POCKETFORGE_A133
+     select DW_APB_UART
+     select POCKETFORGE_A100_RTC
+     select POCKETFORGE_A133_INPUT
++    select POCKETFORGE_A133_CCU
+     select POCKETFORGE_A133_MMIO_STUB
++    select POCKETFORGE_A133_PIO
+ 
+ config SABRELITE
+     bool
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 9bf3610..0637a14 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -105,7 +105,9 @@
+ #include "hw/i2c/allwinner-i2c.h"
+ #include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
++#include "hw/misc/pocketforge_a133_ccu.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
++#include "hw/misc/pocketforge_a133_pio.h"
+ #include "hw/misc/axp2xx.h"
+ #include "hw/intc/arm_gic.h"
+ #include "hw/intc/arm_gic_common.h"
+@@ -181,6 +183,10 @@ struct PocketForgeA133MachineState {
+     PocketForgeA133Input *input_device;
+     DWApbUartState *gamepad_uart[2];
+     DeviceState *pmic;
++    PfA133CcuState *ccu;
++    PfA133PioState *pio;
++    MemoryRegion *uart0_mmio;
++    MemoryRegion *mmc0_mmio;
+     MemoryRegion r_intc_mmio;
+     MemoryRegion sram_a1;
+     MemoryRegion sram_c;
+@@ -530,12 +536,10 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
+     { "pocketforge-a133.sram_c1",          0x01d00000, 0x100000 },
+     { "pocketforge-a133.syscon",           0x03000000, 0x1000 },
+-    { "pocketforge-a133.ccu",              0x03001000, 0x1000 },
+     { "pocketforge-a133.dma",              0x03002000, 0x1000 },
+     { "pocketforge-a133.sid",              0x03006000, 0x1000 },
+     { "pocketforge-a133.watchdog",         0x030090a0, 0x20 },
+     { "pocketforge-a133.pwm",              0x0300a000, 0x400 },
+-    { "pocketforge-a133.pio",              0x0300b000, 0x400 },
+     { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
+     { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+@@ -872,6 +876,8 @@ static void pocketforge_a133_create_mmc0(PocketForgeA133MachineState *s,
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(host), &error_fatal);
+     sysbus_mmio_map(SYS_BUS_DEVICE(host), 0, PF_A133_MMC0_BASE);
+     sysbus_connect_irq(SYS_BUS_DEVICE(host), 0, irq);
++    /* CCU gate/reset + PF0..PF5 pinmux enable this window. */
++    s->mmc0_mmio = sysbus_mmio_get_region(SYS_BUS_DEVICE(host), 0);
+ 
+     bus = qdev_get_child_bus(host, "sd-bus");
+     if (!bus) {
+@@ -889,6 +895,51 @@ static void pocketforge_a133_create_mmc0(PocketForgeA133MachineState *s,
+     qdev_realize_and_unref(card, bus, &error_fatal);
+ }
+ 
++/*
++ * The pinned SPL opens each muxed peripheral exactly twice: the CCU bus
++ * gate/reset word (+0x90c UART0, +0x84c MMC0, gate bit 0 then release
++ * bit 16, the MMC one explicitly read back before a settle delay) and the
++ * legacy-stride PIO function cells (0x028 PB9/PB10 func 2, 0x0b4 PF0..PF5
++ * func 2).  Until both are programmed the peripheral window stays disabled:
++ * reads decode as 0 and writes are dropped, matching an unclocked/unmuxed
++ * bus on real silicon.  The CCU and PIO devices pulse this handler on every
++ * gate/mux write and on reset.
++ */
++static void pocketforge_a133_gate_update(void *opaque, int n, int level)
++{
++    PocketForgeA133MachineState *s = opaque;
++
++    memory_region_set_enabled(s->uart0_mmio,
++                              pf_a133_ccu_uart0_clocked(s->ccu) &&
++                              pf_a133_pio_uart0_pins(s->pio));
++    memory_region_set_enabled(s->mmc0_mmio,
++                              pf_a133_ccu_mmc0_clocked(s->ccu) &&
++                              pf_a133_pio_mmc0_pins(s->pio));
++}
++
++static void pocketforge_a133_create_ccu_pio(PocketForgeA133MachineState *s,
++                                            MachineState *machine)
++{
++    qemu_irq gate_irq;
++    /*
++     * Direct-kernel boots (-kernel) skip the firmware that programs these
++     * gates, so model its left-behind state: reset restores open gates and
++     * muxed pins.  BootROM and qtest boots start closed and must program
++     * the SPL sequence themselves.
++     */
++    bool preboot = machine->kernel_filename != NULL;
++
++    s->ccu = POCKETFORGE_A133_CCU(pocketforge_a133_ccu_create(
++        PF_A133_CCU_BASE, preboot));
++    s->pio = POCKETFORGE_A133_PIO(pocketforge_a133_pio_create(
++        PF_A133_PIO_BASE, preboot));
++
++    gate_irq = qemu_allocate_irq(pocketforge_a133_gate_update, s, 0);
++    qdev_connect_gpio_out_named(DEVICE(s->ccu), "gate-notify", 0, gate_irq);
++    qdev_connect_gpio_out_named(DEVICE(s->pio), "mux-notify", 0, gate_irq);
++    pocketforge_a133_gate_update(s, 0, 0);
++}
++
+ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+ {
+     DeviceState *gicdev;
+@@ -1084,6 +1135,11 @@ static void pocketforge_a133_init(MachineState *machine)
+         DeviceState *uart_dev = dw_apb_uart_create(
+             uart->base, pic[uart->irq], serial_hd(uart->serial_index));
+ 
++        if (uart->serial_index == 0) {
++            /* CCU gate/reset + PB9/PB10 pinmux enable this window. */
++            s->uart0_mmio = sysbus_mmio_get_region(SYS_BUS_DEVICE(uart_dev),
++                                                   0);
++        }
+         if (uart->serial_index == 2) {
+             s->gamepad_uart[0] = DW_APB_UART(uart_dev);
+         } else if (uart->serial_index == 3) {
+@@ -1114,6 +1170,7 @@ static void pocketforge_a133_init(MachineState *machine)
+     vmstate_register(NULL, 0, &vmstate_pocketforge_a133_power, s);
+     s->power_state_registered = true;
+     pocketforge_a133_create_mmc0(s, pic[PF_A133_MMC0_IRQ]);
++    pocketforge_a133_create_ccu_pio(s, machine);
+ 
+     pocketforge_a133_create_virtio_mmio(machine, pic);
+ 
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 6c36ac7..19ee24d 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -202,5 +202,11 @@ config XLNX_VERSAL_TRNG
+ 
+ source macio/Kconfig
+ 
++config POCKETFORGE_A133_CCU
++    bool
++
++config POCKETFORGE_A133_PIO
++    bool
++
+ config POCKETFORGE_A133_MMIO_STUB
+     bool
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 842b8c7..a97dd8e 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -155,4 +155,6 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
+ # HPPA devices
+ system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
+ 
++system_ss.add(when: 'CONFIG_POCKETFORGE_A133_CCU', if_true: files('pocketforge_a133_ccu.c'))
++system_ss.add(when: 'CONFIG_POCKETFORGE_A133_PIO', if_true: files('pocketforge_a133_pio.c'))
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_MMIO_STUB', if_true: files('pocketforge_a133_mmio_stub.c'))
+diff --git a/hw/misc/pocketforge_a133_ccu.c b/hw/misc/pocketforge_a133_ccu.c
+new file mode 100644
+index 0000000..96c8d7f
+--- /dev/null
++++ b/hw/misc/pocketforge_a133_ccu.c
+@@ -0,0 +1,216 @@
++/*
++ * PocketForge OS -M pocketforge-a133 CCU (clock control unit) model
++ *
++ * Replaces the RAM-backed stub aperture at 0x03001000 with a stateful
++ * model of the register behavior the pinned A133 SPL relies on
++ * (clock_sun50i_h6.c:45-114): retained storage across the whole window,
++ * hardware-synthesized PLL LOCK (bit 28) once software sets ENABLE
++ * (bit 31) at the twelve PLL control words, and gate/reset-release state
++ * at UART +0x90c and MMC0 +0x84c exported to the machine, which enables
++ * the gated peripherals' MMIO windows only while both gate bit 0 and
++ * reset-release bit 16 are set.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/misc/pocketforge_a133_ccu.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "migration/vmstate.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++
++#define PF_A133_CCU_PLL_ENABLE (UINT32_C(1) << 31)
++#define PF_A133_CCU_PLL_LOCK   (UINT32_C(1) << 28)
++
++static bool pf_a133_ccu_pll_reg(hwaddr offset)
++{
++    static const hwaddr pll_offsets[] = {
++        0x000, 0x010, 0x020, 0x028, 0x030, 0x040,
++        0x048, 0x050, 0x058, 0x060, 0x068, 0x078,
++    };
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(pll_offsets); i++) {
++        if (offset == pll_offsets[i]) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool pf_a133_ccu_gate_reg(hwaddr offset, unsigned size)
++{
++    return (offset < PF_A133_CCU_UART0_GATE_REG + 4 &&
++            offset + size > PF_A133_CCU_UART0_GATE_REG) ||
++           (offset < PF_A133_CCU_MMC0_GATE_REG + 4 &&
++            offset + size > PF_A133_CCU_MMC0_GATE_REG);
++}
++
++static void pf_a133_ccu_pulse_notify(PfA133CcuState *s)
++{
++    if (s->gate_notify) {
++        qemu_irq_pulse(s->gate_notify);
++    }
++}
++
++static bool pf_a133_ccu_gate_open(PfA133CcuState *s, hwaddr reg)
++{
++    return (s->regs[reg / sizeof(uint32_t)] &
++            PF_A133_CCU_GATE_MASK) ==
++           PF_A133_CCU_GATE_MASK;
++}
++
++bool pf_a133_ccu_uart0_clocked(PfA133CcuState *s)
++{
++    return pf_a133_ccu_gate_open(s, PF_A133_CCU_UART0_GATE_REG);
++}
++
++bool pf_a133_ccu_mmc0_clocked(PfA133CcuState *s)
++{
++    return pf_a133_ccu_gate_open(s, PF_A133_CCU_MMC0_GATE_REG);
++}
++
++static uint64_t pf_a133_ccu_read(void *opaque, hwaddr offset, unsigned size)
++{
++    PfA133CcuState *s = opaque;
++    uint64_t val = 0;
++    unsigned int i;
++
++    if (offset + size > PF_A133_CCU_SIZE) {
++        return 0;
++    }
++    if (size == sizeof(uint32_t) && (offset & 3) == 0 &&
++        pf_a133_ccu_pll_reg(offset)) {
++        val = s->regs[offset / sizeof(uint32_t)];
++        /*
++         * A100 PLLs assert LOCK once software sets ENABLE.  The pinned SPL
++         * programs each PLL then synchronously polls this hardware-owned
++         * bit (bit 28) before dependent clocks may run.
++         */
++        if (val & PF_A133_CCU_PLL_ENABLE) {
++            val |= PF_A133_CCU_PLL_LOCK;
++        }
++        return val;
++    }
++    for (i = 0; i < size; i++) {
++        val |= (uint64_t)((s->regs[(offset + i) >> 2] >>
++                           (8 * ((offset + i) & 3))) & 0xff) << (8 * i);
++    }
++    return val;
++}
++
++static void pf_a133_ccu_write(void *opaque, hwaddr offset, uint64_t value,
++                              unsigned size)
++{
++    PfA133CcuState *s = opaque;
++    unsigned int i;
++
++    if (offset + size > PF_A133_CCU_SIZE) {
++        return;
++    }
++    for (i = 0; i < size; i++) {
++        uint32_t *word = &s->regs[(offset + i) >> 2];
++        unsigned int shift = 8 * ((offset + i) & 3);
++
++        *word = deposit32(*word, shift, 8, (value >> (8 * i)) & 0xff);
++    }
++    if (pf_a133_ccu_gate_reg(offset, size)) {
++        pf_a133_ccu_pulse_notify(s);
++    }
++}
++
++static const MemoryRegionOps pf_a133_ccu_ops = {
++    .read = pf_a133_ccu_read,
++    .write = pf_a133_ccu_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 1,
++    .valid.max_access_size = 8,
++    .impl.min_access_size = 1,
++    .impl.max_access_size = 8,
++};
++
++static void pf_a133_ccu_reset(DeviceState *dev)
++{
++    PfA133CcuState *s = POCKETFORGE_A133_CCU(dev);
++
++    memset(s->regs, 0, sizeof(s->regs));
++    if (s->preboot) {
++        /* Firmware left the UART0 and MMC0 bus gates on and resets released. */
++        s->regs[PF_A133_CCU_UART0_GATE_REG / 4] = PF_A133_CCU_GATE_MASK;
++        s->regs[PF_A133_CCU_MMC0_GATE_REG / 4] = PF_A133_CCU_GATE_MASK;
++    }
++    pf_a133_ccu_pulse_notify(s);
++}
++
++static int pf_a133_ccu_post_load(void *opaque, int version_id)
++{
++    pf_a133_ccu_pulse_notify(opaque);
++    return 0;
++}
++
++static const VMStateDescription vmstate_pocketforge_a133_ccu = {
++    .name = "pocketforge_a133_ccu",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = pf_a133_ccu_post_load,
++    .fields = (VMStateField[]) {
++        VMSTATE_UINT32_ARRAY(regs, PfA133CcuState, PF_A133_CCU_NUM_REGS),
++        VMSTATE_BOOL(preboot, PfA133CcuState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static void pf_a133_ccu_realize(DeviceState *dev, Error **errp)
++{
++    PfA133CcuState *s = POCKETFORGE_A133_CCU(dev);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    memory_region_init_io(&s->iomem, OBJECT(s), &pf_a133_ccu_ops, s,
++                          "pocketforge-a133.ccu", PF_A133_CCU_SIZE);
++    sysbus_init_mmio(sbd, &s->iomem);
++    qdev_init_gpio_out_named(dev, &s->gate_notify, "gate-notify", 1);
++}
++
++static Property pf_a133_ccu_properties[] = {
++    DEFINE_PROP_BOOL("preboot", PfA133CcuState, preboot, false),
++};
++
++static void pf_a133_ccu_class_init(ObjectClass *oc, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++
++    dc->realize = pf_a133_ccu_realize;
++    dc->reset = pf_a133_ccu_reset;
++    dc->vmsd = &vmstate_pocketforge_a133_ccu;
++    device_class_set_props(dc, pf_a133_ccu_properties);
++    /* Internal wiring only (machine-instantiated); no user-creatable bus. */
++    dc->user_creatable = false;
++}
++
++static const TypeInfo pf_a133_ccu_info = {
++    .name          = TYPE_POCKETFORGE_A133_CCU,
++    .parent        = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PfA133CcuState),
++    .class_init    = pf_a133_ccu_class_init,
++};
++
++DeviceState *pocketforge_a133_ccu_create(hwaddr addr, bool preboot)
++{
++    DeviceState *dev = qdev_new(TYPE_POCKETFORGE_A133_CCU);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    qdev_prop_set_bit(dev, "preboot", preboot);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, addr);
++
++    return dev;
++}
++
++static void pf_a133_ccu_register_types(void)
++{
++    type_register_static(&pf_a133_ccu_info);
++}
++
++type_init(pf_a133_ccu_register_types)
+diff --git a/hw/misc/pocketforge_a133_pio.c b/hw/misc/pocketforge_a133_pio.c
+new file mode 100644
+index 0000000..722efc9
+--- /dev/null
++++ b/hw/misc/pocketforge_a133_pio.c
+@@ -0,0 +1,180 @@
++/*
++ * PocketForge OS -M pocketforge-a133 PIO (main pinctrl) model
++ *
++ * Replaces the RAM-backed stub aperture at 0x0300b000 with a stateful
++ * model of the legacy-stride pinmux cells the pinned A133 SPL
++ * read-modify-writes (sunxi_gpio.c:74-158 with this SPL's 0x24 bank
++ * stride): 0x028 must carry function 2 in the PB9/PB10 nibbles before
++ * UART0 pins reach the DW-APB UART, and 0x0b4 must carry function 2 in
++ * all six PF0..PF5 nibbles before MMC0 pins reach the SD host.  The
++ * companion pull/drive cells (0x040, 0x0c8, 0x0d0) are retained storage.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/misc/pocketforge_a133_pio.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "migration/vmstate.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++
++static bool pf_a133_pio_mux_reg(hwaddr offset, unsigned size)
++{
++    return (offset < PF_A133_PIO_PB_CFG1_REG + 4 &&
++            offset + size > PF_A133_PIO_PB_CFG1_REG) ||
++           (offset < PF_A133_PIO_PF_CFG0_REG + 4 &&
++            offset + size > PF_A133_PIO_PF_CFG0_REG);
++}
++
++static void pf_a133_pio_pulse_notify(PfA133PioState *s)
++{
++    if (s->mux_notify) {
++        qemu_irq_pulse(s->mux_notify);
++    }
++}
++
++bool pf_a133_pio_uart0_pins(PfA133PioState *s)
++{
++    return (s->regs[PF_A133_PIO_PB_CFG1_REG / 4] &
++            PF_A133_PIO_PB_UART0_MASK) ==
++           PF_A133_PIO_PB_UART0_FUNC2;
++}
++
++bool pf_a133_pio_mmc0_pins(PfA133PioState *s)
++{
++    return (s->regs[PF_A133_PIO_PF_CFG0_REG / 4] &
++            PF_A133_PIO_PF_MMC0_MASK) ==
++           PF_A133_PIO_PF_MMC0_FUNC2;
++}
++
++static uint64_t pf_a133_pio_read(void *opaque, hwaddr offset, unsigned size)
++{
++    PfA133PioState *s = opaque;
++    uint64_t val = 0;
++    unsigned int i;
++
++    if (offset + size > PF_A133_PIO_SIZE) {
++        return 0;
++    }
++    for (i = 0; i < size; i++) {
++        val |= (uint64_t)((s->regs[(offset + i) >> 2] >>
++                           (8 * ((offset + i) & 3))) & 0xff) << (8 * i);
++    }
++    return val;
++}
++
++static void pf_a133_pio_write(void *opaque, hwaddr offset, uint64_t value,
++                              unsigned size)
++{
++    PfA133PioState *s = opaque;
++    unsigned int i;
++
++    if (offset + size > PF_A133_PIO_SIZE) {
++        return;
++    }
++    for (i = 0; i < size; i++) {
++        uint32_t *word = &s->regs[(offset + i) >> 2];
++        unsigned int shift = 8 * ((offset + i) & 3);
++
++        *word = deposit32(*word, shift, 8, (value >> (8 * i)) & 0xff);
++    }
++    if (pf_a133_pio_mux_reg(offset, size)) {
++        pf_a133_pio_pulse_notify(s);
++    }
++}
++
++static const MemoryRegionOps pf_a133_pio_ops = {
++    .read = pf_a133_pio_read,
++    .write = pf_a133_pio_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 1,
++    .valid.max_access_size = 8,
++    .impl.min_access_size = 1,
++    .impl.max_access_size = 8,
++};
++
++static void pf_a133_pio_reset(DeviceState *dev)
++{
++    PfA133PioState *s = POCKETFORGE_A133_PIO(dev);
++
++    memset(s->regs, 0, sizeof(s->regs));
++    if (s->preboot) {
++        /* Firmware left UART0 on PB9/PB10 and MMC0 on PF0..PF5 muxed. */
++        s->regs[PF_A133_PIO_PB_CFG1_REG / 4] = PF_A133_PIO_PB_UART0_FUNC2;
++        s->regs[PF_A133_PIO_PF_CFG0_REG / 4] = PF_A133_PIO_PF_MMC0_FUNC2;
++    }
++    pf_a133_pio_pulse_notify(s);
++}
++
++static int pf_a133_pio_post_load(void *opaque, int version_id)
++{
++    pf_a133_pio_pulse_notify(opaque);
++    return 0;
++}
++
++static const VMStateDescription vmstate_pocketforge_a133_pio = {
++    .name = "pocketforge_a133_pio",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = pf_a133_pio_post_load,
++    .fields = (VMStateField[]) {
++        VMSTATE_UINT32_ARRAY(regs, PfA133PioState, PF_A133_PIO_NUM_REGS),
++        VMSTATE_BOOL(preboot, PfA133PioState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static void pf_a133_pio_realize(DeviceState *dev, Error **errp)
++{
++    PfA133PioState *s = POCKETFORGE_A133_PIO(dev);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    memory_region_init_io(&s->iomem, OBJECT(s), &pf_a133_pio_ops, s,
++                          "pocketforge-a133.pio", PF_A133_PIO_SIZE);
++    sysbus_init_mmio(sbd, &s->iomem);
++    qdev_init_gpio_out_named(dev, &s->mux_notify, "mux-notify", 1);
++}
++
++static Property pf_a133_pio_properties[] = {
++    DEFINE_PROP_BOOL("preboot", PfA133PioState, preboot, false),
++};
++
++static void pf_a133_pio_class_init(ObjectClass *oc, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++
++    dc->realize = pf_a133_pio_realize;
++    dc->reset = pf_a133_pio_reset;
++    dc->vmsd = &vmstate_pocketforge_a133_pio;
++    device_class_set_props(dc, pf_a133_pio_properties);
++    /* Internal wiring only (machine-instantiated); no user-creatable bus. */
++    dc->user_creatable = false;
++}
++
++static const TypeInfo pf_a133_pio_info = {
++    .name          = TYPE_POCKETFORGE_A133_PIO,
++    .parent        = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PfA133PioState),
++    .class_init    = pf_a133_pio_class_init,
++};
++
++DeviceState *pocketforge_a133_pio_create(hwaddr addr, bool preboot)
++{
++    DeviceState *dev = qdev_new(TYPE_POCKETFORGE_A133_PIO);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    qdev_prop_set_bit(dev, "preboot", preboot);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, addr);
++
++    return dev;
++}
++
++static void pf_a133_pio_register_types(void)
++{
++    type_register_static(&pf_a133_pio_info);
++}
++
++type_init(pf_a133_pio_register_types)
+diff --git a/include/hw/misc/pocketforge_a133_ccu.h b/include/hw/misc/pocketforge_a133_ccu.h
+new file mode 100644
+index 0000000..de3e1bf
+--- /dev/null
++++ b/include/hw/misc/pocketforge_a133_ccu.h
+@@ -0,0 +1,49 @@
++/*
++ * PocketForge OS -M pocketforge-a133 CCU (clock control unit) model
++ *
++ * Stateful model of the exact early-boot CCU window the pinned A133 SPL
++ * (U-Boot SPL 2025.10-gdb70249c8b25, pocketforge-os/u-boot-tsp-a133
++ * db70249c8b25, tg5040_defconfig) programs: PLL lock synthesis at the
++ * twelve PLL control words, ordinary retained storage for the bus factor
++ * words, and gate/reset-release state at UART +0x90c and MMC0 +0x84c that
++ * the machine wires to the gated peripherals' MMIO windows.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#ifndef HW_MISC_POCKETFORGE_A133_CCU_H
++#define HW_MISC_POCKETFORGE_A133_CCU_H
++
++#include "hw/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_POCKETFORGE_A133_CCU "pocketforge-a133-ccu"
++OBJECT_DECLARE_SIMPLE_TYPE(PfA133CcuState, POCKETFORGE_A133_CCU)
++
++#define PF_A133_CCU_SIZE      0x1000
++#define PF_A133_CCU_NUM_REGS  (PF_A133_CCU_SIZE / sizeof(uint32_t))
++
++/* SPL-touched bus gate/reset words (CCU +0x90c UART, +0x84c MMC0). */
++#define PF_A133_CCU_MMC0_GATE_REG   0x84c
++#define PF_A133_CCU_UART0_GATE_REG  0x90c
++#define PF_A133_CCU_GATE_MASK       0x00010001u /* bit0 gate | bit16 reset */
++
++struct PfA133CcuState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    qemu_irq gate_notify;
++    uint32_t regs[PF_A133_CCU_NUM_REGS];
++    /*
++     * Direct-kernel boots skip the firmware that programs these gates; the
++     * machine sets "preboot" so reset restores the firmware-left state and
++     * the gate getters report open regardless of later register traffic.
++     */
++    bool preboot;
++};
++
++DeviceState *pocketforge_a133_ccu_create(hwaddr addr, bool preboot);
++bool pf_a133_ccu_uart0_clocked(PfA133CcuState *s);
++bool pf_a133_ccu_mmc0_clocked(PfA133CcuState *s);
++
++#endif
+diff --git a/include/hw/misc/pocketforge_a133_pio.h b/include/hw/misc/pocketforge_a133_pio.h
+new file mode 100644
+index 0000000..214e5f3
+--- /dev/null
++++ b/include/hw/misc/pocketforge_a133_pio.h
+@@ -0,0 +1,47 @@
++/*
++ * PocketForge OS -M pocketforge-a133 PIO (main pinctrl) model
++ *
++ * Stateful model of the exact legacy-stride (0x24 per bank) pinmux cells
++ * the pinned A133 SPL read-modify-writes: 0x028 (PB9/PB10 function 2,
++ * UART0) and 0x0b4 (PF0..PF5 function 2, MMC0), with the companion pull
++ * and drive cells retained as storage.  Function-select state is exported
++ * so the machine can wire the muxed peripherals' MMIO windows.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#ifndef HW_MISC_POCKETFORGE_A133_PIO_H
++#define HW_MISC_POCKETFORGE_A133_PIO_H
++
++#include "hw/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_POCKETFORGE_A133_PIO "pocketforge-a133-pio"
++OBJECT_DECLARE_SIMPLE_TYPE(PfA133PioState, POCKETFORGE_A133_PIO)
++
++#define PF_A133_PIO_SIZE      0x400
++#define PF_A133_PIO_NUM_REGS  (PF_A133_PIO_SIZE / sizeof(uint32_t))
++
++/* SPL-touched legacy-stride function-select cells. */
++#define PF_A133_PIO_PB_CFG1_REG 0x028 /* PB9/PB10 nibbles -> UART0 func 2 */
++#define PF_A133_PIO_PF_CFG0_REG 0x0b4 /* PF0..PF5 nibbles -> MMC0 func 2 */
++#define PF_A133_PIO_PB_UART0_MASK  0x00000ff0u /* nibbles 1 and 2 (PB9/10) */
++#define PF_A133_PIO_PB_UART0_FUNC2 0x00000220u
++#define PF_A133_PIO_PF_MMC0_MASK   0x00ffffffu /* nibbles 0..5 (PF0..PF5) */
++#define PF_A133_PIO_PF_MMC0_FUNC2  0x00222222u
++
++struct PfA133PioState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    qemu_irq mux_notify;
++    uint32_t regs[PF_A133_PIO_NUM_REGS];
++    /* See PfA133CcuState.preboot: firmware-left pinmux for direct boots. */
++    bool preboot;
++};
++
++DeviceState *pocketforge_a133_pio_create(hwaddr addr, bool preboot);
++bool pf_a133_pio_uart0_pins(PfA133PioState *s);
++bool pf_a133_pio_mmc0_pins(PfA133PioState *s);
++
++#endif
+-- 
+2.43.0
