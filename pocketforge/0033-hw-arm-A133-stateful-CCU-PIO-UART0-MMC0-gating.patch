@@ -264,9 +264,9 @@ index 0000000..96c8d7f
 +
 +static bool pf_a133_ccu_gate_open(PfA133CcuState *s, hwaddr reg)
 +{
-+    return s->preboot ||
-+           (s->regs[reg / sizeof(uint32_t)] & PF_A133_CCU_GATE_MASK) ==
-+               PF_A133_CCU_GATE_MASK;
++    return (s->regs[reg / sizeof(uint32_t)] &
++            PF_A133_CCU_GATE_MASK) ==
++           PF_A133_CCU_GATE_MASK;
 +}
 +
 +bool pf_a133_ccu_uart0_clocked(PfA133CcuState *s)
@@ -466,16 +466,16 @@ index 0000000..722efc9
 +
 +bool pf_a133_pio_uart0_pins(PfA133PioState *s)
 +{
-+    return s->preboot ||
-+           (s->regs[PF_A133_PIO_PB_CFG1_REG / 4] & PF_A133_PIO_PB_UART0_MASK) ==
-+               PF_A133_PIO_PB_UART0_FUNC2;
++    return (s->regs[PF_A133_PIO_PB_CFG1_REG / 4] &
++            PF_A133_PIO_PB_UART0_MASK) ==
++           PF_A133_PIO_PB_UART0_FUNC2;
 +}
 +
 +bool pf_a133_pio_mmc0_pins(PfA133PioState *s)
 +{
-+    return s->preboot ||
-+           (s->regs[PF_A133_PIO_PF_CFG0_REG / 4] & PF_A133_PIO_PF_MMC0_MASK) ==
-+               PF_A133_PIO_PF_MMC0_FUNC2;
++    return (s->regs[PF_A133_PIO_PF_CFG0_REG / 4] &
++            PF_A133_PIO_PF_MMC0_MASK) ==
++           PF_A133_PIO_PF_MMC0_FUNC2;
 +}
 +
 +static uint64_t pf_a133_pio_read(void *opaque, hwaddr offset, unsigned size)
@@ -717,4 +717,3 @@ index 0000000..214e5f3
 +#endif
 -- 
 2.43.0
-

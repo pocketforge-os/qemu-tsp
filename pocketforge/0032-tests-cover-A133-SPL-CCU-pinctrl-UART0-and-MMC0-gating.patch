@@ -24,10 +24,10 @@ wiring the model change introduces.
 Assisted-by: LLM
 ---
  tests/qtest/meson.build                      |   2 +-
- tests/qtest/pocketforge-a133-ccu-test.c      | 484 +++++++++++++++++++
+ tests/qtest/pocketforge-a133-ccu-test.c      | 578 +++++++++++++++++++
  tests/qtest/pocketforge-a133-mmc-test.c      |  20 +
  tests/qtest/pocketforge-a133-mmio-map-test.c |  25 +-
- 4 files changed, 529 insertions(+), 2 deletions(-)
+ 4 files changed, 623 insertions(+), 2 deletions(-)
  create mode 100644 tests/qtest/pocketforge-a133-ccu-test.c
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
@@ -48,7 +48,7 @@ new file mode 100644
 index 0000000..2a10ed9
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-ccu-test.c
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,578 @@
 +/*
 + * PocketForge A133 SPL CCU/pinctrl gating qtest
 + *
@@ -365,6 +365,30 @@ index 0000000..2a10ed9
 +                       "-drive if=sd,format=raw,file=%s", quoted);
 +}
 +
++static char *create_kernel_image(void)
++{
++    GError *error = NULL;
++    char *path = NULL;
++    int fd = g_file_open_tmp("pocketforge-a133-ccu-kernel-XXXXXX", &path,
++                             &error);
++
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(ftruncate(fd, 4096), ==, 0);
++    g_assert_cmpint(close(fd), ==, 0);
++    return path;
++}
++
++static QTestState *start_direct_kernel(const char *kernel, const char *sd)
++{
++    g_autofree char *kernel_quoted = g_shell_quote(kernel);
++    g_autofree char *sd_quoted = g_shell_quote(sd);
++
++    return qtest_initf("-M pocketforge-a133 -m 64M -nodefaults "
++                       "-kernel %s -drive if=sd,format=raw,file=%s",
++                       kernel_quoted, sd_quoted);
++}
++
 +static uint32_t send_command(QTestState *qts, uint32_t cmd, uint32_t arg)
 +{
 +    qtest_writel(qts, MMC0_BASE + REG_RINTR, UINT32_MAX);
@@ -520,6 +544,74 @@ index 0000000..2a10ed9
 +    g_assert_cmpint(unlink(image), ==, 0);
 +}
 +
++/*
++ * Direct-kernel boot starts after firmware would have enabled these paths.
++ * That reset-time compatibility state must remain live: each individual CCU
++ * or PIO transition below closes only its matching peripheral and restoring
++ * the word reopens it.  The other peripheral is the positive control for
++ * every negative case.
++ */
++static void test_direct_kernel_live_gates(void)
++{
++    g_autofree char *kernel = create_kernel_image();
++    g_autofree char *image = create_sd_image();
++    QTestState *qts = start_direct_kernel(kernel, image);
++
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_UART0_BGR), ==, BGR_ON);
++    g_assert_cmphex(qtest_readl(qts, PIO_BASE + PIO_PB_CFG1), ==,
++                    PB_CFG1_UART0);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_MMC0_BGR), ==, BGR_ON);
++    g_assert_cmphex(qtest_readl(qts, PIO_BASE + PIO_PF_CFG0), ==,
++                    PF_CFG0_MMC0);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==,
++                    UART_USR_IDLE);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++
++    qtest_writel(qts, CCU_BASE + CCU_UART0_BGR, 0);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++    qtest_writel(qts, CCU_BASE + CCU_UART0_BGR, BGR_ON);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==,
++                    UART_USR_IDLE);
++
++    qtest_writel(qts, PIO_BASE + PIO_PB_CFG1, 0);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++    qtest_writel(qts, PIO_BASE + PIO_PB_CFG1, PB_CFG1_UART0);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==,
++                    UART_USR_IDLE);
++
++    qtest_writel(qts, CCU_BASE + CCU_MMC0_BGR, 0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==,
++                    UART_USR_IDLE);
++    qtest_writel(qts, CCU_BASE + CCU_MMC0_BGR, BGR_ON);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++
++    qtest_writel(qts, PIO_BASE + PIO_PF_CFG0, 0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==,
++                    UART_USR_IDLE);
++    qtest_writel(qts, PIO_BASE + PIO_PF_CFG0, PF_CFG0_MMC0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==,
++                    UART_USR_IDLE);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++
++    qtest_quit(qts);
++    g_assert_cmpint(unlink(kernel), ==, 0);
++    g_assert_cmpint(unlink(image), ==, 0);
++}
++
 +int main(int argc, char **argv)
 +{
 +    g_test_init(&argc, &argv, NULL);
@@ -530,6 +622,8 @@ index 0000000..2a10ed9
 +                   test_uart0_gate_and_pinmux);
 +    qtest_add_func("/pocketforge-a133-ccu/mmc0-gate-and-pinmux",
 +                   test_mmc0_gate_and_pinmux);
++    qtest_add_func("/pocketforge-a133-ccu/direct-kernel-live-gates",
++                   test_direct_kernel_live_gates);
 +
 +    return g_test_run();
 +}
