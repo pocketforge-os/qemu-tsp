@@ -262,6 +262,11 @@ if [ ! -f tests/qtest/pocketforge-a133-ccu-test.c ]; then
   git apply "$ROOT/pocketforge/0032-tests-cover-A133-SPL-CCU-pinctrl-UART0-and-MMC0-gating.patch"
 fi
 
+echo "== apply PocketForge patch: A133 stateful CCU/PIO gating =="
+if ! grep -q 'pocketforge_a133_ccu_create' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0033-hw-arm-A133-stateful-CCU-PIO-UART0-MMC0-gating.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
