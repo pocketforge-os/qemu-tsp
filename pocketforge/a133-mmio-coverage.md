@@ -99,8 +99,10 @@ accepted as map evidence.  It then enforces all of the following:
   regions, overlap, status/ancestor changes, translated-range changes, and
   multi-range changes all fail closed.
 
-The two QEMU-only virtio-mmio transports at `0x0a000000` and `0x0a000200` are
-typed `synthetic`; they are intentionally not used to cover real-DT ranges.
+The QEMU-only virtio-mmio display transport at `0x0a000000` is typed
+`synthetic`; it is intentionally not used to cover real-DT ranges.  The former
+machine-owned virtio-input transport at `0x0a000200` was removed with the
+virtio-input device; input now follows the real MCU UART and PMIC paths.
 
 ## Model and stub decisions
 
