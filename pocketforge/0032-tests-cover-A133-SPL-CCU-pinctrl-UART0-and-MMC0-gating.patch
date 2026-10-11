@@ -495,7 +495,7 @@ index 0000000..2a10ed9
 +    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
 +                    STAS_CARD_PRESENT, !=, 0);
 +    /* The write attempted while gated was dropped, not queued. */
-+    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_GCTRL), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_CARG), ==, 0);
 +    irq = send_command(qts, 0, 0);
 +    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
 +    irq = send_command(qts, CMD_RESP | 8, 0x1aa);
@@ -639,4 +639,3 @@ index 49779be..105de00 100644
          g_assert_cmphex(qtest_readl(qts, uart_bases[i] + 0x7c), ==, 0x6);
 -- 
 2.43.0
-
