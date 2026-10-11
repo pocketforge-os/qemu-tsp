@@ -1,0 +1,456 @@
+From 11640a3219d3370352f51928a83003aa6cd665b2 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sun, 11 Oct 2026 08:45:00 +0000
+Subject: [PATCH 30/30] tests: cover A133 BootROM eGON load and SRAM reset
+
+Add the pocketforge-a133-bootrom qtest: a forged eGON.BT0 SPL fixture
+boots from MMC0 at the 8 KiB and 128 KiB locations with an exact-length
+copy into SRAM A1, the boot-media stamp, AArch32 entry at 0x20000 and
+held secondaries, and stale-checksum, bad-magic, bad-length,
+truncated-media and no-media fixtures must be rejected without any copy
+or execution. Wired into tests/qtest/meson.build; build.sh picks the
+patch up in the same change.
+
+Assisted-by: LLM
+---
+ tests/qtest/meson.build                     |    3 
+ tests/qtest/pocketforge-a133-bootrom-test.c |  414 +++++++++++++++++++++++++++
+ 2 files changed, 416 insertions(+), 1 deletion(-)
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 2805823..020d204 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -224,7 +224,8 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
+-     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) +         \
++     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',                 \
++     'pocketforge-a133-bootrom-test'] : []) +                                      \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?        \
+     ['pocketforge-a133-display-test'] : []) +                                      \
+   ['arm-cpu-features',
+diff --git a/tests/qtest/pocketforge-a133-bootrom-test.c b/tests/qtest/pocketforge-a133-bootrom-test.c
+new file mode 100644
+index 0000000..c828f31
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-bootrom-test.c
+@@ -0,0 +1,414 @@
++/*
++ * PocketForge A133 BootROM MMC0 eGON loader and SRAM reset path qtest
++ *
++ * Covers the pre-CPU BootROM loader: a valid eGON.BT0 SPL image found on
++ * MMC0 (8 KiB low location, 128 KiB high location) is copied verbatim for
++ * its declared length into SRAM A1 at 0x00020000, the boot-source word is
++ * stamped (MMC0 low / MMC0_HIGH), CPU0 is handed to 0x00020000 in AArch32
++ * and secondary CPUs are held. Stale-checksum, bad-magic, bad-length and
++ * truncated-media fixtures must all be rejected without any copy or
++ * execution.
++ *
++ * SRAM A1/C/A2 are RAM-backed at their pinned sun50i-a100 DTS addresses
++ * and sizes and survive machine reset.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++#include "qemu/units.h"
++#include "libqtest.h"
++
++#define SRAM_A1_BASE      0x00020000ULL
++#define SRAM_A1_SIZE      0x00004000ULL
++#define SRAM_C_BASE       0x00024000ULL
++#define SRAM_C_SIZE       0x00021000ULL
++#define SRAM_A2_BASE      0x00100000ULL
++#define SRAM_A2_SIZE      0x00014000ULL
++/* BootROM load area: SRAM A1 + C are contiguous (sun50i-a100.dtsi:116-127). */
++#define SRAM_LOAD_SIZE    (SRAM_A1_SIZE + SRAM_C_SIZE)
++
++#define SD_OFFSET_LOW     0x00002000ULL   /* 8 KiB: MMC0 low eGON location */
++#define SD_OFFSET_HIGH    0x00020000ULL   /* 128 KiB: MMC0 high eGON location */
++#define TEST_IMAGE_SIZE   (512 * KiB)
++
++#define EGON_BRANCH       0xea000016u     /* b 0x60: guest-visible entry branch */
++#define EGON_MAGIC        "eGON.BT0"
++#define EGON_BAD_MAGIC    "eGON.BX0"
++#define EGON_SIG_OFF      0x14
++#define EGON_CHECKSUM_OFF 0x0c
++#define EGON_LENGTH_OFF   0x10
++#define EGON_MEDIA_OFF    0x28
++#define EGON_HEADER_SIZE  0x60
++#define EGON_STAMP        0x5f0a6c39u     /* BROM_STAMP_VALUE */
++#define MEDIA_MMC0        0x00u           /* SUNXI_BOOTED_FROM_MMC0 */
++#define MEDIA_MMC0_HIGH   0x10u           /* SUNXI_BOOTED_FROM_MMC0_HIGH */
++
++#define SPL_LENGTH        0x200u
++#define BODY_PATTERN_BASE 0xa5a50000u
++
++/* SPL fixture payload, written to 0x40001000.. by CPU0 when it runs. */
++#define MARKER_ADDR       0x40001000ULL
++#define MARKER_MPIDR_ADDR 0x40001004ULL
++#define MARKER_SECONDARY  0x40001008ULL
++#define MARKER_VALUE      0xc0ffee01u
++
++/*
++ * AArch32 test body at SPL offset 0x60. Primary CPU stores MARKER_VALUE at
++ * MARKER_ADDR and its MPIDR; a secondary that ever ran would store its MPIDR
++ * at MARKER_SECONDARY, which the positive control asserts stays zero.
++ */
++static const uint32_t spl_body[] = {
++    /* 0x60 */ 0xee102b50, /* mrc p15, 0, r2, c0, c0, 5  ; r2 = MPIDR */
++    /* 0x64 */ 0xe59f0028, /* ldr r0, [pc, #0x28]        ; -> 0x94 */
++    /* 0x68 */ 0xe59f102c, /* ldr r1, [pc, #0x2c]        ; -> 0x9c */
++    /* 0x6c */ 0xe33200ff, /* tst r2, #0xff              ; aff0 == 0? */
++    /* 0x70 */ 0x0a000003, /* beq 0x84                   ; primary path */
++    /* 0x74 */ 0xe59f4024, /* ldr r4, [pc, #0x24]        ; -> 0xa0 */
++    /* 0x78 */ 0xe5842000, /* str r2, [r4]               ; secondary evidence */
++    /* 0x7c */ 0xeafffffe, /* b . */
++    /* 0x80 */ 0xe1a00000, /* nop (body corruption target) */
++    /* 0x84 */ 0xe5801000, /* str r1, [r0]               ; marker = value */
++    /* 0x88 */ 0xe59f4008, /* ldr r4, [pc, #0x08]        ; -> 0x98 */
++    /* 0x8c */ 0xe5842000, /* str r2, [r4]               ; record MPIDR */
++    /* 0x90 */ 0xeafffffe, /* b . */
++    /* 0x94 */ MARKER_ADDR,
++    /* 0x98 */ MARKER_MPIDR_ADDR,
++    /* 0x9c */ MARKER_VALUE,
++    /* 0xa0 */ MARKER_SECONDARY,
++};
++
++static uint32_t egon_checksum(const uint8_t *img, uint32_t length)
++{
++    uint32_t sum = 0;
++    uint32_t off;
++
++    for (off = 0; off + 4 <= length; off += 4) {
++        uint32_t word = ldl_le_p(img + off);
++
++        if (off == EGON_CHECKSUM_OFF) {
++            word = EGON_STAMP;
++        }
++        sum += word;
++    }
++    return sum;
++}
++
++/*
++ * Build a forged eGON image in memory. corrupt_body flips one byte inside
++ * the SPL body after the checksum is computed, leaving a stale checksum
++ * (the primary negative control: SPL content, not header fields, changes).
++ */
++static uint8_t *build_egon(const char *magic, uint32_t length, bool corrupt_body)
++{
++    uint32_t aligned = (length + 3) & ~3u;
++    uint8_t *img = g_malloc0(aligned);
++    uint32_t off;
++
++    size_t body = aligned > EGON_HEADER_SIZE ?
++        MIN(sizeof(spl_body), (size_t)(aligned - EGON_HEADER_SIZE)) : 0;
++
++    g_assert_cmpuint(aligned, >=, EGON_MEDIA_OFF + 4);
++    stl_le_p(img, EGON_BRANCH);
++    memcpy(img + 4, magic, 8);
++    stl_le_p(img + EGON_LENGTH_OFF, length);
++    memcpy(img + EGON_SIG_OFF, "SPL\x02", 4);
++    stl_le_p(img + EGON_MEDIA_OFF, 0);
++    memcpy(img + EGON_HEADER_SIZE, spl_body, body);
++    for (off = EGON_HEADER_SIZE + body; off + 4 <= aligned; off += 4) {
++        stl_le_p(img + off, BODY_PATTERN_BASE | (off >> 2));
++    }
++    stl_le_p(img + EGON_CHECKSUM_OFF, egon_checksum(img, aligned));
++    if (corrupt_body) {
++        img[0x80] ^= 0xff;
++    }
++    return img;
++}
++
++static char *create_image_file(uint64_t img_offset, uint64_t file_size,
++                               const char *magic, uint32_t length,
++                               bool corrupt_body)
++{
++    uint8_t *img = build_egon(magic, length, corrupt_body);
++    GError *error = NULL;
++    char *path = NULL;
++    int fd = g_file_open_tmp("pocketforge-a133-bootrom-XXXXXX", &path, &error);
++
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpuint(file_size, >=, img_offset + length);
++    g_assert_cmpint(ftruncate(fd, file_size), ==, 0);
++    g_assert_cmpuint(pwrite(fd, img, length, img_offset), ==, length);
++    g_assert_cmpint(close(fd), ==, 0);
++    g_free(img);
++    return path;
++}
++
++static void destroy_image_file(char *path)
++{
++    g_assert_cmpint(unlink(path), ==, 0);
++    g_free(path);
++}
++
++static QTestState *boot_with_image(const char *path)
++{
++    char *quoted = g_shell_quote(path);
++    QTestState *qts = qtest_initf("-M pocketforge-a133 -m 64M "
++                                  "-drive if=sd,format=raw,file=%s", quoted);
++
++    g_free(quoted);
++    return qts;
++}
++
++static uint32_t poll_readl(QTestState *qts, uint64_t addr, uint32_t want,
++                           unsigned int ms)
++{
++    unsigned int i;
++
++    for (i = 0; i < ms / 10; i++) {
++        uint32_t value = qtest_readl(qts, addr);
++
++        if (value == want) {
++            return value;
++        }
++        g_usleep(10 * 1000);
++    }
++    return qtest_readl(qts, addr);
++}
++
++static void assert_spl_executed(QTestState *qts)
++{
++    g_assert_cmphex(poll_readl(qts, MARKER_ADDR, MARKER_VALUE, 2000),
++                    ==, MARKER_VALUE);
++    /* CPU0 is aff0 of the primary cluster: MPIDR low byte 0. */
++    g_assert_cmphex(qtest_readl(qts, MARKER_MPIDR_ADDR), ==, 0);
++    /* Held secondaries must never have executed the SPL trap path. */
++    g_assert_cmphex(qtest_readl(qts, MARKER_SECONDARY), ==, 0);
++}
++
++static void assert_not_booted(QTestState *qts)
++{
++    /*
++     * Bounded wait: the SPL would run within microseconds if accepted.
++     * The assertion is on machine state (no marker, no copy), never on a
++     * timeout being the failure itself.
++     */
++    g_usleep(250 * 1000);
++    g_assert_cmphex(qtest_readl(qts, MARKER_ADDR), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, MARKER_SECONDARY), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + 0x60), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + SPL_LENGTH - 4), ==, 0);
++}
++
++static void assert_copy_matches(QTestState *qts, const uint8_t *img,
++                                uint32_t length, uint32_t media)
++{
++    uint32_t off;
++
++    /* Guest-visible header branch at SRAM 0x00020000. */
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE), ==, EGON_BRANCH);
++    for (off = 4; off + 4 <= length; off += 4) {
++        uint32_t want = ldl_le_p(img + off);
++
++        if (off == EGON_MEDIA_OFF) {
++            want = media;
++        }
++        g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + off), ==, want);
++    }
++    /* Exactly the declared length was copied, nothing beyond it. */
++    if (length < SRAM_LOAD_SIZE) {
++        g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + length), ==, 0);
++    }
++}
++
++static void do_reset(QTestState *qts)
++{
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++}
++
++static void test_valid_high_location(void)
++{
++    uint8_t *img = build_egon(EGON_MAGIC, SPL_LENGTH, false);
++    char *path = create_image_file(SD_OFFSET_HIGH, TEST_IMAGE_SIZE,
++                                   EGON_MAGIC, SPL_LENGTH, false);
++    QTestState *qts = boot_with_image(path);
++
++    assert_copy_matches(qts, img, SPL_LENGTH, MEDIA_MMC0_HIGH);
++    assert_spl_executed(qts);
++
++    /* SRAM A1/C/A2 at their DTS addresses/sizes hold storage. */
++    qtest_writel(qts, SRAM_A1_BASE + SRAM_A1_SIZE - 4, 0x11111111);
++    qtest_writel(qts, SRAM_C_BASE, 0x22222222);
++    qtest_writel(qts, SRAM_C_BASE + SRAM_C_SIZE - 4, 0x33333333);
++    qtest_writel(qts, SRAM_A2_BASE, 0x44444444);
++    qtest_writel(qts, SRAM_A2_BASE + SRAM_A2_SIZE - 4, 0x55555555);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + SRAM_A1_SIZE - 4),
++                    ==, 0x11111111);
++    g_assert_cmphex(qtest_readl(qts, SRAM_C_BASE), ==, 0x22222222);
++    g_assert_cmphex(qtest_readl(qts, SRAM_C_BASE + SRAM_C_SIZE - 4),
++                    ==, 0x33333333);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A2_BASE), ==, 0x44444444);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A2_BASE + SRAM_A2_SIZE - 4),
++                    ==, 0x55555555);
++
++    /* Machine reset: BootROM path re-runs deterministically. */
++    qtest_writel(qts, MARKER_ADDR, 0);
++    qtest_writel(qts, MARKER_MPIDR_ADDR, 0);
++    qtest_writel(qts, MARKER_SECONDARY, 0);
++    do_reset(qts);
++    assert_copy_matches(qts, img, SPL_LENGTH, MEDIA_MMC0_HIGH);
++    assert_spl_executed(qts);
++    /* RAM-backed SRAM contents survive machine reset. */
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + SRAM_A1_SIZE - 4),
++                    ==, 0x11111111);
++    g_assert_cmphex(qtest_readl(qts, SRAM_C_BASE), ==, 0x22222222);
++    g_assert_cmphex(qtest_readl(qts, SRAM_C_BASE + SRAM_C_SIZE - 4),
++                    ==, 0x33333333);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A2_BASE), ==, 0x44444444);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A2_BASE + SRAM_A2_SIZE - 4),
++                    ==, 0x55555555);
++
++    qtest_quit(qts);
++    destroy_image_file(path);
++    g_free(img);
++}
++
++static void test_valid_low_location(void)
++{
++    uint8_t *img = build_egon(EGON_MAGIC, SPL_LENGTH, false);
++    char *path = create_image_file(SD_OFFSET_LOW, TEST_IMAGE_SIZE,
++                                   EGON_MAGIC, SPL_LENGTH, false);
++    QTestState *qts = boot_with_image(path);
++
++    /* Searched at 8 KiB first; low location boots with plain MMC0 media id. */
++    assert_copy_matches(qts, img, SPL_LENGTH, MEDIA_MMC0);
++    assert_spl_executed(qts);
++
++    qtest_quit(qts);
++    destroy_image_file(path);
++    g_free(img);
++}
++
++static void test_rejects_stale_checksum(void)
++{
++    /* One flipped byte in the SPL body, header checksum NOT recomputed. */
++    char *path = create_image_file(SD_OFFSET_HIGH, TEST_IMAGE_SIZE,
++                                   EGON_MAGIC, SPL_LENGTH, true);
++    QTestState *qts = boot_with_image(path);
++
++    assert_not_booted(qts);
++
++    qtest_quit(qts);
++    destroy_image_file(path);
++}
++
++static void test_rejects_bad_magic(void)
++{
++    /*
++     * Magic is the only defect: the additive checksum is recomputed over
++     * the tampered header, so a checksum-only model would wrongly boot.
++     */
++    char *path = create_image_file(SD_OFFSET_HIGH, TEST_IMAGE_SIZE,
++                                   EGON_BAD_MAGIC, SPL_LENGTH, false);
++    QTestState *qts = boot_with_image(path);
++
++    assert_not_booted(qts);
++
++    qtest_quit(qts);
++    destroy_image_file(path);
++}
++
++static void assert_length_rejected(uint32_t length)
++{
++    char *path = create_image_file(SD_OFFSET_HIGH,
++                                   SD_OFFSET_HIGH + ((length + 3) & ~3u),
++                                   EGON_MAGIC, length, false);
++    QTestState *qts = boot_with_image(path);
++
++    assert_not_booted(qts);
++
++    qtest_quit(qts);
++    destroy_image_file(path);
++}
++
++static void test_rejects_bad_lengths(void)
++{
++    /* Below the 0x60 eGON header. */
++    assert_length_rejected(0x40);
++    /* Not 4-byte aligned: the generator refuses, the loader must too. */
++    assert_length_rejected(0x201);
++    /* Crosses the mapped A1+C load capacity (0x25000), unaligned tail. */
++    assert_length_rejected(0x25004);
++    /* Crosses the capacity even when aligned. */
++    assert_length_rejected(0x26000);
++}
++
++static void test_rejects_truncated_media(void)
++{
++    /*
++     * Valid header and checksum for a 0x2000-byte SPL, but the media ends
++     * at 0x1000 bytes into it: the read errors, and an error or partial
++     * read is never accepted as a boot.
++     */
++    char *path = create_image_file(SD_OFFSET_HIGH, SD_OFFSET_HIGH + 0x1000,
++                                   EGON_MAGIC, 0x2000, false);
++    QTestState *qts = boot_with_image(path);
++
++    assert_not_booted(qts);
++    /* No partial copy may be visible anywhere in the load window. */
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + 0x100), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, SRAM_A1_BASE + 0xffc), ==, 0);
++
++    qtest_quit(qts);
++    destroy_image_file(path);
++}
++
++static void test_no_media(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -m 64M "
++                                 "-nodefaults");
++
++    assert_not_booted(qts);
++
++    /* SRAM A1/C/A2 exist byte-wide at their pinned DTS addresses/sizes. */
++    qtest_writeb(qts, SRAM_A1_BASE + SRAM_A1_SIZE - 1, 0xa1);
++    qtest_writeb(qts, SRAM_C_BASE, 0xc1);
++    qtest_writeb(qts, SRAM_C_BASE + SRAM_C_SIZE - 1, 0xc2);
++    qtest_writeb(qts, SRAM_A2_BASE, 0xb1);
++    qtest_writeb(qts, SRAM_A2_BASE + SRAM_A2_SIZE - 1, 0xb2);
++    g_assert_cmpuint(qtest_readb(qts, SRAM_A1_BASE + SRAM_A1_SIZE - 1),
++                     ==, 0xa1);
++    g_assert_cmpuint(qtest_readb(qts, SRAM_C_BASE), ==, 0xc1);
++    g_assert_cmpuint(qtest_readb(qts, SRAM_C_BASE + SRAM_C_SIZE - 1),
++                     ==, 0xc2);
++    g_assert_cmpuint(qtest_readb(qts, SRAM_A2_BASE), ==, 0xb1);
++    g_assert_cmpuint(qtest_readb(qts, SRAM_A2_BASE + SRAM_A2_SIZE - 1),
++                     ==, 0xb2);
++
++    qtest_quit(qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++
++    g_test_add_func("/pocketforge-a133-bootrom/valid-high-location",
++                    test_valid_high_location);
++    g_test_add_func("/pocketforge-a133-bootrom/valid-low-location",
++                    test_valid_low_location);
++    g_test_add_func("/pocketforge-a133-bootrom/rejects-stale-checksum",
++                    test_rejects_stale_checksum);
++    g_test_add_func("/pocketforge-a133-bootrom/rejects-bad-magic",
++                    test_rejects_bad_magic);
++    g_test_add_func("/pocketforge-a133-bootrom/rejects-bad-lengths",
++                    test_rejects_bad_lengths);
++    g_test_add_func("/pocketforge-a133-bootrom/rejects-truncated-media",
++                    test_rejects_truncated_media);
++    g_test_add_func("/pocketforge-a133-bootrom/no-media",
++                    test_no_media);
++
++    return g_test_run();
++}
+-- 
+2.43.0
+
