@@ -1,0 +1,642 @@
+From 41542acecba745653ddb6f9bfab94a7ed298b4f0 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sun, 11 Oct 2026 11:05:00 +0000
+Subject: [PATCH 32/32] tests: cover A133 SPL CCU pinctrl UART0 and MMC0 gating
+
+Add the pocketforge-a133-ccu qtest for the early CCU/PIO behavior the
+pinned A133 SPL relies on: one hermetic invocation carries the full
+positive sequence (PLL lock polling at +0x000/+0x020/+0x028, bus factor
+words at +0x500/+0x510/+0x51c/+0x520/+0x524/+0x540, UART gate/reset at
++0x90c, MMC clock/gate/reset with +0x84c readback at +0x830/+0x84c, and
+the exact legacy-stride PB/PF pinmux RMW cells 0x28/0x40/0xb4/0xc8/0xd0)
+plus negative controls that each omit one required gate/reset or pinmux
+transition and assert the gated peripheral stays inaccessible: UART0
+passes banner bytes to its chardev only after CCU gate/reset AND PB9/PB10
+function 2, and the reused A100 SD host receives commands only after CCU
+gate/reset AND PF0..PF5 function 2.  Register-level assertions, never a
+bare timeout, decide every negative.
+
+The mmio-map test programs the same SPL gate sequence before the flat
+view and UART contract probes, and the mmc test performs the SPL MMC0
+clock/gate/pinmux sequence before driving the controller, matching the
+wiring the model change introduces.
+
+Assisted-by: LLM
+---
+ tests/qtest/meson.build                      |   2 +-
+ tests/qtest/pocketforge-a133-ccu-test.c      | 484 +++++++++++++++++++
+ tests/qtest/pocketforge-a133-mmc-test.c      |  20 +
+ tests/qtest/pocketforge-a133-mmio-map-test.c |  25 +-
+ 4 files changed, 529 insertions(+), 2 deletions(-)
+ create mode 100644 tests/qtest/pocketforge-a133-ccu-test.c
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 020d204..887f670 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -225,7 +225,7 @@ qtests_aarch64 = \
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
+      'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',                 \
+-     'pocketforge-a133-bootrom-test'] : []) +                                      \
++     'pocketforge-a133-bootrom-test', 'pocketforge-a133-ccu-test'] : []) +                                      \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?        \
+     ['pocketforge-a133-display-test'] : []) +                                      \
+   ['arm-cpu-features',
+diff --git a/tests/qtest/pocketforge-a133-ccu-test.c b/tests/qtest/pocketforge-a133-ccu-test.c
+new file mode 100644
+index 0000000..2a10ed9
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-ccu-test.c
+@@ -0,0 +1,484 @@
++/*
++ * PocketForge A133 SPL CCU/pinctrl gating qtest
++ *
++ * Covers the early CCU (0x03001000) and PIO (0x0300b000) register behavior
++ * touched by the pinned A133 SPL: PLL lock polling, bus-clock programming,
++ * the UART0 and MMC0 bus-gating/reset-release registers, and the exact
++ * legacy-stride PB/PF pinmux RMW cells.  The gate/reset plus pinmux state
++ * must reach the reused peripherals: UART0 (dw-apb-uart at 0x05000000) only
++ * passes banner bytes after its CCU gate/reset (+0x90c bits 0/16) and the
++ * PB9/PB10 function-2 setup, and the A100 SD host at 0x04020000 only
++ * receives commands after its CCU gate/reset (+0x84c bits 0/16, read back
++ * before settle) and the PF0..PF5 function-2 setup.  Each negative control
++ * omits exactly one required transition and asserts peripheral state
++ * (inaccessible registers, absent success markers), never a bare timeout.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bitops.h"
++#include "qemu/units.h"
++#include "libqtest.h"
++
++#define CCU_BASE        0x03001000
++#define PIO_BASE        0x0300b000
++#define UART0_BASE      0x05000000
++#define MMC0_BASE       0x04020000
++
++/* CCU registers touched by the pinned SPL (parent design, .54.11). */
++#define CCU_PLL_CPU     0x000
++#define CCU_PLL_PERIPH0 0x020
++#define CCU_PLL_PERIPH1 0x028
++#define CCU_CPU_AXI     0x500
++#define CCU_PSI_AHB     0x510
++#define CCU_AHB3        0x51c
++#define CCU_APB1        0x520
++#define CCU_APB2        0x524
++#define CCU_MBUS        0x540
++#define CCU_MMC0_CLK    0x830
++#define CCU_MMC0_BGR    0x84c
++#define CCU_UART0_BGR   0x90c
++
++#define CCU_PLL_ENABLE  BIT(31)
++#define CCU_PLL_LOCK    BIT(28)
++#define CCU_PLL_OUTPUT  BIT(27)
++#define CCM_PLL6_DEFAULT 0xb8003100
++/* Bus-gating words: bit 0 clock gate, bit 16 reset release. */
++#define BGR_GATE        BIT(0)
++#define BGR_RESET       BIT(16)
++#define BGR_ON          (BGR_GATE | BGR_RESET)
++
++/*
++ * PIO cells at the exact legacy 0x24 bank stride selected by the pinned
++ * SPL .config (not the NCAT2 layout): PB CFG1 (+0x28) muxes PB9/PB10,
++ * PB PULL0 (+0x40) pulls PB10 up, PF CFG0 (+0xb4) muxes PF0..PF5,
++ * PF DRV0 (+0xc8) and PF PULL0 (+0xd0) carry drive/pull for PF0..PF5.
++ */
++#define PIO_PB_CFG1     0x028
++#define PIO_PB_PULL0    0x040
++#define PIO_PF_CFG0     0x0b4
++#define PIO_PF_DRV0     0x0c8
++#define PIO_PF_PULL0    0x0d0
++
++#define PIO_FUNC_2      0x2
++#define PIO_PULL_UP     0x1
++
++/* DW APB UART registers. */
++#define UART_THR        0x00
++#define UART_USR        0x7c
++#define UART_USR_IDLE   0x6
++
++/* A100 SD host registers (reused .54.10 model). */
++#define REG_GCTRL       0x00
++#define REG_CMDR        0x18
++#define REG_CARG        0x1c
++#define REG_RESP0       0x20
++#define REG_RINTR       0x38
++#define REG_STAS        0x3c
++
++#define CMD_START       BIT(31)
++#define CMD_RESP        BIT(6)
++#define RINTR_NO_RESP   BIT(1)
++#define RINTR_CMD_DONE  BIT(2)
++#define STAS_CARD_PRESENT BIT(8)
++
++#define TEST_IMAGE_SIZE (1 * MiB)
++#define BANNER          "U-Boot SPL banner\r\n"
++
++/* Pinmux expectations after the SPL RMW sequences. */
++#define PB_CFG1_UART0   ((PIO_FUNC_2 << 4) | (PIO_FUNC_2 << 8))
++#define PB_PULL0_PB10   (PIO_PULL_UP << 20)
++#define PF_CFG0_MMC0    0x00222222  /* PF0..PF5 nibbles all function 2 */
++#define PF_DRV0_VAL2    0x00000aaa  /* drive value 2 on PF0..PF5 */
++#define PF_PULL0_UP     0x00000555  /* pull-up on PF0..PF5 */
++
++static uint32_t poll_lock(QTestState *qts, uint64_t addr, unsigned int ms)
++{
++    unsigned int i;
++
++    for (i = 0; i < ms / 10; i++) {
++        uint32_t value = qtest_readl(qts, addr);
++
++        if (value & CCU_PLL_LOCK) {
++            return value;
++        }
++        g_usleep(10 * 1000);
++    }
++    return qtest_readl(qts, addr);
++}
++
++/*
++ * The pinned SPL clock sequence (parent design, .54.11): CPU PLL programmed
++ * for 408 MHz (24 MHz x N=17) with lock polled at bit 28 and the output
++ * enabled afterwards; PLL_PERIPH0/1 each written CCM_PLL6_DEFAULT and lock
++ * polled; CPU_AXI RMW'd; PSI/AHB1/AHB2, AHB3, APB1, MBUS and the UART APB2
++ * factor words stored.
++ */
++static void spl_clock_sequence(QTestState *qts)
++{
++    uint32_t v;
++
++    /* CPU PLL: clear, program N=17 (24 MHz x 17 = 408 MHz), enable, lock. */
++    qtest_writel(qts, CCU_BASE + CCU_PLL_CPU, 0);
++    qtest_writel(qts, CCU_BASE + CCU_PLL_CPU, CCU_PLL_ENABLE | (17 << 8));
++    g_assert_cmphex(poll_lock(qts, CCU_BASE + CCU_PLL_CPU, 1000) &
++                    CCU_PLL_LOCK, ==, CCU_PLL_LOCK);
++    v = qtest_readl(qts, CCU_BASE + CCU_PLL_CPU);
++    qtest_writel(qts, CCU_BASE + CCU_PLL_CPU, v | CCU_PLL_OUTPUT);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_PLL_CPU) &
++                    (CCU_PLL_ENABLE | CCU_PLL_OUTPUT), ==,
++                    CCU_PLL_ENABLE | CCU_PLL_OUTPUT);
++
++    /* PLL_PERIPH0 and A133 PLL_PERIPH1: CCM_PLL6_DEFAULT, then lock poll. */
++    qtest_writel(qts, CCU_BASE + CCU_PLL_PERIPH0, CCM_PLL6_DEFAULT);
++    g_assert_cmphex(poll_lock(qts, CCU_BASE + CCU_PLL_PERIPH0, 1000) &
++                    CCU_PLL_LOCK, ==, CCU_PLL_LOCK);
++    qtest_writel(qts, CCU_BASE + CCU_PLL_PERIPH1, CCM_PLL6_DEFAULT);
++    g_assert_cmphex(poll_lock(qts, CCU_BASE + CCU_PLL_PERIPH1, 1000) &
++                    CCU_PLL_LOCK, ==, CCU_PLL_LOCK);
++
++    /* CPU_AXI: RMW'd to its (reset) default factors. */
++    v = qtest_readl(qts, CCU_BASE + CCU_CPU_AXI);
++    qtest_writel(qts, CCU_BASE + CCU_CPU_AXI, v);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_CPU_AXI), ==, v);
++
++    /* Exact bus factor words recorded in the parent design comment. */
++    qtest_writel(qts, CCU_BASE + CCU_PSI_AHB, 0x03000002);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_PSI_AHB), ==, 0x03000002);
++    qtest_writel(qts, CCU_BASE + CCU_AHB3, 0x03000002);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_AHB3), ==, 0x03000002);
++    qtest_writel(qts, CCU_BASE + CCU_APB1, 0x03000102);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_APB1), ==, 0x03000102);
++    /* MBUS: PLL6x2 source, M=3 divider field, enabled. */
++    qtest_writel(qts, CCU_BASE + CCU_MBUS, 0x82000002);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_MBUS), ==, 0x82000002);
++    /* APB2 for the UART: OSC24M source, N=1, M=1. */
++    qtest_writel(qts, CCU_BASE + CCU_APB2, 0x03000101);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_APB2), ==, 0x03000101);
++}
++
++/* SPL UART0 gating: RMW set gate bit 0, then RMW set reset bit 16. */
++static void spl_uart0_gate_sequence(QTestState *qts)
++{
++    uint32_t v = qtest_readl(qts, CCU_BASE + CCU_UART0_BGR);
++
++    qtest_writel(qts, CCU_BASE + CCU_UART0_BGR, v | BGR_GATE);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_UART0_BGR) & BGR_GATE,
++                    ==, BGR_GATE);
++    v = qtest_readl(qts, CCU_BASE + CCU_UART0_BGR);
++    qtest_writel(qts, CCU_BASE + CCU_UART0_BGR, v | BGR_RESET);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_UART0_BGR), ==, BGR_ON);
++}
++
++/*
++ * SPL UART0 pinmux: RMW 0x0300b028 to function 2 for PB9/PB10 and RMW
++ * 0x0300b040 to pull PB10 up (exact legacy-stride addresses).
++ */
++static void spl_uart0_pinmux_sequence(QTestState *qts)
++{
++    uint32_t v = qtest_readl(qts, PIO_BASE + PIO_PB_CFG1);
++
++    v &= ~((0xf << 4) | (0xf << 8));
++    v |= (PIO_FUNC_2 << 4) | (PIO_FUNC_2 << 8);
++    qtest_writel(qts, PIO_BASE + PIO_PB_CFG1, v);
++    g_assert_cmphex(qtest_readl(qts, PIO_BASE + PIO_PB_CFG1), ==,
++                    PB_CFG1_UART0);
++
++    v = qtest_readl(qts, PIO_BASE + PIO_PB_PULL0);
++    v &= ~(0x3 << 20);
++    v |= PIO_PULL_UP << 20;
++    qtest_writel(qts, PIO_BASE + PIO_PB_PULL0, v);
++    g_assert_cmphex(qtest_readl(qts, PIO_BASE + PIO_PB_PULL0), ==,
++                    PB_PULL0_PB10);
++}
++
++/*
++ * SPL MMC0 clocks: +0x830 written for the 24 MHz (OSC24M) source, +0x84c
++ * RMW'd for gate then reset release, explicitly read back before the 1 ms
++ * settle.
++ */
++static void spl_mmc0_clock_sequence(QTestState *qts)
++{
++    uint32_t v;
++
++    qtest_writel(qts, CCU_BASE + CCU_MMC0_CLK, CCU_PLL_ENABLE);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_MMC0_CLK), ==,
++                    CCU_PLL_ENABLE);
++
++    v = qtest_readl(qts, CCU_BASE + CCU_MMC0_BGR);
++    qtest_writel(qts, CCU_BASE + CCU_MMC0_BGR, v | BGR_GATE);
++    v = qtest_readl(qts, CCU_BASE + CCU_MMC0_BGR);
++    qtest_writel(qts, CCU_BASE + CCU_MMC0_BGR, v | BGR_RESET);
++    /* The SPL explicitly reads +0x84c back before the 1 ms settle. */
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_MMC0_BGR), ==, BGR_ON);
++    g_usleep(1000);
++}
++
++/*
++ * SPL MMC0 pinmux: RMW 0x0300b0b4 (PF0..PF5 function 2), 0x0300b0c8
++ * (drive value 2) and 0x0300b0d0 (pull-up) -- exact legacy-stride cells.
++ */
++static void spl_mmc0_pinmux_sequence(QTestState *qts)
++{
++    uint32_t v = qtest_readl(qts, PIO_BASE + PIO_PF_CFG0);
++    unsigned int pin;
++
++    for (pin = 0; pin <= 5; pin++) {
++        v &= ~(0xf << (pin * 4));
++        v |= PIO_FUNC_2 << (pin * 4);
++    }
++    qtest_writel(qts, PIO_BASE + PIO_PF_CFG0, v);
++    g_assert_cmphex(qtest_readl(qts, PIO_BASE + PIO_PF_CFG0), ==, PF_CFG0_MMC0);
++
++    v = qtest_readl(qts, PIO_BASE + PIO_PF_DRV0);
++    v &= ~0xfff;
++    v |= PF_DRV0_VAL2;
++    qtest_writel(qts, PIO_BASE + PIO_PF_DRV0, v);
++    g_assert_cmphex(qtest_readl(qts, PIO_BASE + PIO_PF_DRV0), ==, PF_DRV0_VAL2);
++
++    v = qtest_readl(qts, PIO_BASE + PIO_PF_PULL0);
++    v &= ~0xfff;
++    v |= PF_PULL0_UP;
++    qtest_writel(qts, PIO_BASE + PIO_PF_PULL0, v);
++    g_assert_cmphex(qtest_readl(qts, PIO_BASE + PIO_PF_PULL0), ==,
++                    PF_PULL0_UP);
++}
++
++static char *create_serial_file(void)
++{
++    GError *error = NULL;
++    char *path = NULL;
++    int fd = g_file_open_tmp("pocketforge-a133-ccu-uart-XXXXXX", &path,
++                             &error);
++
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(close(fd), ==, 0);
++    return path;
++}
++
++static QTestState *start_with_serial(const char *path)
++{
++    g_autofree char *quoted = g_shell_quote(path);
++
++    return qtest_initf("-M pocketforge-a133 -m 64M -nodefaults "
++                       "-chardev file,id=pfuart0,path=%s "
++                       "-serial chardev:pfuart0", quoted);
++}
++
++/* Bounded poll: does the serial capture file contain the banner yet? */
++static bool serial_file_has_banner(const char *path)
++{
++    char *contents = NULL;
++    gsize length = 0;
++    bool found;
++
++    g_assert_true(g_file_get_contents(path, &contents, &length, NULL));
++    found = contents && strstr(contents, BANNER) != NULL;
++    g_free(contents);
++    return found;
++}
++
++static void uart0_write_banner(QTestState *qts)
++{
++    const char *p;
++
++    for (p = BANNER; *p; p++) {
++        qtest_writel(qts, UART0_BASE + UART_THR, *p);
++    }
++}
++
++static char *create_sd_image(void)
++{
++    static const char marker[8] = "EFI PART";
++    GError *error = NULL;
++    char *path = NULL;
++    int fd = g_file_open_tmp("pocketforge-a133-ccu-mmc-XXXXXX", &path,
++                             &error);
++
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(ftruncate(fd, TEST_IMAGE_SIZE), ==, 0);
++    g_assert_cmpint(pwrite(fd, marker, sizeof(marker), 512), ==,
++                    (ssize_t)sizeof(marker));
++    g_assert_cmpint(close(fd), ==, 0);
++    return path;
++}
++
++static QTestState *start_with_sd(const char *path)
++{
++    g_autofree char *quoted = g_shell_quote(path);
++
++    return qtest_initf("-M pocketforge-a133 -m 64M -nodefaults "
++                       "-drive if=sd,format=raw,file=%s", quoted);
++}
++
++static uint32_t send_command(QTestState *qts, uint32_t cmd, uint32_t arg)
++{
++    qtest_writel(qts, MMC0_BASE + REG_RINTR, UINT32_MAX);
++    qtest_writel(qts, MMC0_BASE + REG_CARG, arg);
++    qtest_writel(qts, MMC0_BASE + REG_CMDR, CMD_START | cmd);
++    return qtest_readl(qts, MMC0_BASE + REG_RINTR);
++}
++
++/* Positive control: every pinned CCU/PIO operation is observed and stored. */
++static void test_spl_pinned_sequence(void)
++{
++    QTestState *qts = qtest_init("-M pocketforge-a133 -nodefaults");
++
++    /* Lock must not be synthesized while the PLL is disabled. */
++    qtest_writel(qts, CCU_BASE + CCU_PLL_PERIPH0, 0);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_PLL_PERIPH0) &
++                    CCU_PLL_LOCK, ==, 0);
++
++    spl_clock_sequence(qts);
++    spl_uart0_gate_sequence(qts);
++    spl_uart0_pinmux_sequence(qts);
++    spl_mmc0_clock_sequence(qts);
++    spl_mmc0_pinmux_sequence(qts);
++
++    /* Lock state persists on the enabled PLL cells. */
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_PLL_PERIPH0) &
++                    CCU_PLL_LOCK, ==, CCU_PLL_LOCK);
++    g_assert_cmphex(qtest_readl(qts, CCU_BASE + CCU_PLL_PERIPH1) &
++                    CCU_PLL_LOCK, ==, CCU_PLL_LOCK);
++
++    qtest_quit(qts);
++}
++
++/*
++ * UART0 passes bytes only after gate/reset AND PB9/PB10 function 2.  Each
++ * phase omits exactly one required transition; the assertion is on machine
++ * state (inaccessible registers, empty capture file), never on a timeout.
++ */
++static void test_uart0_gate_and_pinmux(void)
++{
++    g_autofree char *path = create_serial_file();
++    QTestState *qts;
++
++    /* Negative: no setup at all -- UART0 is inaccessible and silent. */
++    qts = start_with_serial(path);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, 0);
++    uart0_write_banner(qts);
++    g_usleep(250 * 1000);
++    g_assert_false(serial_file_has_banner(path));
++    qtest_quit(qts);
++
++    /* Negative: clocks + gate/reset but the PB pinmux transition omitted. */
++    qts = start_with_serial(path);
++    spl_clock_sequence(qts);
++    spl_uart0_gate_sequence(qts);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, 0);
++    uart0_write_banner(qts);
++    g_usleep(250 * 1000);
++    g_assert_false(serial_file_has_banner(path));
++
++    /* Positive: completing the PB9/PB10 function-2 RMW opens the port. */
++    spl_uart0_pinmux_sequence(qts);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, UART_USR_IDLE);
++    uart0_write_banner(qts);
++    {
++        unsigned int i;
++
++        for (i = 0; i < 200 && !serial_file_has_banner(path); i++) {
++            g_usleep(10 * 1000);
++        }
++    }
++    g_assert_true(serial_file_has_banner(path));
++
++    /* Removing the gate again closes the port (state is live, not latched). */
++    qtest_writel(qts, CCU_BASE + CCU_UART0_BGR, BGR_RESET);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, 0);
++    qtest_writel(qts, CCU_BASE + CCU_UART0_BGR, BGR_ON);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, UART_USR_IDLE);
++
++    /* Machine reset re-closes the gate. */
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, 0);
++    qtest_quit(qts);
++
++    /* Negative: pinmux without any CCU gate/reset stays inaccessible. */
++    qts = start_with_serial(path);
++    spl_uart0_pinmux_sequence(qts);
++    g_assert_cmphex(qtest_readl(qts, UART0_BASE + UART_USR), ==, 0);
++    uart0_write_banner(qts);
++    g_usleep(250 * 1000);
++    g_assert_false(serial_file_has_banner(path));
++    qtest_quit(qts);
++
++    g_assert_cmpint(unlink(path), ==, 0);
++}
++
++/*
++ * The reused MMC0 model receives commands only after gate/reset (with the
++ * SPL's readback) AND the PF0..PF5 setup; each negative omits one required
++ * transition and asserts register-level inaccessibility, which is distinct
++ * from the absent-media NO_RESP behavior of the live controller.
++ */
++static void test_mmc0_gate_and_pinmux(void)
++{
++    g_autofree char *image = create_sd_image();
++    QTestState *qts;
++    uint32_t irq;
++
++    /* Negative: no setup -- the controller is inaccessible. */
++    qts = start_with_sd(image);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS), ==, 0);
++    qtest_writel(qts, MMC0_BASE + REG_GCTRL, 0xdeadbeef);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_GCTRL), ==, 0);
++    irq = send_command(qts, CMD_RESP | 8, 0x1aa);
++    g_assert_cmphex(irq, ==, 0);
++    qtest_quit(qts);
++
++    /* Negative: gate/reset with readback done, PF pinmux omitted. */
++    qts = start_with_sd(image);
++    spl_mmc0_clock_sequence(qts);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS), ==, 0);
++    irq = send_command(qts, CMD_RESP | 8, 0x1aa);
++    g_assert_cmphex(irq, ==, 0);
++
++    /* Positive: completing the PF0..PF5 setup makes the card reachable. */
++    spl_mmc0_pinmux_sequence(qts);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, !=, 0);
++    /* The write attempted while gated was dropped, not queued. */
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_GCTRL), ==, 0);
++    irq = send_command(qts, 0, 0);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    irq = send_command(qts, CMD_RESP | 8, 0x1aa);
++    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_RESP0), ==, 0x1aa);
++
++    /* Removing the gate again closes the controller. */
++    qtest_writel(qts, CCU_BASE + CCU_MMC0_BGR, BGR_RESET);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS), ==, 0);
++    irq = send_command(qts, CMD_RESP | 8, 0x1aa);
++    g_assert_cmphex(irq, ==, 0);
++    qtest_quit(qts);
++
++    /* Negative: PF pinmux without any CCU gate/reset stays inaccessible. */
++    qts = start_with_sd(image);
++    spl_mmc0_pinmux_sequence(qts);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS), ==, 0);
++    irq = send_command(qts, CMD_RESP | 8, 0x1aa);
++    g_assert_cmphex(irq, ==, 0);
++    qtest_quit(qts);
++
++    g_assert_cmpint(unlink(image), ==, 0);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++
++    qtest_add_func("/pocketforge-a133-ccu/spl-pinned-sequence",
++                   test_spl_pinned_sequence);
++    qtest_add_func("/pocketforge-a133-ccu/uart0-gate-and-pinmux",
++                   test_uart0_gate_and_pinmux);
++    qtest_add_func("/pocketforge-a133-ccu/mmc0-gate-and-pinmux",
++                   test_mmc0_gate_and_pinmux);
++
++    return g_test_run();
++}
+diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a133-mmc-test.c
+index 8411e74..3b39b19 100644
+--- a/tests/qtest/pocketforge-a133-mmc-test.c
++++ b/tests/qtest/pocketforge-a133-mmc-test.c
+@@ -125,6 +125,23 @@ static QTestState *start_with_image(const char *path)
+                        "-drive if=sd,format=raw,file=%s", quoted);
+ }
+ 
++/*
++ * The pinned SPL only reaches MMC0 after the CCU clock/gate/reset words
++ * (+0x830, +0x84c with readback) and the PF0..PF5 function-2 pinmux at the
++ * legacy-stride PIO cells; program the same sequence before register
++ * access.
++ */
++static void enable_mmc0(QTestState *qts)
++{
++    qtest_writel(qts, 0x03001000 + 0x830, 0x80000000);
++    qtest_writel(qts, 0x03001000 + 0x84c, 0x1);
++    qtest_writel(qts, 0x03001000 + 0x84c, 0x10001);
++    g_assert_cmphex(qtest_readl(qts, 0x03001000 + 0x84c), ==, 0x10001);
++    qtest_writel(qts, 0x0300b000 + 0x0b4, 0x00222222);
++    qtest_writel(qts, 0x0300b000 + 0x0c8, 0xaaa);
++    qtest_writel(qts, 0x0300b000 + 0x0d0, 0x555);
++}
++
+ static void test_real_media_and_controls(void)
+ {
+     static const char valid_gpt[8] = "EFI PART";
+@@ -137,6 +154,7 @@ static void test_real_media_and_controls(void)
+ 
+     /* Positive: shifted A100 DMA addresses fetch the raw GPT signature. */
+     qts = start_with_image(valid_path);
++    enable_mmc0(qts);
+     g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
+                     STAS_CARD_PRESENT, !=, 0);
+     initialize_sd(qts);
+@@ -146,6 +164,7 @@ static void test_real_media_and_controls(void)
+ 
+     /* Negative control: bytes come from media; a corrupt GPT stays corrupt. */
+     qts = start_with_image(corrupt_path);
++    enable_mmc0(qts);
+     initialize_sd(qts);
+     read_gpt_marker(qts, marker);
+     g_assert_cmpmem(marker, sizeof(marker), corrupt_gpt, sizeof(corrupt_gpt));
+@@ -154,6 +173,7 @@ static void test_real_media_and_controls(void)
+ 
+     /* Negative control: without media, commands receive no response. */
+     qts = qtest_init("-M pocketforge-a133 -m 64M");
++    enable_mmc0(qts);
+     irq = send_command(qts, CMD_RESP | 8, 0x1aa);
+     g_assert_cmphex(irq & RINTR_NO_RESP, !=, 0);
+     qtest_quit(qts);
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index 49779be..105de00 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -124,6 +124,23 @@ static QTestState *mmio_start(void)
+     return qtest_init("-machine pocketforge-a133 -nodefaults");
+ }
+ 
++/*
++ * UART0 and MMC0 sit behind their CCU bus-gating/reset-release words and
++ * the legacy-stride PB/PF pinmux cells the pinned SPL programs: UART0 gate
++ * + reset at CCU +0x90c with PB9/PB10 function 2 at PIO +0x28, MMC0 gate
++ * + reset at CCU +0x84c with PF0..PF5 function 2 at PIO +0xb4.  Open both
++ * the way the SPL does so the flat view shows the live peripherals.
++ */
++static void program_spl_gates(QTestState *qts)
++{
++    qtest_writel(qts, 0x03001000 + 0x90c, 0x1);
++    qtest_writel(qts, 0x03001000 + 0x90c, 0x10001);
++    qtest_writel(qts, 0x03001000 + 0x84c, 0x1);
++    qtest_writel(qts, 0x03001000 + 0x84c, 0x10001);
++    qtest_writel(qts, 0x0300b000 + 0x28, 0x220);
++    qtest_writel(qts, 0x0300b000 + 0xb4, 0x00222222);
++}
++
+ static void assert_region_line(const char *map, const ExpectedRegion *region)
+ {
+     g_autofree char *line = g_strdup_printf(
+@@ -146,9 +163,12 @@ static void assert_sram_region_line(const char *map,
+ static void test_exact_live_map(void)
+ {
+     QTestState *qts = mmio_start();
+-    g_autofree char *map = qtest_hmp(qts, "info mtree -f");
++    g_autofree char *map;
+     unsigned int i;
+ 
++    program_spl_gates(qts);
++    map = qtest_hmp(qts, "info mtree -f");
++
+     for (i = 0; i < ARRAY_SIZE(expected_regions); i++) {
+         assert_region_line(map, &expected_regions[i]);
+     }
+@@ -234,6 +254,9 @@ static void test_uart_model_contract(void)
+     QTestState *qts = mmio_start();
+     unsigned int i;
+ 
++    /* UART0 only answers once its CCU gate/reset and PB pinmux are set. */
++    program_spl_gates(qts);
++
+     for (i = 0; i < ARRAY_SIZE(uart_bases); i++) {
+         /* USR: TX FIFO not full and empty; controller is not busy. */
+         g_assert_cmphex(qtest_readl(qts, uart_bases[i] + 0x7c), ==, 0x6);
+-- 
+2.43.0
+

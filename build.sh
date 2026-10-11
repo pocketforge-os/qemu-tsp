@@ -257,6 +257,11 @@ if ! grep -q 'pocketforge_a133_bootrom_reset' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0031-hw-arm-A133-BootROM-MMC0-eGON-loader-and-SRAM.patch"
 fi
 
+echo "== apply PocketForge patch: RED qtests for A133 SPL CCU/pinctrl gating =="
+if [ ! -f tests/qtest/pocketforge-a133-ccu-test.c ]; then
+  git apply "$ROOT/pocketforge/0032-tests-cover-A133-SPL-CCU-pinctrl-UART0-and-MMC0-gating.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
@@ -290,7 +295,8 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-r-i2c-test \
   tests/qtest/pocketforge-a133-axp717-test \
   tests/qtest/pocketforge-a133-mmc-test \
-  tests/qtest/pocketforge-a133-bootrom-test
+  tests/qtest/pocketforge-a133-bootrom-test \
+  tests/qtest/pocketforge-a133-ccu-test
 meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a100-rtc-test \
   qtest-aarch64/pocketforge-a133-display-test \
@@ -299,7 +305,8 @@ meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a133-r-i2c-test \
   qtest-aarch64/pocketforge-a133-axp717-test \
   qtest-aarch64/pocketforge-a133-mmc-test \
-  qtest-aarch64/pocketforge-a133-bootrom-test
+  qtest-aarch64/pocketforge-a133-bootrom-test \
+  qtest-aarch64/pocketforge-a133-ccu-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1
