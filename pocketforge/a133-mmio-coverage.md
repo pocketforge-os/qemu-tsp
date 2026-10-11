@@ -130,7 +130,14 @@ write storage. This is deliberately an inert probe surface, not a claim of
 device functionality. The driver audit is:
 
 - `mmio-sram` requires storage semantics; exact RAM-backed apertures are the
-  appropriate model.
+  appropriate model.  SRAM A1, C and A2 (`sram_a1` 0x00020000/0x4000,
+  `sram_c` 0x00024000/0x21000, `sram_a2` 0x00100000/0x14000, pinned
+  sun50i-a100 DTS addresses and sizes) are therefore modelled as executable
+  RAM, not register stubs: they keep storage across machine reset and A1+C
+  form the BootROM eGON load window into which a validated SPL found on
+  MMC0 (searched at byte 8 KiB then 128 KiB) is copied for exactly its
+  declared length before CPU0 is handed to 0x00020000 in AArch32 with the
+  boot-media word stamped and secondary CPUs held.
 - The open PowerVR driver is disabled in the pinned kernel configuration, so
   the GPU aperture has no active driver semantics.
 - Cedrus maps the video engine at probe but performs hardware work only for a

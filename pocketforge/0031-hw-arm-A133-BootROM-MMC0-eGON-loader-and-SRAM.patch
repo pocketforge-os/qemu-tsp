@@ -1,0 +1,575 @@
+From e42900ee7fd022c89b4397d0d3393767ee15a9b1 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sun, 11 Oct 2026 10:05:00 +0000
+Subject: [PATCH 31/31] hw: arm: A133 BootROM MMC0 eGON loader and SRAM reset
+ path
+
+Promote SRAM A1/C/A2 to RAM-backed executable memory at their pinned
+sun50i-a100 DTS addresses and sizes, and add the pre-CPU BootROM eGON
+loader that runs on every machine reset: it searches MMC0 at the 8 KiB
+low and 128 KiB high locations, validates the eGON.BT0 header (magic,
+word-aligned length covering the header and bounded by the A1+C load
+window, additive checksum with the checksum word replaced by the
+0x5f0a6c39 stamp), copies exactly the declared length to SRAM 0x20000,
+stamps the boot media word (MMC0 / MMC0_HIGH), and hands CPU0 to
+0x20000 in AArch32 EL1 SVC with secondaries held off
+(start-powered-off when booting without a direct kernel). Read errors,
+truncated media, stale checksums, bad magic and out-of-bounds or
+unaligned lengths are rejected without any copy or execution. The
+handler is registered after arm_load_kernel so it runs after the
+per-CPU do_cpu_reset handlers.
+
+The mmio-map test asserts the three SRAM regions as ram lines with
+storage that survives machine reset; the bootrom test fixture uses
+correct mrc/tst encodings, -accel tcg so the SPL really executes, the
+QEMU MPIDR reset value including the MP-extensions bit, and
+power-of-two SD media sizes.
+
+Assisted-by: LLM
+---
+ hw/arm/pocketforge_a133.c                    | 214 ++++++++++++++++++++++++++-
+ tests/qtest/pocketforge-a133-bootrom-test.c  |  41 +++--
+ tests/qtest/pocketforge-a133-mmio-map-test.c |  65 +++++++-
+ 3 files changed, 294 insertions(+), 26 deletions(-)
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 983e4f1..9bf3610 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -87,6 +87,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/bswap.h"
+ #include "qemu/config-file.h"
+ #include "qemu/units.h"
+ #include "qemu/error-report.h"
+@@ -95,6 +96,7 @@
+ #include "qapi/qapi-commands-misc-target.h"
+ #include "qapi/qapi-types-misc-target.h"
+ #include "cpu.h"
++#include "internals.h"
+ #include "hw/arm/boot.h"
+ #include "hw/arm/bsa.h"
+ #include "hw/arm/pocketforge_a133.h"
+@@ -119,9 +121,11 @@
+ #include "migration/vmstate.h"
+ #include "sysemu/device_tree.h"
+ #include "sysemu/blockdev.h"
++#include "sysemu/block-backend-io.h"
+ #include "sysemu/reset.h"
+ #include "hw/arm/fdt.h"
+ #include "sysemu/sysemu.h"
++#include "sysemu/tcg.h"
+ #include "qemu/module.h"
+ #include "chardev/char.h"
+ #include "ui/qemu-pixman.h"
+@@ -132,6 +136,41 @@
+ OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133MachineState,
+                            POCKETFORGE_A133_MACHINE)
+ 
++/*
++ * SRAM blocks at their pinned sun50i-a100 DTS addresses and sizes
++ * (sun50i-a100.dtsi:116-137).  A1 and C are contiguous and form the
++ * BootROM eGON load window; A1/C/A2 are RAM-backed and executable so
++ * CPU0 can run the loaded SPL in place.
++ */
++#define PF_A133_SRAM_A1_BASE 0x00020000
++#define PF_A133_SRAM_A1_SIZE 0x00004000
++#define PF_A133_SRAM_C_BASE  0x00024000
++#define PF_A133_SRAM_C_SIZE  0x00021000
++#define PF_A133_SRAM_A2_BASE 0x00100000
++#define PF_A133_SRAM_A2_SIZE 0x00014000
++#define PF_A133_BOOTROM_LOAD_SIZE \
++    (PF_A133_SRAM_A1_SIZE + PF_A133_SRAM_C_SIZE)
++
++/*
++ * eGON.BT0 boot header (U-Boot include/sunxi_image.h struct boot_file_head):
++ * branch instruction at 0x00, magic at 0x04, additive checksum at 0x0c,
++ * image length at 0x10, boot media stamp at 0x28 written by the BootROM.
++ * The checksum sums the image as LE32 words with the checksum word itself
++ * replaced by BROM_STAMP_VALUE (U-Boot tools/mksunxiboot.c gen_check_sum).
++ */
++#define PF_A133_EGON_MAGIC         "eGON.BT0"
++#define PF_A133_EGON_CHECKSUM_OFF  0x0c
++#define PF_A133_EGON_LENGTH_OFF    0x10
++#define PF_A133_EGON_MEDIA_OFF     0x28
++#define PF_A133_EGON_HEADER_SIZE   0x60
++#define PF_A133_EGON_STAMP         0x5f0a6c39
++/* U-Boot arch/arm/include/asm/arch-sunxi/spl.h boot media ids. */
++#define PF_A133_EGON_MEDIA_MMC0      0x00
++#define PF_A133_EGON_MEDIA_MMC0_HIGH 0x10
++/* MMC0 raw eGON search locations: 8 KiB low first, then 128 KiB high. */
++#define PF_A133_EGON_OFFSET_LOW    0x00002000
++#define PF_A133_EGON_OFFSET_HIGH   0x00020000
++
+ struct PocketForgeA133MachineState {
+     MachineState parent_obj;
+     I2CBus *r_i2c0_bus;
+@@ -143,6 +182,10 @@ struct PocketForgeA133MachineState {
+     DWApbUartState *gamepad_uart[2];
+     DeviceState *pmic;
+     MemoryRegion r_intc_mmio;
++    MemoryRegion sram_a1;
++    MemoryRegion sram_c;
++    MemoryRegion sram_a2;
++    BlockBackend *bootrom_blk;
+     qemu_irq r_intc_parent_irq;
+     uint32_t r_intc_ctrl;
+     uint32_t r_intc_enable;
+@@ -482,9 +525,6 @@ typedef struct PfA133StubRegion {
+  * aperture (notably DE2's 4 MiB window).
+  */
+ static const PfA133StubRegion pf_a133_stub_regions[] = {
+-    { "pocketforge-a133.sram_a1",          0x00020000, 0x4000 },
+-    { "pocketforge-a133.sram_c",           0x00024000, 0x21000 },
+-    { "pocketforge-a133.sram_a2",          0x00100000, 0x14000 },
+     { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
+     { "pocketforge-a133.crypto",           0x01904000, 0x800 },
+     { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
+@@ -548,6 +588,147 @@ static void pocketforge_a133_create_mmio_stubs(void)
+     }
+ }
+ 
++static void pocketforge_a133_create_sram(PocketForgeA133MachineState *s,
++                                         MemoryRegion *sysmem)
++{
++    /*
++     * SRAM A1/C/A2 are plain RAM (not register stubs): they keep storage
++     * semantics across machine reset and are executable so the BootROM
++     * can hand CPU0 into an SPL loaded at 0x00020000.
++     */
++    memory_region_init_ram(&s->sram_a1, NULL, "pocketforge-a133.sram_a1",
++                           PF_A133_SRAM_A1_SIZE, &error_fatal);
++    memory_region_add_subregion(sysmem, PF_A133_SRAM_A1_BASE, &s->sram_a1);
++    memory_region_init_ram(&s->sram_c, NULL, "pocketforge-a133.sram_c",
++                           PF_A133_SRAM_C_SIZE, &error_fatal);
++    memory_region_add_subregion(sysmem, PF_A133_SRAM_C_BASE, &s->sram_c);
++    memory_region_init_ram(&s->sram_a2, NULL, "pocketforge-a133.sram_a2",
++                           PF_A133_SRAM_A2_SIZE, &error_fatal);
++    memory_region_add_subregion(sysmem, PF_A133_SRAM_A2_BASE, &s->sram_a2);
++}
++
++static bool pocketforge_a133_egon_header_valid(const uint8_t *header,
++                                               uint32_t *length)
++{
++    uint32_t len;
++
++    if (memcmp(header + 4, PF_A133_EGON_MAGIC, 8) != 0) {
++        return false;
++    }
++    len = ldl_le_p(header + PF_A133_EGON_LENGTH_OFF);
++    /*
++     * The loader copies exactly the declared length into the A1+C window:
++     * it must cover the header, be word aligned (mksunxiboot refuses
++     * anything else) and fit the mapped load capacity.
++     */
++    if (len < PF_A133_EGON_HEADER_SIZE ||
++        (len & 3) != 0 ||
++        len > PF_A133_BOOTROM_LOAD_SIZE) {
++        return false;
++    }
++    *length = len;
++    return true;
++}
++
++static bool pocketforge_a133_egon_checksum_ok(const uint8_t *img,
++                                              uint32_t length)
++{
++    uint32_t stored = ldl_le_p(img + PF_A133_EGON_CHECKSUM_OFF);
++    uint32_t sum = 0;
++    uint32_t off;
++
++    for (off = 0; off < length; off += 4) {
++        sum += off == PF_A133_EGON_CHECKSUM_OFF ? PF_A133_EGON_STAMP :
++                                                  ldl_le_p(img + off);
++    }
++    return sum == stored;
++}
++
++/*
++ * Pre-CPU BootROM eGON load, re-run on every machine reset so the load is
++ * deterministic.  Searches MMC0 at the 8 KiB low location and then the
++ * 128 KiB high location, validates the eGON.BT0 header (magic, aligned and
++ * bounded length, additive checksum), copies exactly the declared length to
++ * SRAM 0x00020000, stamps the boot media word the SPL later reads back
++ * (U-Boot arch/arm/mach-sunxi/board.c sunxi_get_boot_source), and hands
++ * CPU0 to 0x00020000 in AArch32.  A read error, truncated media, stale
++ * checksum or bad magic rejects the location; nothing is ever partially
++ * copied or executed.  Secondaries stay held (start-powered-off).
++ */
++static void pocketforge_a133_bootrom_reset(void *opaque)
++{
++    static const struct {
++        uint64_t offset;
++        uint32_t media;
++    } locations[] = {
++        { PF_A133_EGON_OFFSET_LOW,  PF_A133_EGON_MEDIA_MMC0 },
++        { PF_A133_EGON_OFFSET_HIGH, PF_A133_EGON_MEDIA_MMC0_HIGH },
++    };
++    PocketForgeA133MachineState *s = opaque;
++    MachineState *machine = MACHINE(s);
++    uint8_t header[512];
++    g_autofree uint8_t *img = NULL;
++    CPUState *cs;
++    ARMCPU *cpu;
++    CPUARMState *env;
++    unsigned int i;
++
++    if (machine->kernel_filename) {
++        /* Direct kernel boot bypasses the BootROM entirely. */
++        return;
++    }
++    if (!s->bootrom_blk || !blk_is_available(s->bootrom_blk)) {
++        return;
++    }
++
++    for (i = 0; i < ARRAY_SIZE(locations); i++) {
++        uint32_t length;
++        int ret;
++
++        ret = blk_pread(s->bootrom_blk, locations[i].offset, sizeof(header),
++                        header, 0);
++        if (ret < 0) {
++            continue;
++        }
++        if (!pocketforge_a133_egon_header_valid(header, &length)) {
++            continue;
++        }
++        img = g_malloc(length);
++        memcpy(img, header, MIN(sizeof(header), length));
++        if (length > sizeof(header)) {
++            ret = blk_pread(s->bootrom_blk,
++                            locations[i].offset + sizeof(header),
++                            length - sizeof(header),
++                            img + sizeof(header), 0);
++            if (ret < 0) {
++                g_clear_pointer(&img, g_free);
++                continue;
++            }
++        }
++        if (!pocketforge_a133_egon_checksum_ok(img, length)) {
++            g_clear_pointer(&img, g_free);
++            continue;
++        }
++
++        stl_le_p(img + PF_A133_EGON_MEDIA_OFF, locations[i].media);
++        address_space_write(&address_space_memory, PF_A133_SRAM_A1_BASE,
++                            MEMTXATTRS_UNSPECIFIED, img, length);
++        g_clear_pointer(&img, g_free);
++
++        cpu = ARM_CPU(first_cpu);
++        cs = CPU(cpu);
++        env = &cpu->env;
++        env->aarch64 = false;
++        cpsr_write(env, ARM_CPU_MODE_SVC | CPSR_A | CPSR_I | CPSR_F,
++                   CPSR_M | CPSR_A | CPSR_I | CPSR_F | CPSR_T, CPSRWriteRaw);
++        cpu_set_pc(cs, PF_A133_SRAM_A1_BASE);
++        if (tcg_enabled()) {
++            arm_rebuild_hflags(env);
++        }
++        return;
++    }
++}
++
+ static void pocketforge_a133_r_intc_update(PocketForgeA133MachineState *s)
+ {
+     qemu_set_irq(s->r_intc_parent_irq,
+@@ -677,7 +858,8 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+         PF_A133_R_I2C0_SIZE - AW_I2C_MEM_SIZE);
+ }
+ 
+-static void pocketforge_a133_create_mmc0(qemu_irq irq)
++static void pocketforge_a133_create_mmc0(PocketForgeA133MachineState *s,
++                                         qemu_irq irq)
+ {
+     DriveInfo *di = drive_get(IF_SD, 0, 0);
+     BlockBackend *blk = di ? blk_by_legacy_dinfo(di) : NULL;
+@@ -699,6 +881,8 @@ static void pocketforge_a133_create_mmc0(qemu_irq irq)
+     if (!di) {
+         return;
+     }
++    /* The BootROM loader reads the same attached MMC0 backend raw. */
++    s->bootrom_blk = blk;
+ 
+     card = qdev_new(TYPE_SD_CARD);
+     qdev_prop_set_drive_err(card, "drive", blk, &error_fatal);
+@@ -870,6 +1054,16 @@ static void pocketforge_a133_init(MachineState *machine)
+          */
+         object_property_set_bool(cpuobj, "has_el3", false, &error_fatal);
+ 
++        if (!machine->kernel_filename && n > 0) {
++            /*
++             * BootROM boot flow: only CPU0 leaves reset; secondaries stay
++             * held (PSCI off) across every machine reset until firmware
++             * brings them up, matching the SoC BootROM behaviour.
++             */
++            object_property_set_bool(cpuobj, "start-powered-off", true,
++                                     &error_fatal);
++        }
++
+         qdev_realize(DEVICE(cpuobj), NULL, &error_fatal);
+         object_unref(cpuobj);
+     }
+@@ -912,13 +1106,14 @@ static void pocketforge_a133_init(MachineState *machine)
+ 
+     pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
+ 
++    pocketforge_a133_create_sram(s, sysmem);
+     pocketforge_a133_create_mmio_stubs();
+     pocketforge_a133_create_r_i2c0(
+         s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
+     qemu_register_reset(pocketforge_a133_power_reset, s);
+     vmstate_register(NULL, 0, &vmstate_pocketforge_a133_power, s);
+     s->power_state_registered = true;
+-    pocketforge_a133_create_mmc0(pic[PF_A133_MMC0_IRQ]);
++    pocketforge_a133_create_mmc0(s, pic[PF_A133_MMC0_IRQ]);
+ 
+     pocketforge_a133_create_virtio_mmio(machine, pic);
+ 
+@@ -929,6 +1124,15 @@ static void pocketforge_a133_init(MachineState *machine)
+     binfo->psci_conduit = QEMU_PSCI_CONDUIT_SMC;
+     binfo->modify_dtb = pocketforge_a133_modify_dtb;
+     arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
++
++    /*
++     * Register the BootROM reset handler last: arm_load_kernel queues a
++     * do_cpu_reset handler per CPU (hw/arm/boot.c:1219) that re-resets
++     * every CPU on every machine reset, and reset handlers run in
++     * registration order.  The BootROM copy and CPU0 hand-off must
++     * happen after those per-CPU resets to survive.
++     */
++    qemu_register_reset(pocketforge_a133_bootrom_reset, s);
+ }
+ 
+ static void pocketforge_a133_machine_init(MachineClass *mc)
+diff --git a/tests/qtest/pocketforge-a133-bootrom-test.c b/tests/qtest/pocketforge-a133-bootrom-test.c
+index c828f31..91d3af6 100644
+--- a/tests/qtest/pocketforge-a133-bootrom-test.c
++++ b/tests/qtest/pocketforge-a133-bootrom-test.c
+@@ -60,10 +60,10 @@
+  * at MARKER_SECONDARY, which the positive control asserts stays zero.
+  */
+ static const uint32_t spl_body[] = {
+-    /* 0x60 */ 0xee102b50, /* mrc p15, 0, r2, c0, c0, 5  ; r2 = MPIDR */
++    /* 0x60 */ 0xee102fb0, /* mrc p15, 0, r2, c0, c0, 5  ; r2 = MPIDR */
+     /* 0x64 */ 0xe59f0028, /* ldr r0, [pc, #0x28]        ; -> 0x94 */
+     /* 0x68 */ 0xe59f102c, /* ldr r1, [pc, #0x2c]        ; -> 0x9c */
+-    /* 0x6c */ 0xe33200ff, /* tst r2, #0xff              ; aff0 == 0? */
++    /* 0x6c */ 0xe31200ff, /* tst r2, #0xff              ; aff0 == 0? */
+     /* 0x70 */ 0x0a000003, /* beq 0x84                   ; primary path */
+     /* 0x74 */ 0xe59f4024, /* ldr r4, [pc, #0x24]        ; -> 0xa0 */
+     /* 0x78 */ 0xe5842000, /* str r2, [r4]               ; secondary evidence */
+@@ -126,20 +126,28 @@ static uint8_t *build_egon(const char *magic, uint32_t length, bool corrupt_body
+     return img;
+ }
+ 
++/*
++ * Write an eGON image at img_offset into a file of exactly file_size bytes.
++ * The SD model only accepts power-of-two sizes, so callers size files to a
++ * power of two; an image whose declared length runs past EOF models
++ * truncated media (only the bytes that fit are actually written).
++ */
+ static char *create_image_file(uint64_t img_offset, uint64_t file_size,
+                                const char *magic, uint32_t length,
+                                bool corrupt_body)
+ {
+     uint8_t *img = build_egon(magic, length, corrupt_body);
++    uint64_t avail = file_size > img_offset ? file_size - img_offset : 0;
++    uint64_t bytes = MIN((uint64_t)length, avail);
+     GError *error = NULL;
+     char *path = NULL;
+     int fd = g_file_open_tmp("pocketforge-a133-bootrom-XXXXXX", &path, &error);
+ 
+     g_assert_no_error(error);
+     g_assert_cmpint(fd, >=, 0);
+-    g_assert_cmpuint(file_size, >=, img_offset + length);
++    g_assert_cmpuint(file_size, >=, img_offset);
+     g_assert_cmpint(ftruncate(fd, file_size), ==, 0);
+-    g_assert_cmpuint(pwrite(fd, img, length, img_offset), ==, length);
++    g_assert_cmpuint(pwrite(fd, img, bytes, img_offset), ==, bytes);
+     g_assert_cmpint(close(fd), ==, 0);
+     g_free(img);
+     return path;
+@@ -154,7 +162,9 @@ static void destroy_image_file(char *path)
+ static QTestState *boot_with_image(const char *path)
+ {
+     char *quoted = g_shell_quote(path);
+-    QTestState *qts = qtest_initf("-M pocketforge-a133 -m 64M "
++    /* -accel tcg: the SPL payload must really execute on CPU0; libqtest
++     * appends "-accel qtest" as the fallback for register access. */
++    QTestState *qts = qtest_initf("-M pocketforge-a133 -m 64M -accel tcg "
+                                   "-drive if=sd,format=raw,file=%s", quoted);
+ 
+     g_free(quoted);
+@@ -181,8 +191,9 @@ static void assert_spl_executed(QTestState *qts)
+ {
+     g_assert_cmphex(poll_readl(qts, MARKER_ADDR, MARKER_VALUE, 2000),
+                     ==, MARKER_VALUE);
+-    /* CPU0 is aff0 of the primary cluster: MPIDR low byte 0. */
+-    g_assert_cmphex(qtest_readl(qts, MARKER_MPIDR_ADDR), ==, 0);
++    /* CPU0 is aff0 0 of the primary cluster; QEMU also sets the
++     * MP-extensions bit 31 (mpidr_read_val, target/arm/helper.c). */
++    g_assert_cmphex(qtest_readl(qts, MARKER_MPIDR_ADDR), ==, 0x80000000u);
+     /* Held secondaries must never have executed the SPL trap path. */
+     g_assert_cmphex(qtest_readl(qts, MARKER_SECONDARY), ==, 0);
+ }
+@@ -323,8 +334,7 @@ static void test_rejects_bad_magic(void)
+ 
+ static void assert_length_rejected(uint32_t length)
+ {
+-    char *path = create_image_file(SD_OFFSET_HIGH,
+-                                   SD_OFFSET_HIGH + ((length + 3) & ~3u),
++    char *path = create_image_file(SD_OFFSET_HIGH, TEST_IMAGE_SIZE,
+                                    EGON_MAGIC, length, false);
+     QTestState *qts = boot_with_image(path);
+ 
+@@ -349,12 +359,13 @@ static void test_rejects_bad_lengths(void)
+ static void test_rejects_truncated_media(void)
+ {
+     /*
+-     * Valid header and checksum for a 0x2000-byte SPL, but the media ends
+-     * at 0x1000 bytes into it: the read errors, and an error or partial
+-     * read is never accepted as a boot.
++     * Valid header and checksum for a 0x21000-byte SPL at the 128 KiB
++     * location, but the 256 KiB media ends 0x1000 bytes short of the
++     * declared image end: the read errors, and an error or partial read
++     * is never accepted as a boot.
+      */
+-    char *path = create_image_file(SD_OFFSET_HIGH, SD_OFFSET_HIGH + 0x1000,
+-                                   EGON_MAGIC, 0x2000, false);
++    char *path = create_image_file(SD_OFFSET_HIGH, 256 * KiB,
++                                   EGON_MAGIC, 0x21000, false);
+     QTestState *qts = boot_with_image(path);
+ 
+     assert_not_booted(qts);
+@@ -369,7 +380,7 @@ static void test_rejects_truncated_media(void)
+ static void test_no_media(void)
+ {
+     QTestState *qts = qtest_init("-machine pocketforge-a133 -m 64M "
+-                                 "-nodefaults");
++                                 "-accel tcg -nodefaults");
+ 
+     assert_not_booted(qts);
+ 
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index 52052cb..49779be 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -15,9 +15,6 @@ typedef struct ExpectedRegion {
+ 
+ /* Keep congruent with pocketforge/a133-mmio-coverage.json. */
+ static const ExpectedRegion expected_regions[] = {
+-    { "pocketforge-a133.sram_a1",          0x00020000, 0x4000 },
+-    { "pocketforge-a133.sram_c",           0x00024000, 0x21000 },
+-    { "pocketforge-a133.sram_a2",          0x00100000, 0x14000 },
+     { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
+     { "pocketforge-a133.crypto",           0x01904000, 0x800 },
+     { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
+@@ -71,9 +68,6 @@ static const ExpectedRegion expected_regions[] = {
+ };
+ 
+ static const ExpectedRegion stub_regions[] = {
+-    { "pocketforge-a133.sram_a1",          0x00020000, 0x4000 },
+-    { "pocketforge-a133.sram_c",           0x00024000, 0x21000 },
+-    { "pocketforge-a133.sram_a2",          0x00100000, 0x14000 },
+     { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
+     { "pocketforge-a133.crypto",           0x01904000, 0x800 },
+     { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
+@@ -113,6 +107,18 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },
+ };
+ 
++/*
++ * SRAM A1/C/A2 are RAM-backed executable load regions (BootROM SPL target),
++ * not register stubs: they map as "ram" in the flat view and keep storage
++ * across machine reset.  Keep congruent with
++ * pocketforge/a133-mmio-coverage.json.
++ */
++static const ExpectedRegion sram_regions[] = {
++    { "pocketforge-a133.sram_a1",          0x00020000, 0x4000 },
++    { "pocketforge-a133.sram_c",           0x00024000, 0x21000 },
++    { "pocketforge-a133.sram_a2",          0x00100000, 0x14000 },
++};
++
+ static QTestState *mmio_start(void)
+ {
+     return qtest_init("-machine pocketforge-a133 -nodefaults");
+@@ -127,6 +133,16 @@ static void assert_region_line(const char *map, const ExpectedRegion *region)
+     g_assert_nonnull(strstr(map, line));
+ }
+ 
++static void assert_sram_region_line(const char *map,
++                                    const ExpectedRegion *region)
++{
++    g_autofree char *line = g_strdup_printf(
++        "  %016" PRIx64 "-%016" PRIx64 " (prio 0, ram): %s",
++        region->base, region->base + region->size - 1, region->name);
++
++    g_assert_nonnull(strstr(map, line));
++}
++
+ static void test_exact_live_map(void)
+ {
+     QTestState *qts = mmio_start();
+@@ -136,6 +152,9 @@ static void test_exact_live_map(void)
+     for (i = 0; i < ARRAY_SIZE(expected_regions); i++) {
+         assert_region_line(map, &expected_regions[i]);
+     }
++    for (i = 0; i < ARRAY_SIZE(sram_regions); i++) {
++        assert_sram_region_line(map, &sram_regions[i]);
++    }
+ 
+     /* These display controller nodes are disabled in the pinned effective DT. */
+     g_assert_null(strstr(map, "pocketforge-a133.de2_clk"));
+@@ -175,6 +194,38 @@ static void test_stub_storage_and_reset(void)
+     qtest_quit(qts);
+ }
+ 
++static void test_sram_ram_storage_and_reset(void)
++{
++    QTestState *qts = mmio_start();
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(sram_regions); i++) {
++        const ExpectedRegion *region = &sram_regions[i];
++        uint64_t last = region->base + region->size - 1;
++
++        g_assert_cmphex(qtest_readb(qts, region->base), ==, 0);
++        g_assert_cmphex(qtest_readb(qts, last), ==, 0);
++        qtest_writeb(qts, region->base, 0xa5);
++        qtest_writeb(qts, last, 0x5a);
++        g_assert_cmphex(qtest_readb(qts, region->base), ==, 0xa5);
++        g_assert_cmphex(qtest_readb(qts, last), ==, 0x5a);
++    }
++
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++
++    /* RAM-backed SRAM keeps storage across machine reset (unlike stubs). */
++    for (i = 0; i < ARRAY_SIZE(sram_regions); i++) {
++        const ExpectedRegion *region = &sram_regions[i];
++
++        g_assert_cmphex(qtest_readb(qts, region->base), ==, 0xa5);
++        g_assert_cmphex(qtest_readb(qts, region->base + region->size - 1),
++                        ==, 0x5a);
++    }
++
++    qtest_quit(qts);
++}
++
+ static void test_uart_model_contract(void)
+ {
+     static const uint64_t uart_bases[] = {
+@@ -217,6 +268,8 @@ int main(int argc, char **argv)
+                    test_exact_live_map);
+     qtest_add_func("/pocketforge-a133-mmio/stub-storage-and-reset",
+                    test_stub_storage_and_reset);
++    qtest_add_func("/pocketforge-a133-mmio/sram-ram-storage-and-reset",
++                   test_sram_ram_storage_and_reset);
+     qtest_add_func("/pocketforge-a133-mmio/uart-model-contract",
+                    test_uart_model_contract);
+     qtest_add_func("/pocketforge-a133-mmio/ccu-pll-lock-contract",
+-- 
+2.43.0
+
