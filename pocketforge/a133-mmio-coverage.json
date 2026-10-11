@@ -128,9 +128,9 @@
     {"path":"/soc/crypto@1904000","index":0,"kind":"address","address":"0x1904000","size":"0x800","system_address":"0x1904000"}
   ],
   "qemu_regions": [
-    {"base":"0x20000","size":"0x4000","name":"pocketforge-a133.sram_a1","kind":"stub","source":"dt"},
-    {"base":"0x24000","size":"0x21000","name":"pocketforge-a133.sram_c","kind":"stub","source":"dt"},
-    {"base":"0x100000","size":"0x14000","name":"pocketforge-a133.sram_a2","kind":"stub","source":"dt"},
+    {"base":"0x20000","size":"0x4000","name":"pocketforge-a133.sram_a1","kind":"model","source":"dt"},
+    {"base":"0x24000","size":"0x21000","name":"pocketforge-a133.sram_c","kind":"model","source":"dt"},
+    {"base":"0x100000","size":"0x14000","name":"pocketforge-a133.sram_a2","kind":"model","source":"dt"},
     {"base":"0x1800000","size":"0x80000","name":"pocketforge-a133.gpu","kind":"stub","source":"dt"},
     {"base":"0x1904000","size":"0x800","name":"pocketforge-a133.crypto","kind":"stub","source":"dt"},
     {"base":"0x1c0e000","size":"0x1000","name":"pocketforge-a133.video_codec","kind":"stub","source":"dt"},

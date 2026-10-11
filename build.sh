@@ -252,6 +252,11 @@ if [ ! -f tests/qtest/pocketforge-a133-bootrom-test.c ]; then
   git apply "$ROOT/pocketforge/0030-tests-cover-A133-BootROM-eGON-load-and-SRAM-reset.patch"
 fi
 
+echo "== apply PocketForge patch: A133 BootROM MMC0 eGON loader and SRAM reset path =="
+if ! grep -q 'pocketforge_a133_bootrom_reset' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0031-hw-arm-A133-BootROM-MMC0-eGON-loader-and-SRAM.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
