@@ -28,6 +28,12 @@ That newer DT enables EHCI0/OHCI0 and the standalone G2D clock/rotate nodes,
 and extends the codec reservation to `0x330`; the coverage union records those
 probe apertures without claiming functional USB, G2D, or audio.
 
+`reg_inventory` remains the exact decoded inventory of the pinned development
+DTB identified by `pins.dtb_sha256`. Regions present only in the unmodified
+build-6 DTB use `source: "build6"`; the build-6 descriptor and DTB digest above
+are their provenance. This keeps the exact-DTB assertion meaningful while the
+live QEMU map deliberately covers the union needed by both owned images.
+
 The QEMU side is based on upstream commit
 `11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea`.  Before this work, the exact
 applied patch stack was inspected through the running machine with HMP
