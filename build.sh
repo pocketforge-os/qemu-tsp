@@ -294,7 +294,8 @@ if ! grep -q 'pf_display_vblank' hw/display/pocketforge_a133_display.c; then
 fi
 
 echo "== apply PocketForge patch: release-only display topology =="
-if grep -q 'pocketforge_a133_create_virtio_mmio' hw/arm/pocketforge_a133.c; then
+if grep -q '^static void pocketforge_a133_create_virtio_mmio' \
+    hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0040-hw-arm-expose-only-release-A133-display-topology.patch"
 fi
 
