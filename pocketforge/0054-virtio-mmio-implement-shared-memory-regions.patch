@@ -1,6 +1,6 @@
-From 4a4e3770626ebe8cd397a4e5980e5c48abbfcf0c Mon Sep 17 00:00:00 2001
+From ab170aced772d6269077c45746efa2e36c42bf1b Mon Sep 17 00:00:00 2001
 From: qlid <qlid@invalid>
-Date: Tue, 13 Oct 2026 19:46:04 -0400
+Date: Tue, 13 Oct 2026 19:47:16 -0400
 Subject: [PATCH 54/54] virtio-mmio: implement shared memory regions
 
 Implement the Virtio 1.2 shared-memory selector, length, and base registers for MMIO transports. Map static descriptors at a machine-provided base, migrate and reset the selector, and reject invalid or overlapping windows.
@@ -9,6 +9,7 @@ Add qtests for register semantics, reset, migration, guest mappings, failure pat
 
 Assisted-by: LLM
 ---
+ MAINTAINERS                          |   1 +
  hw/virtio/Kconfig                    |   5 +
  hw/virtio/meson.build                |   2 +
  hw/virtio/virtio-mmio.c              | 164 ++++++++++++++-
@@ -16,10 +17,22 @@ Assisted-by: LLM
  include/hw/virtio/virtio-mmio.h      |   3 +
  tests/qtest/meson.build              |   3 +
  tests/qtest/virtio-mmio-shm-test.c   | 304 +++++++++++++++++++++++++++
- 7 files changed, 577 insertions(+), 9 deletions(-)
+ 8 files changed, 578 insertions(+), 9 deletions(-)
  create mode 100644 hw/virtio/virtio-shmem-test-device.c
  create mode 100644 tests/qtest/virtio-mmio-shm-test.c
 
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 902db77218..244f420e4e 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -2488,6 +2488,7 @@ F: include/hw/virtio/
+ F: docs/devel/virtio*
+ F: docs/devel/migration/virtio.rst
+ F: tests/functional/x86_64/test_virtio_version.py
++F: tests/qtest/virtio-mmio-shm-test.c
+ 
+ virtio-balloon
+ M: Michael S. Tsirkin <mst@redhat.com>
 diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
 index 91cf833407..0d86186e8e 100644
 --- a/hw/virtio/Kconfig

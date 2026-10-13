@@ -1,6 +1,6 @@
-From da39e63c29420b70f8347ac8d550d0039ba86cba Mon Sep 17 00:00:00 2001
+From f933ed9a752be711ccc6aac5cf0d293449e78eec Mon Sep 17 00:00:00 2001
 From: qlid <qlid@invalid>
-Date: Tue, 13 Oct 2026 19:46:04 -0400
+Date: Tue, 13 Oct 2026 19:47:16 -0400
 Subject: [PATCH 53/54] virtio-gpu: create hostmem transport-neutrally
 
 Create the host-visible shared-memory descriptor in the common GPU realization path. Keep PCI BAR4 registration unchanged while allowing non-PCI transports to publish the same region.
