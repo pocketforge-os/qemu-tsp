@@ -349,12 +349,12 @@ IRQ1 enable/status at `0x41`/`0x49`, W1C status, the A100 NMI control/enable/W1C
 pending registers, and GIC SPI 103 delivery. `ready` becomes true only after
 the guest enables both PEK edges and the NMI. QEMU never synthesizes a release;
 a short or long press is the client-controlled interval between explicit
-press and release. The AXP717 also classifies releases below one second as
-short and intervals of at least one second as long in its otherwise
-guest-unused IRQ1 status bits. That threshold is provisional pending the
-real-unit receipt; the release input driver consumes only edge resources, so
-it does not alter the guest-visible `KEY_POWER` contract.
+press and release. The AXP717 classifies release before the selected REG26
+IRQLEVEL as short and sets long status at that boundary. The POR threshold is
+1.5 seconds. The release input driver consumes only the two edge resources, so
+the classification does not alter the guest-visible `KEY_POWER` contract.
 
 Volume remains a separate `sunxi-keyboard` input and the exact build-6 DT
-leaves LRADC disabled. Touch and the hall/gpio switch are unmodeled. No power,
-volume, touch, or EV_SW capability is invented on `gamepad`.
+leaves LRADC disabled. Touch remains unmodeled. The hall switch is the separate
+ABI 2.3 `lid-switch` device described above; power, volume, touch, and EV_SW
+capabilities are never invented on `gamepad`.
