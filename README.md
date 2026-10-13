@@ -98,9 +98,11 @@ and zero-extend that copy to 2 GiB; verify the unextended source before doing so
 
 Cloud-init callers own the per-run seed/observation protocol. Their seed hook
 writes `user-data`, `meta-data`, and `network-config` to the existing
-`POCKETFORGE` FAT partition on the writable copy before launch. No seed is
-injected through the DT, initrd, or kernel command line, so discovery and all
-reads still traverse the real sunxi-mmc driver and SD model.
+`POCKETFORGE` FAT partition on the writable copy before launch. The direct-kernel
+command line may select that mounted directory with NoCloud's public
+`ds=nocloud;s=file:///boot/` discovery syntax; no seed content is injected
+through the DT, initrd, or command line, so all reads still traverse the real
+sunxi-mmc driver and SD model.
 
 ## Verify (regression)
 

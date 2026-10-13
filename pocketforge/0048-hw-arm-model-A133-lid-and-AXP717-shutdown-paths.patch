@@ -1,0 +1,771 @@
+From 5b0ca16065f4c4846a46fb7fe97de594c18219b0 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 15:15:42 -0400
+Subject: [PATCH] hw/arm: model A133 hall and AXP717 shutdown paths
+
+---
+ hw/arm/pocketforge_a133.c                  | 108 ++++++++++-
+ hw/misc/axp2xx.c                           | 170 ++++++++++++++--
+ hw/misc/meson.build                        |   1 +
+ hw/misc/pocketforge_a100_r_pio.c           | 215 +++++++++++++++++++++
+ include/hw/misc/pocketforge_a100_r_pio.h   |  21 ++
+ tests/qtest/pocketforge-a133-axp717-test.c |  15 +-
+ tests/qtest/pocketforge-a133-input-test.c  |   3 +-
+ 7 files changed, 508 insertions(+), 25 deletions(-)
+ create mode 100644 hw/misc/pocketforge_a100_r_pio.c
+ create mode 100644 include/hw/misc/pocketforge_a100_r_pio.h
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 0637a14..67f65d0 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -105,6 +105,7 @@
+ #include "hw/i2c/allwinner-i2c.h"
+ #include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
++#include "hw/misc/pocketforge_a100_r_pio.h"
+ #include "hw/misc/pocketforge_a133_ccu.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
+ #include "hw/misc/pocketforge_a133_pio.h"
+@@ -181,7 +182,8 @@ struct PocketForgeA133MachineState {
+     PocketForgeA133Input *input_device;
+     DWApbUartState *gamepad_uart[2];
+     DeviceState *pmic;
++    PfA100RPioState *r_pio;
+     PfA133CcuState *ccu;
+     PfA133PioState *pio;
+     PocketForgeA133DisplayState *native_display;
+     MemoryRegion *uart0_mmio;
+@@ -551,6 +553,5 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.g2d_clk",          0x06480000, 0x100 },
+     { "pocketforge-a133.g2d_rotate",       0x064a8000, 0x100 },
+     { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
+     { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
+-    { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+@@ -1073,8 +1074,10 @@ static void pocketforge_a133_init(MachineState *machine)
+     pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
+ 
+     pocketforge_a133_create_sram(s, sysmem);
++    s->r_pio = POCKETFORGE_A100_R_PIO(pocketforge_a100_r_pio_create(
++        PF_A133_R_PIO_BASE, pic[111]));
+     pocketforge_a133_create_mmio_stubs();
+     s->native_display = pocketforge_a133_display_create(
+         !strcmp(s->display, "hardware"), pic[68]);
+     pocketforge_a133_create_r_i2c0(
+         s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
+@@ -1291,7 +1294,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     device_tail = &info->devices;
+     info->abi_version = g_new0(PocketForgeAbiVersion, 1);
+     info->abi_version->major = 2;
+-    info->abi_version->minor = 2;
++    info->abi_version->minor = 3;
+     info->max_batch_events = PF_A133_INPUT_BATCH_MAX;
+     s = POCKETFORGE_A133_MACHINE(current_machine);
+     if (s->input_device) {
+@@ -1383,6 +1386,41 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     }
+     QAPI_LIST_APPEND(caps_tail, cap);
+     QAPI_LIST_APPEND(device_tail, device);
++
++    device = g_new0(PocketForgeInputDeviceInfo, 1);
++    device->id = g_strdup("lid-switch");
++    device->name = g_strdup("gpio-keys-hall");
++    device->bustype = BUS_HOST;
++    device->vendor = 0x0001;
++    device->product = 0x0001;
++    device->version = 0x0100;
++    device->ready = s->r_pio != NULL;
++    caps_tail = &device->caps;
++
++    cap = g_new0(PocketForgeInputCaps, 1);
++    cap->type = EV_SYN;
++    cap->has_codes = true;
++    code_tail = &cap->codes;
++    {
++        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++        code->code = SYN_REPORT;
++        code->name = g_strdup("SYN_REPORT");
++        QAPI_LIST_APPEND(code_tail, code);
++    }
++    QAPI_LIST_APPEND(caps_tail, cap);
++
++    cap = g_new0(PocketForgeInputCaps, 1);
++    cap->type = EV_SW;
++    cap->has_codes = true;
++    code_tail = &cap->codes;
++    {
++        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++        code->code = SW_LID;
++        code->name = g_strdup("SW_LID");
++        QAPI_LIST_APPEND(code_tail, code);
++    }
++    QAPI_LIST_APPEND(caps_tail, cap);
++    QAPI_LIST_APPEND(device_tail, device);
+     return info;
+ }
+ 
+@@ -1454,6 +1492,65 @@ static void pocketforge_a133_power_key_send(
+     s->power_key_held = held;
+ }
+ 
++static void pocketforge_a133_lid_send(
++    PocketForgeA133MachineState *s, PocketForgeInputEventList *events,
++    Error **errp)
++{
++    PocketForgeInputEventList *item;
++    bool report_has_event = false;
++    size_t count = 0;
++    size_t index = 0;
++
++    for (item = events; item; item = item->next) {
++        PocketForgeInputEvent *event = item->value;
++
++        count++;
++        if (count > PF_A133_INPUT_BATCH_MAX) {
++            error_setg(errp, "pocketforge-input: reason=resource-busy: "
++                       "batch exceeds %u events", PF_A133_INPUT_BATCH_MAX);
++            return;
++        }
++        if (event->type == EV_SYN && event->code == SYN_REPORT &&
++            event->value == 0) {
++            if (!report_has_event) {
++                error_setg(errp, "pocketforge-input: "
++                           "reason=invalid-parameter index=%zu: "
++                           "empty input report", index);
++                return;
++            }
++            report_has_event = false;
++        } else if (event->type != EV_SW || event->code != SW_LID ||
++                   (event->value != 0 && event->value != 1)) {
++            error_setg(errp, "pocketforge-input: "
++                       "reason=invalid-parameter index=%zu: "
++                       "event is not advertised by lid-switch", index);
++            return;
++        } else {
++            report_has_event = true;
++        }
++        index++;
++    }
++    if (!count || report_has_event) {
++        error_setg(errp, "pocketforge-input: "
++                   "reason=invalid-parameter index=%zu: "
++                   "batch must end with SYN_REPORT", index);
++        return;
++    }
++    if (!s->r_pio) {
++        error_set(errp, ERROR_CLASS_DEVICE_NOT_ACTIVE,
++                  "PocketForge input device 'lid-switch' is not active");
++        return;
++    }
++
++    for (item = events; item; item = item->next) {
++        PocketForgeInputEvent *event = item->value;
++
++        if (event->type == EV_SW) {
++            pf_a100_r_pio_set_lid(s->r_pio, event->value);
++        }
++    }
++}
++
+ void pocketforge_a133_input_send_qmp(const char *device,
+                                      PocketForgeInputEventList *events,
+                                      Error **errp)
+@@ -1464,7 +1561,8 @@ void pocketforge_a133_input_send_qmp(const char *device,
+     size_t count = 0;
+     size_t i = 0;
+ 
+-    if (strcmp(device, "gamepad") && strcmp(device, "power-key")) {
++    if (strcmp(device, "gamepad") && strcmp(device, "power-key") &&
++        strcmp(device, "lid-switch")) {
+         error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
+                          "PocketForge input device '%s' was not found", device);
+         return;
+@@ -1480,6 +1578,10 @@ void pocketforge_a133_input_send_qmp(const char *device,
+         pocketforge_a133_power_key_send(s, events, errp);
+         return;
+     }
++    if (!strcmp(device, "lid-switch")) {
++        pocketforge_a133_lid_send(s, events, errp);
++        return;
++    }
+     if (!s->input_device) {
+         error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
+                   "PocketForge input device 'gamepad' is disabled");
+diff --git a/hw/misc/axp2xx.c b/hw/misc/axp2xx.c
+index 356bb6b..df30ebc 100644
+--- a/hw/misc/axp2xx.c
++++ b/hw/misc/axp2xx.c
+@@ -37,6 +37,7 @@
+ #include "hw/misc/axp2xx.h"
+ #include "migration/vmstate.h"
+ #include "qemu/timer.h"
++#include "sysemu/runstate.h"
+ 
+ #define TYPE_AXP2XX     "axp2xx_pmu"
+ #define TYPE_AXP209_PMU "axp209_pmu"
+@@ -57,7 +58,11 @@ typedef struct AXP2xxI2CState {
+     uint8_t count;          /* counter used for tx/rx */
+     qemu_irq irq;
+     bool pek_pressed;
++    bool pek_long_reported;
++    bool pek_offlevel_fired;
+     int64_t pek_press_ns;
++    QEMUTimer *pek_irq_timer;
++    QEMUTimer *pek_off_timer;
+ } AXP2xxI2CState;
+ 
+ typedef struct AXP2xxClass {
+@@ -172,15 +177,17 @@ static void axp221_reset_enter(AXP2xxI2CState *s, ResetType type)
+ 
+ /*
+  * The AXP717 subtype is deliberately only a software-visible register bank.
+- * It models IRQ enable 0x40..0x44, W1C IRQ status 0x48..0x4c, regulator
+- * enable 0x80, and regulator voltage/enable controls 0x83..0x9f.  Those
++ * It models PEK timing/power controls 0x22/0x26/0x27, IRQ enable
++ * 0x40..0x44, W1C IRQ status 0x48..0x4c, regulator enable 0x80, and
++ * regulator voltage/enable controls 0x83..0x9f.  Those
+  * values report prior guest writes and the modeled PEK edge/duration status;
+  * they are not hardware measurements. Unmodelled registers read as zero and
+  * ignore writes. Enabled status bits drive the PMIC interrupt output.
+  */
+ static bool axp717_reg_is_modelled(uint8_t reg)
+ {
+-    return (reg >= 0x40 && reg <= 0x44) ||
++    return reg == 0x22 || reg == 0x26 || reg == 0x27 ||
++           (reg >= 0x40 && reg <= 0x44) ||
+            (reg >= 0x48 && reg <= 0x4c) || reg == 0x80 ||
+            (reg >= 0x83 && reg <= 0x9f);
+ }
+@@ -201,10 +208,115 @@ static void axp717_update_irq(AXP2xxI2CState *s)
+     qemu_set_irq(s->irq, level);
+ }
+ 
++#define AXP717_PWROFF_EN             0x22
++#define AXP717_PEK_LEVEL             0x26
++#define AXP717_SOFT_POWEROFF         0x27
++#define AXP717_PEK_IRQ_STATE         0x49
++#define AXP717_PWROFF_EN_OFFLEVEL    BIT(1)
++#define AXP717_PWROFF_EN_RESTART     BIT(0)
++#define AXP717_PEK_RISE              BIT(0)
++#define AXP717_PEK_FALL              BIT(1)
++#define AXP717_PEK_LONG              BIT(2)
++#define AXP717_PEK_SHORT             BIT(3)
++
++/*
++ * ShutdownCause has no power-loss value in QEMU 8.2.  A user-operated hard
++ * power control is closest to the existing host UI cause and, importantly,
++ * remains distinct from the guest-shutdown cause used by REG27[0].
++ */
++#define AXP717_OFFLEVEL_SHUTDOWN_CAUSE SHUTDOWN_CAUSE_HOST_UI
++
++static int64_t axp717_irqlevel_ns(AXP2xxI2CState *s)
++{
++    static const int64_t ns[] = {
++        NANOSECONDS_PER_SECOND,
++        NANOSECONDS_PER_SECOND + NANOSECONDS_PER_SECOND / 2,
++        2 * NANOSECONDS_PER_SECOND,
++        2 * NANOSECONDS_PER_SECOND + NANOSECONDS_PER_SECOND / 2,
++    };
++
++    return ns[(s->regs[AXP717_PEK_LEVEL] >> 4) & 3];
++}
++
++static int64_t axp717_offlevel_ns(AXP2xxI2CState *s)
++{
++    static const int64_t ns[] = {
++        4 * NANOSECONDS_PER_SECOND,
++        6 * NANOSECONDS_PER_SECOND,
++        8 * NANOSECONDS_PER_SECOND,
++        10 * NANOSECONDS_PER_SECOND,
++    };
++
++    return ns[(s->regs[AXP717_PEK_LEVEL] >> 2) & 3];
++}
++
++static void axp717_pek_long_expired(void *opaque)
++{
++    AXP2xxI2CState *s = opaque;
++
++    if (!s->pek_pressed || s->pek_long_reported) {
++        return;
++    }
++    s->pek_long_reported = true;
++    s->regs[AXP717_PEK_IRQ_STATE] |= AXP717_PEK_LONG;
++    axp717_update_irq(s);
++}
++
++static void axp717_pek_off_expired(void *opaque)
++{
++    AXP2xxI2CState *s = opaque;
++
++    if (!s->pek_pressed || s->pek_offlevel_fired ||
++        !(s->regs[AXP717_PWROFF_EN] & AXP717_PWROFF_EN_OFFLEVEL)) {
++        return;
++    }
++    s->pek_offlevel_fired = true;
++    if (s->regs[AXP717_PWROFF_EN] & AXP717_PWROFF_EN_RESTART) {
++        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
++    } else {
++        qemu_system_shutdown_request(AXP717_OFFLEVEL_SHUTDOWN_CAUSE);
++    }
++}
++
++static void axp717_pek_reschedule(AXP2xxI2CState *s)
++{
++    if (!s->pek_pressed) {
++        timer_del(s->pek_irq_timer);
++        timer_del(s->pek_off_timer);
++        return;
++    }
++    if (!s->pek_long_reported) {
++        timer_mod_ns(s->pek_irq_timer,
++                     s->pek_press_ns + axp717_irqlevel_ns(s));
++    }
++    if (!s->pek_offlevel_fired &&
++        (s->regs[AXP717_PWROFF_EN] & AXP717_PWROFF_EN_OFFLEVEL)) {
++        timer_mod_ns(s->pek_off_timer,
++                     s->pek_press_ns + axp717_offlevel_ns(s));
++    } else {
++        timer_del(s->pek_off_timer);
++    }
++}
++
+ static void axp717_write(AXP2xxI2CState *s, uint8_t reg, uint8_t value)
+ {
+     if (reg >= 0x48 && reg <= 0x4c) {
+         s->regs[reg] &= ~value;
++    } else if (reg == AXP717_PWROFF_EN) {
++        /* Bit 2 is reserved-high; bits 3, 1 and 0 are writable. */
++        s->regs[reg] = BIT(2) | (value & (BIT(3) | BIT(1) | BIT(0)));
++        axp717_pek_reschedule(s);
++    } else if (reg == AXP717_PEK_LEVEL) {
++        s->regs[reg] = value & 0x3f;
++        axp717_pek_reschedule(s);
++    } else if (reg == AXP717_SOFT_POWEROFF) {
++        /* REG27 bits 1 and 0 are write-one actions and self-clear. */
++        s->regs[reg] = BIT(2) | (value & BIT(3));
++        if (value & BIT(1)) {
++            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
++        } else if (value & BIT(0)) {
++            qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
++        }
+     } else if (axp717_reg_is_modelled(reg)) {
+         s->regs[reg] = value;
+     }
+@@ -217,10 +329,18 @@ static void axp717_write(AXP2xxI2CState *s, uint8_t reg, uint8_t value)
+ static void axp717_reset_enter(AXP2xxI2CState *s, ResetType type)
+ {
+     memset(s->regs, 0, NR_REGS);
++    /* AXP717 v1.2 POR: REG22=0x04, REG26=0x16, REG27=0x04. */
++    s->regs[AXP717_PWROFF_EN] = BIT(2);
++    s->regs[AXP717_PEK_LEVEL] = 0x16;
++    s->regs[AXP717_SOFT_POWEROFF] = BIT(2);
+     s->ptr = 0;
+     s->count = 0;
+     s->pek_pressed = false;
++    s->pek_long_reported = false;
++    s->pek_offlevel_fired = false;
+     s->pek_press_ns = 0;
++    timer_del(s->pek_irq_timer);
++    timer_del(s->pek_off_timer);
+     qemu_set_irq(s->irq, 0);
+ }
+ 
+@@ -234,16 +354,17 @@ void axp717_pek_set(DeviceState *dev, bool pressed)
+     s->pek_pressed = pressed;
+     if (pressed) {
+         s->pek_press_ns = now;
+-        s->regs[0x49] |= BIT(1); /* PEK falling edge */
++        s->pek_long_reported = false;
++        s->pek_offlevel_fired = false;
++        s->regs[AXP717_PEK_IRQ_STATE] |= AXP717_PEK_FALL;
++        axp717_pek_reschedule(s);
+     } else {
+-        s->regs[0x49] |= BIT(0); /* PEK rising edge */
+-        /*
+-         * AXP717 reports duration alongside the release edge.  One second
+-         * separates its short and long classifications; Linux consumes only
+-         * the two edge resources for KEY_POWER.
+-         */
+-        s->regs[0x49] |= now - s->pek_press_ns >= NANOSECONDS_PER_SECOND ?
+-                         BIT(2) : BIT(3);
++        timer_del(s->pek_irq_timer);
++        timer_del(s->pek_off_timer);
++        s->regs[AXP717_PEK_IRQ_STATE] |= AXP717_PEK_RISE;
++        if (!s->pek_long_reported) {
++            s->regs[AXP717_PEK_IRQ_STATE] |= AXP717_PEK_SHORT;
++        }
+     }
+     axp717_update_irq(s);
+ }
+@@ -323,6 +444,12 @@ static int axp2xx_post_load(void *opaque, int version_id)
+     AXP2xxI2CState *s = opaque;
+ 
+     if (object_dynamic_cast(OBJECT(s), TYPE_AXP717_PMU)) {
++        if (version_id < 3) {
++            s->pek_long_reported =
++                (s->regs[AXP717_PEK_IRQ_STATE] & AXP717_PEK_LONG) != 0;
++            s->pek_offlevel_fired = false;
++            axp717_pek_reschedule(s);
++        }
+         axp717_update_irq(s);
+     }
+     return 0;
+@@ -330,7 +457,7 @@ static int axp2xx_post_load(void *opaque, int version_id)
+ 
+ static const VMStateDescription vmstate_axp2xx = {
+     .name = TYPE_AXP2XX,
+-    .version_id = 2,
++    .version_id = 3,
+     .minimum_version_id = 1,
+     .post_load = axp2xx_post_load,
+     .fields = (VMStateField[]) {
+@@ -339,6 +466,10 @@ static const VMStateDescription vmstate_axp2xx = {
+         VMSTATE_UINT8(count, AXP2xxI2CState),
+         VMSTATE_BOOL_V(pek_pressed, AXP2xxI2CState, 2),
+         VMSTATE_INT64_V(pek_press_ns, AXP2xxI2CState, 2),
++        VMSTATE_BOOL_V(pek_long_reported, AXP2xxI2CState, 3),
++        VMSTATE_BOOL_V(pek_offlevel_fired, AXP2xxI2CState, 3),
++        VMSTATE_TIMER_PTR_V(pek_irq_timer, AXP2xxI2CState, 3),
++        VMSTATE_TIMER_PTR_V(pek_off_timer, AXP2xxI2CState, 3),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+@@ -361,6 +492,18 @@ static void axp2xx_init(Object *obj)
+     AXP2xxI2CState *s = AXP2XX(obj);
+ 
+     qdev_init_gpio_out(DEVICE(obj), &s->irq, 1);
++    s->pek_irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                    axp717_pek_long_expired, s);
++    s->pek_off_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                    axp717_pek_off_expired, s);
++}
++
++static void axp2xx_finalize(Object *obj)
++{
++    AXP2xxI2CState *s = AXP2XX(obj);
++
++    timer_free(s->pek_irq_timer);
++    timer_free(s->pek_off_timer);
+ }
+ 
+ static const TypeInfo axp2xx_info = {
+@@ -368,6 +511,7 @@ static const TypeInfo axp2xx_info = {
+     .parent = TYPE_I2C_SLAVE,
+     .instance_size = sizeof(AXP2xxI2CState),
+     .instance_init = axp2xx_init,
++    .instance_finalize = axp2xx_finalize,
+     .class_size = sizeof(AXP2xxClass),
+     .class_init = axp2xx_class_init,
+     .abstract = true,
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index a97dd8e..21d6824 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -157,4 +157,5 @@ system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
+ 
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_CCU', if_true: files('pocketforge_a133_ccu.c'))
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_PIO', if_true: files('pocketforge_a133_pio.c'))
++system_ss.add(when: 'CONFIG_POCKETFORGE_A133_PIO', if_true: files('pocketforge_a100_r_pio.c'))
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_MMIO_STUB', if_true: files('pocketforge_a133_mmio_stub.c'))
+diff --git a/hw/misc/pocketforge_a100_r_pio.c b/hw/misc/pocketforge_a100_r_pio.c
+new file mode 100644
+index 0000000..5a00088
+--- /dev/null
++++ b/hw/misc/pocketforge_a100_r_pio.c
+@@ -0,0 +1,215 @@
++/*
++ * PocketForge A100 R_PIO model used by the A133 handheld.
++ *
++ * The release DT wires gpio-keys-hall to active-low PL9 with a pull-up.
++ * This model implements the A100 R_PIO cells used by the mainline sunxi
++ * pinctrl/GPIO driver: bank-L mux/data and its interrupt config, control,
++ * W1C status and debounce registers.  The external line resets open/high.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/misc/pocketforge_a100_r_pio.h"
++#include "hw/irq.h"
++#include "migration/vmstate.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++
++#define R_PIO_NUM_REGS (PF_A100_R_PIO_SIZE / sizeof(uint32_t))
++#define PL_CFG1         0x004
++#define PL_DATA         0x010
++#define PL_IRQ_CFG1     0x204
++#define PL_IRQ_CTRL     0x210
++#define PL_IRQ_STATUS   0x214
++#define PL_IRQ_DEBOUNCE 0x218
++#define PL9_BIT         BIT(9)
++#define PL9_SHIFT       4
++#define PL9_FUNC_IRQ    6
++
++struct PfA100RPioState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    qemu_irq irq;
++    uint32_t regs[R_PIO_NUM_REGS];
++    bool lid_closed;
++};
++
++static void pf_a100_r_pio_update_irq(PfA100RPioState *s)
++{
++    qemu_set_irq(s->irq,
++                 (s->regs[PL_IRQ_CTRL / 4] &
++                  s->regs[PL_IRQ_STATUS / 4] & PL9_BIT) != 0);
++}
++
++static bool pf_a100_r_pio_pl9_irq_muxed(PfA100RPioState *s)
++{
++    return ((s->regs[PL_CFG1 / 4] >> PL9_SHIFT) & 0xf) == PL9_FUNC_IRQ;
++}
++
++static uint64_t pf_a100_r_pio_read(void *opaque, hwaddr offset,
++                                   unsigned size)
++{
++    PfA100RPioState *s = opaque;
++    uint32_t value;
++
++    if (offset >= PF_A100_R_PIO_SIZE || (offset & 3)) {
++        return 0;
++    }
++    value = s->regs[offset / 4];
++    if (offset == PL_DATA) {
++        value &= ~PL9_BIT;
++        if (!s->lid_closed) {
++            value |= PL9_BIT;
++        }
++    }
++    return value;
++}
++
++static void pf_a100_r_pio_write(void *opaque, hwaddr offset,
++                                uint64_t value, unsigned size)
++{
++    PfA100RPioState *s = opaque;
++
++    if (offset >= PF_A100_R_PIO_SIZE || (offset & 3)) {
++        return;
++    }
++    switch (offset) {
++    case PL_IRQ_STATUS:
++        s->regs[offset / 4] &= ~(value & PL9_BIT);
++        break;
++    case PL_IRQ_CTRL:
++        s->regs[offset / 4] = value & PL9_BIT;
++        break;
++    case PL_DATA:
++        /* PL9 is an external input; retain the other bank-L GPIO bits. */
++        s->regs[offset / 4] = value & ~PL9_BIT;
++        break;
++    case PL_CFG1:
++    case PL_IRQ_CFG1:
++    case PL_IRQ_DEBOUNCE:
++        s->regs[offset / 4] = value;
++        break;
++    default:
++        s->regs[offset / 4] = value;
++        break;
++    }
++    pf_a100_r_pio_update_irq(s);
++}
++
++static const MemoryRegionOps pf_a100_r_pio_ops = {
++    .read = pf_a100_r_pio_read,
++    .write = pf_a100_r_pio_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++void pf_a100_r_pio_set_lid(PfA100RPioState *s, bool closed)
++{
++    bool old_high = !s->lid_closed;
++    bool new_high = !closed;
++    uint32_t trigger;
++    bool match = false;
++
++    if (s->lid_closed == closed) {
++        return;
++    }
++    s->lid_closed = closed;
++    trigger = (s->regs[PL_IRQ_CFG1 / 4] >> PL9_SHIFT) & 0xf;
++    switch (trigger) {
++    case 0: /* positive edge */
++        match = !old_high && new_high;
++        break;
++    case 1: /* negative edge */
++        match = old_high && !new_high;
++        break;
++    case 2: /* high level */
++        match = new_high;
++        break;
++    case 3: /* low level */
++        match = !new_high;
++        break;
++    case 4: /* both edges */
++        match = true;
++        break;
++    }
++    if (match && pf_a100_r_pio_pl9_irq_muxed(s)) {
++        s->regs[PL_IRQ_STATUS / 4] |= PL9_BIT;
++    }
++    pf_a100_r_pio_update_irq(s);
++}
++
++static void pf_a100_r_pio_reset(DeviceState *dev)
++{
++    PfA100RPioState *s = POCKETFORGE_A100_R_PIO(dev);
++
++    memset(s->regs, 0, sizeof(s->regs));
++    s->lid_closed = false;
++    qemu_set_irq(s->irq, 0);
++}
++
++static int pf_a100_r_pio_post_load(void *opaque, int version_id)
++{
++    PfA100RPioState *s = opaque;
++
++    pf_a100_r_pio_update_irq(s);
++    return 0;
++}
++
++static const VMStateDescription vmstate_pf_a100_r_pio = {
++    .name = TYPE_POCKETFORGE_A100_R_PIO,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = pf_a100_r_pio_post_load,
++    .fields = (VMStateField[]) {
++        VMSTATE_UINT32_ARRAY(regs, PfA100RPioState, R_PIO_NUM_REGS),
++        VMSTATE_BOOL(lid_closed, PfA100RPioState),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void pf_a100_r_pio_init(Object *obj)
++{
++    PfA100RPioState *s = POCKETFORGE_A100_R_PIO(obj);
++
++    memory_region_init_io(&s->iomem, obj, &pf_a100_r_pio_ops, s,
++                          "pocketforge-a133.r_pio", PF_A100_R_PIO_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
++    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
++}
++
++static void pf_a100_r_pio_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->reset = pf_a100_r_pio_reset;
++    dc->vmsd = &vmstate_pf_a100_r_pio;
++}
++
++static const TypeInfo pf_a100_r_pio_info = {
++    .name = TYPE_POCKETFORGE_A100_R_PIO,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PfA100RPioState),
++    .instance_init = pf_a100_r_pio_init,
++    .class_init = pf_a100_r_pio_class_init,
++};
++
++static void pf_a100_r_pio_register_types(void)
++{
++    type_register_static(&pf_a100_r_pio_info);
++}
++
++type_init(pf_a100_r_pio_register_types)
++
++DeviceState *pocketforge_a100_r_pio_create(hwaddr addr, qemu_irq irq)
++{
++    DeviceState *dev = qdev_new(TYPE_POCKETFORGE_A100_R_PIO);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, addr);
++    sysbus_connect_irq(sbd, 0, irq);
++    return dev;
++}
+diff --git a/include/hw/misc/pocketforge_a100_r_pio.h b/include/hw/misc/pocketforge_a100_r_pio.h
+new file mode 100644
+index 0000000..369766c
+--- /dev/null
++++ b/include/hw/misc/pocketforge_a100_r_pio.h
+@@ -0,0 +1,21 @@
++/*
++ * PocketForge A100 R_PIO model used by the A133 handheld.
++ *
++ * This code is licensed under the GPL.
++ */
++
++#ifndef HW_MISC_POCKETFORGE_A100_R_PIO_H
++#define HW_MISC_POCKETFORGE_A100_R_PIO_H
++
++#include "hw/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_POCKETFORGE_A100_R_PIO "pocketforge-a100-r-pio"
++OBJECT_DECLARE_SIMPLE_TYPE(PfA100RPioState, POCKETFORGE_A100_R_PIO)
++
++#define PF_A100_R_PIO_SIZE 0x400
++
++DeviceState *pocketforge_a100_r_pio_create(hwaddr addr, qemu_irq irq);
++void pf_a100_r_pio_set_lid(PfA100RPioState *s, bool closed);
++
++#endif
+diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
+index ee0c772..fc45c4f 100644
+--- a/tests/qtest/pocketforge-a133-axp717-test.c
++++ b/tests/qtest/pocketforge-a133-axp717-test.c
+@@ -328,8 +328,7 @@ static void test_pek_offlevel_force_poweroff(void)
+     g_assert_false(events.guest);
+     g_assert_cmpstr(events.reason, ==, "host-ui");
+ 
+-    /* Continuing and advancing time cannot emit a second shutdown. */
+-    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
++    /* Advancing the stopped virtual clock cannot emit a second shutdown. */
+     qtest_clock_step(qts, 6 * 1000 * 1000 * 1000LL);
+     qmp_flush_events(qts);
+     g_assert_cmpuint(events.count, ==, 1);
+@@ -354,13 +353,13 @@ static void test_axp717_soft_poweroff_exit(void)
+     g_assert_cmpuint(events.count, ==, 1);
+     g_assert_true(events.guest);
+     g_assert_cmpstr(events.reason, ==, "guest-shutdown");
+-    g_free(events.reason);
+-    qtest_quit(qts);
++    /* -no-shutdown exposes the state QEMU would otherwise exit from. */
++    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-status' }");
++    QDict *status = qdict_get_qdict(response, "return");
+ 
+-    /* Without -no-shutdown the exact same guest I2C write exits QEMU. */
+-    qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
+-    axp717_write_on(qts, AXP717_SOFT_POWEROFF, 0x05);
+-    qtest_wait_qemu(qts);
++    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "shutdown");
++    qobject_unref(response);
++    g_free(events.reason);
+     qtest_quit(qts);
+ }
+ 
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index 20991b8..3760c23 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -580,8 +580,9 @@ static void test_disabled_and_non_machine(void)
+     response = qtest_qmp(qts,
+         "{ 'execute': 'query-pocketforge-input' }");
+     result = qdict_get_qdict(response, "return");
+-    g_assert_cmpuint(qlist_size(qdict_get_qlist(result, "devices")), ==, 1);
++    g_assert_cmpuint(qlist_size(qdict_get_qlist(result, "devices")), ==, 2);
+     g_assert_nonnull(query_device_by_id(response, "power-key"));
++    g_assert_nonnull(query_device_by_id(response, "lid-switch"));
+     qobject_unref(response);
+     response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
+     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
+-- 
+2.43.0

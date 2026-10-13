@@ -1,0 +1,71 @@
+diff --git a/tests/qtest/libqtest.c b/tests/qtest/libqtest.c
+index d8f80dcb95..102b32dadb 100644
+--- a/tests/qtest/libqtest.c
++++ b/tests/qtest/libqtest.c
+@@ -1113,6 +1113,11 @@ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value)
+     qtest_write(s, "writel", addr, value);
+ }
+ 
++void qtest_writel_no_rsp(QTestState *s, uint64_t addr, uint32_t value)
++{
++    qtest_sendf(s, "writel 0x%" PRIx64 " 0x%" PRIx32 "\n", addr, value);
++}
++
+ void qtest_writeq(QTestState *s, uint64_t addr, uint64_t value)
+ {
+     qtest_write(s, "writeq", addr, value);
+diff --git a/tests/qtest/libqtest.h b/tests/qtest/libqtest.h
+index 6e3d3525ad..b580166a6b 100644
+--- a/tests/qtest/libqtest.h
++++ b/tests/qtest/libqtest.h
+@@ -506,6 +506,18 @@ void qtest_writew(QTestState *s, uint64_t addr, uint16_t value);
+  */
+ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value);
+ 
++/**
++ * qtest_writel_no_rsp:
++ * @s: #QTestState instance.
++ * @addr: guest physical address.
++ * @value: value to write.
++ *
++ * Submit a 32-bit MMIO write without waiting for the qtest response.  This is
++ * only for a write whose expected effect is immediate clean emulator
++ * termination.
++ */
++void qtest_writel_no_rsp(QTestState *s, uint64_t addr, uint32_t value);
++
+ /**
+  * qtest_writeq:
+  * @s: #QTestState instance to operate on.
+diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
+index fc45c4f0d0..21a5950c49 100644
+--- a/tests/qtest/pocketforge-a133-axp717-test.c
++++ b/tests/qtest/pocketforge-a133-axp717-test.c
+@@ -89,6 +89,14 @@ static void axp717_write_on(QTestState *qts, uint8_t reg, uint8_t value)
+     i2c_stop_on(qts);
+ }
+ 
++static void axp717_write_poweroff_no_rsp(QTestState *qts)
++{
++    i2c_start_on(qts);
++    i2c_send_on(qts, 0x34 << 1, STAT_ADDR_WR_ACK);
++    i2c_send_on(qts, AXP717_SOFT_POWEROFF, STAT_DATA_TX_ACK);
++    qtest_writel_no_rsp(qts, R_I2C0_BASE + TWI_DATA, 0x05);
++}
++
+ static uint8_t axp717_read_on(QTestState *qts, uint8_t reg)
+ {
+     uint8_t value;
+@@ -360,6 +368,12 @@ static void test_axp717_soft_poweroff_exit(void)
+     qobject_unref(response);
+     g_free(events.reason);
+     qtest_quit(qts);
++
++    /* Without -no-shutdown the same guest write must exit QEMU cleanly. */
++    qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
++    axp717_write_poweroff_no_rsp(qts);
++    qtest_wait_qemu(qts);
++    qtest_quit(qts);
+ }
+ 
+ static void test_pek_reset_clears_machine_state(void)

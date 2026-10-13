@@ -25,8 +25,11 @@ git -C "$ROOT" diff --cached --quiet HEAD -- || {
   echo "FATAL: refusing to stamp a dirty PocketForge index"
   exit 1
 }
+echo "== test fresh Python evidence runner =="
+"$ROOT/tests/run-python-fresh-test.sh"
 echo "== test build-6 release-smoke log gates =="
-python3 "$ROOT/tests/pocketforge-a133-build6-smoke-test.py"
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-build6-smoke-test.py"
 STACK_PKGVERSION="pocketforge-qemu-tsp-head=$STACK_HEAD"
 REPO=$(sed -n 's/^repo *= *//p'   UPSTREAM)
 TAG=$(sed -n  's/^tag *= *//p'    UPSTREAM)
@@ -335,11 +338,37 @@ if ! grep -q 'checking DE2 format' \
   git apply "$ROOT/pocketforge/0046-hw-display-scan-out-advertised-A133-formats.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 lid and AXP717 power fidelity =="
+if ! grep -q 'lid-default-open-edges' \
+    tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0047-tests-require-A133-lid-and-AXP717-power-fidelity.patch"
+fi
+
+echo "== apply PocketForge patch: A133 lid and AXP717 shutdown paths =="
+if [ ! -f hw/misc/pocketforge_a100_r_pio.c ]; then
+  git apply "$ROOT/pocketforge/0048-hw-arm-model-A133-lid-and-AXP717-shutdown-paths.patch"
+fi
+
+echo "== apply PocketForge patch: classify stateful A133 R_PIO qtest region =="
+if ! grep -q 'Stateful R_PIO has dedicated qtest coverage' \
+    tests/qtest/pocketforge-a133-mmio-map-test.c; then
+  git apply "$ROOT/pocketforge/0049-tests-classify-A133-R-PIO-as-stateful.patch"
+fi
+
+echo "== apply PocketForge patch: A133 soft-poweroff process-exit qtest =="
+if ! grep -q 'qtest_writel_no_rsp' tests/qtest/libqtest.h; then
+  git apply "$ROOT/pocketforge/0050-tests-prove-A133-soft-poweroff-process-exit.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
 
 mkdir -p "$OUT"
+
+echo "== test: release power-smoke provenance =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-release-power-smoke-test.py"
 
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
   echo "== configure + build: aarch64-linux-user (static) =="

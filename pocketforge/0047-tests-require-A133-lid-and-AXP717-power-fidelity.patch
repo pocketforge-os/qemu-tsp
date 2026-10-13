@@ -1,0 +1,449 @@
+From: qlid <qlid@pocketforge.local>
+Date: Tue, 13 Oct 2026 18:58:00 +0000
+Subject: [PATCH] tests: require A133 lid and AXP717 power fidelity
+
+Add RED coverage for the active-low PL9 hall switch, the AXP717
+IRQLEVEL and OFFLEVEL timers, and both observable and process-exit
+soft-poweroff paths.
+
+The positive and negative controls share each invocation: invalid and
+idempotent lid reports cannot create edges, all four IRQLEVEL settings
+are checked immediately below and at their boundary, the OFFLEVEL gate
+is proved disabled and enabled, and a zero REG27 write cannot shut down.
+
+---
+diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
+index 5c2b2e7..ee0c772 100644
+--- a/tests/qtest/pocketforge-a133-axp717-test.c
++++ b/tests/qtest/pocketforge-a133-axp717-test.c
+@@ -30,6 +30,9 @@
+ #define R_INTC_ENABLE       0x04
+ #define R_INTC_PENDING      0x08
+ #define R_INTC_READ(reg) qtest_readl(global_qtest, R_INTC_BASE + (reg))
++#define AXP717_PWROFF_EN     0x22
++#define AXP717_IRQ_OFFLEVEL  0x26
++#define AXP717_SOFT_POWEROFF 0x27
+ #define AXP717_IRQ1_EN      0x41
+ #define AXP717_IRQ1_STATE   0x49
+ #define AXP717_PEK_RISE     0x01
+@@ -53,56 +56,67 @@ static QDict *power_send_on(QTestState *qts, int value)
+         EV_KEY, KEY_POWER, value);
+ }
+ 
+-static uint32_t i2c_status(void)
++static uint32_t i2c_status_on(QTestState *qts)
+ {
+-    return qtest_readl(global_qtest, R_I2C0_BASE + TWI_STAT);
++    return qtest_readl(qts, R_I2C0_BASE + TWI_STAT);
+ }
+ 
+-static void i2c_start(void)
++static void i2c_start_on(QTestState *qts)
+ {
+-    qtest_writel(global_qtest, R_I2C0_BASE + TWI_CNTR,
++    qtest_writel(qts, R_I2C0_BASE + TWI_CNTR,
+                  CNTR_BUS_ENABLE | CNTR_START);
+-    g_assert_cmphex(i2c_status(), ==, STAT_START);
++    g_assert_cmphex(i2c_status_on(qts), ==, STAT_START);
+ }
+ 
+-static void i2c_stop(void)
++static void i2c_stop_on(QTestState *qts)
+ {
+-    qtest_writel(global_qtest, R_I2C0_BASE + TWI_CNTR,
++    qtest_writel(qts, R_I2C0_BASE + TWI_CNTR,
+                  CNTR_BUS_ENABLE | CNTR_STOP);
+ }
+ 
+-static void i2c_send(uint8_t value, uint32_t expected_status)
++static void i2c_send_on(QTestState *qts, uint8_t value,
++                        uint32_t expected_status)
+ {
+-    qtest_writel(global_qtest, R_I2C0_BASE + TWI_DATA, value);
+-    g_assert_cmphex(i2c_status(), ==, expected_status);
++    qtest_writel(qts, R_I2C0_BASE + TWI_DATA, value);
++    g_assert_cmphex(i2c_status_on(qts), ==, expected_status);
+ }
+ 
+-static void axp717_write(uint8_t reg, uint8_t value)
++static void axp717_write_on(QTestState *qts, uint8_t reg, uint8_t value)
+ {
+-    i2c_start();
+-    i2c_send(0x34 << 1, STAT_ADDR_WR_ACK);
+-    i2c_send(reg, STAT_DATA_TX_ACK);
+-    i2c_send(value, STAT_DATA_TX_ACK);
+-    i2c_stop();
++    i2c_start_on(qts);
++    i2c_send_on(qts, 0x34 << 1, STAT_ADDR_WR_ACK);
++    i2c_send_on(qts, reg, STAT_DATA_TX_ACK);
++    i2c_send_on(qts, value, STAT_DATA_TX_ACK);
++    i2c_stop_on(qts);
+ }
+ 
+-static uint8_t axp717_read(uint8_t reg)
++static uint8_t axp717_read_on(QTestState *qts, uint8_t reg)
+ {
+     uint8_t value;
+ 
+-    i2c_start();
+-    i2c_send(0x34 << 1, STAT_ADDR_WR_ACK);
+-    i2c_send(reg, STAT_DATA_TX_ACK);
+-    i2c_stop();
++    i2c_start_on(qts);
++    i2c_send_on(qts, 0x34 << 1, STAT_ADDR_WR_ACK);
++    i2c_send_on(qts, reg, STAT_DATA_TX_ACK);
++    i2c_stop_on(qts);
+ 
+-    i2c_start();
+-    i2c_send((0x34 << 1) | 1, STAT_ADDR_RD_ACK);
+-    value = qtest_readl(global_qtest, R_I2C0_BASE + TWI_DATA);
+-    i2c_stop();
++    i2c_start_on(qts);
++    i2c_send_on(qts, (0x34 << 1) | 1, STAT_ADDR_RD_ACK);
++    value = qtest_readl(qts, R_I2C0_BASE + TWI_DATA);
++    i2c_stop_on(qts);
+ 
+     return value;
+ }
+ 
++static void axp717_write(uint8_t reg, uint8_t value)
++{
++    axp717_write_on(global_qtest, reg, value);
++}
++
++static uint8_t axp717_read(uint8_t reg)
++{
++    return axp717_read_on(global_qtest, reg);
++}
++
+ static QDict *power_send(int value)
+ {
+     return power_send_on(global_qtest, value);
+@@ -123,6 +137,44 @@ static void assert_qmp_error(QDict *response, const char *prefix)
+     qobject_unref(response);
+ }
+ 
++typedef struct ShutdownEvents {
++    unsigned int count;
++    bool guest;
++    char *reason;
++} ShutdownEvents;
++
++static bool count_shutdown_events(QTestState *qts, const char *name,
++                                  QDict *event, void *opaque)
++{
++    ShutdownEvents *events = opaque;
++    QDict *data;
++
++    if (strcmp(name, "SHUTDOWN")) {
++        return false;
++    }
++    data = qdict_get_qdict(event, "data");
++    events->count++;
++    events->guest = qdict_get_bool(data, "guest");
++    g_free(events->reason);
++    events->reason = g_strdup(qdict_get_str(data, "reason"));
++    return true;
++}
++
++static void qmp_flush_events(QTestState *qts)
++{
++    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-status' }");
++
++    g_assert_nonnull(qdict_get(response, "return"));
++    qobject_unref(response);
++}
++
++static void power_path_enable_on(QTestState *qts, uint8_t irq_mask)
++{
++    qtest_writel(qts, R_INTC_BASE + R_INTC_ENABLE, 1);
++    axp717_write_on(qts, AXP717_IRQ1_EN,
++                    AXP717_PEK_RISE | AXP717_PEK_FALL | irq_mask);
++}
++
+ static void test_register_bank_and_unpopulated_nack(void)
+ {
+     /* Positive paths: IRQ enable and regulator control registers persist. */
+@@ -139,9 +191,9 @@ static void test_register_bank_and_unpopulated_nack(void)
+     g_assert_cmphex(axp717_read(0x20), ==, 0);
+ 
+     /* Negative control: no device is populated at the adjacent address. */
+-    i2c_start();
+-    i2c_send(0x35 << 1, STAT_ADDR_WR_NACK);
+-    i2c_stop();
++    i2c_start_on(global_qtest);
++    i2c_send_on(global_qtest, 0x35 << 1, STAT_ADDR_WR_NACK);
++    i2c_stop_on(global_qtest);
+ }
+ 
+ static void test_pek_irq_path_and_masked_negative(void)
+@@ -195,6 +247,123 @@ static void test_pek_irq_path_and_masked_negative(void)
+                     AXP717_PEK_RISE | AXP717_PEK_LONG);
+ }
+ 
++static void test_pek_irqlevel_boundaries(void)
++{
++    static const int64_t thresholds_ns[] = {
++        1000 * 1000 * 1000LL,
++        1500 * 1000 * 1000LL,
++        2000 * 1000 * 1000LL,
++        2500 * 1000 * 1000LL,
++    };
++    unsigned int setting;
++
++    g_assert_cmphex(axp717_read(AXP717_PWROFF_EN), ==, 0x04);
++    g_assert_cmphex(axp717_read(AXP717_IRQ_OFFLEVEL), ==, 0x16);
++    g_assert_cmphex(axp717_read(AXP717_SOFT_POWEROFF), ==, 0x04);
++    power_path_enable_on(global_qtest, AXP717_PEK_LONG);
++
++    for (setting = 0; setting < ARRAY_SIZE(thresholds_ns); setting++) {
++        QDict *response;
++
++        axp717_write(AXP717_IRQ_OFFLEVEL,
++                     (setting << 4) | 0x06);
++        assert_qmp_success(power_send(1));
++        axp717_write(AXP717_IRQ1_STATE, 0xff);
++
++        qtest_clock_step(global_qtest, thresholds_ns[setting] - 1);
++        g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE) & AXP717_PEK_LONG,
++                        ==, 0);
++        qtest_clock_step(global_qtest, 1);
++        g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE) & AXP717_PEK_LONG,
++                        ==, AXP717_PEK_LONG);
++
++        axp717_write(AXP717_IRQ1_STATE, 0xff);
++        assert_qmp_success(power_send(0));
++        g_assert_cmphex(axp717_read(AXP717_IRQ1_STATE), ==,
++                        AXP717_PEK_RISE);
++
++        /* Release-before-press remains a negative control each cycle. */
++        response = power_send(0);
++        assert_qmp_error(response,
++            "pocketforge-input: reason=invalid-parameter index=0:");
++        axp717_write(AXP717_IRQ1_STATE, 0xff);
++    }
++}
++
++static void test_pek_offlevel_force_poweroff(void)
++{
++    QTestState *qts = qtest_init(
++        "-machine pocketforge-a133,pocketforge-display=off -no-shutdown");
++    ShutdownEvents events = { 0 };
++
++    qtest_qmp_set_event_callback(qts, count_shutdown_events, &events);
++    power_path_enable_on(qts, AXP717_PEK_LONG);
++
++    /* POR bit 1 is clear: OFFLEVEL is gated off even after six seconds. */
++    g_assert_cmphex(axp717_read_on(qts, AXP717_PWROFF_EN), ==, 0x04);
++    assert_qmp_success(power_send_on(qts, 1));
++    qtest_clock_step(qts, 6 * 1000 * 1000 * 1000LL);
++    qmp_flush_events(qts);
++    g_assert_cmpuint(events.count, ==, 0);
++    assert_qmp_success(power_send_on(qts, 0));
++    axp717_write_on(qts, AXP717_IRQ1_STATE, 0xff);
++
++    /* Enable PWRON>OFFLEVEL, whose POR-selected threshold is six seconds. */
++    axp717_write_on(qts, AXP717_PWROFF_EN, 0x06);
++    assert_qmp_success(power_send_on(qts, 1));
++    axp717_write_on(qts, AXP717_IRQ1_STATE, 0xff);
++
++    qtest_clock_step(qts, 1500 * 1000 * 1000LL);
++    g_assert_cmphex(axp717_read_on(qts, AXP717_IRQ1_STATE) &
++                    AXP717_PEK_LONG, ==, AXP717_PEK_LONG);
++    qmp_flush_events(qts);
++    g_assert_cmpuint(events.count, ==, 0);
++
++    qtest_clock_step(qts, 4500 * 1000 * 1000LL - 1);
++    qmp_flush_events(qts);
++    g_assert_cmpuint(events.count, ==, 0);
++    qtest_clock_step(qts, 1);
++    qmp_flush_events(qts);
++    g_assert_cmpuint(events.count, ==, 1);
++    g_assert_false(events.guest);
++    g_assert_cmpstr(events.reason, ==, "host-ui");
++
++    /* Continuing and advancing time cannot emit a second shutdown. */
++    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
++    qtest_clock_step(qts, 6 * 1000 * 1000 * 1000LL);
++    qmp_flush_events(qts);
++    g_assert_cmpuint(events.count, ==, 1);
++
++    g_free(events.reason);
++    qtest_quit(qts);
++}
++
++static void test_axp717_soft_poweroff_exit(void)
++{
++    QTestState *qts = qtest_init(
++        "-machine pocketforge-a133,pocketforge-display=off -no-shutdown");
++    ShutdownEvents events = { 0 };
++
++    qtest_qmp_set_event_callback(qts, count_shutdown_events, &events);
++    axp717_write_on(qts, AXP717_SOFT_POWEROFF, 0x04);
++    qmp_flush_events(qts);
++    g_assert_cmpuint(events.count, ==, 0);
++
++    axp717_write_on(qts, AXP717_SOFT_POWEROFF, 0x05);
++    qmp_flush_events(qts);
++    g_assert_cmpuint(events.count, ==, 1);
++    g_assert_true(events.guest);
++    g_assert_cmpstr(events.reason, ==, "guest-shutdown");
++    g_free(events.reason);
++    qtest_quit(qts);
++
++    /* Without -no-shutdown the exact same guest I2C write exits QEMU. */
++    qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
++    axp717_write_on(qts, AXP717_SOFT_POWEROFF, 0x05);
++    qtest_wait_qemu(qts);
++    qtest_quit(qts);
++}
++
+ static void test_pek_reset_clears_machine_state(void)
+ {
+     QDict *response;
+@@ -312,6 +481,12 @@ int main(int argc, char **argv)
+                    test_register_bank_and_unpopulated_nack);
+     qtest_add_func("/pocketforge-a133/axp717/pek-irq-path-mask-negative",
+                    test_pek_irq_path_and_masked_negative);
++    qtest_add_func("/pocketforge-a133/axp717/pek-irqlevel-boundaries",
++                   test_pek_irqlevel_boundaries);
++    qtest_add_func("/pocketforge-a133/axp717/pek-offlevel-force-poweroff",
++                   test_pek_offlevel_force_poweroff);
++    qtest_add_func("/pocketforge-a133/axp717/soft-poweroff-exit",
++                   test_axp717_soft_poweroff_exit);
+     qtest_add_func("/pocketforge-a133/axp717/pek-reset-clears-machine-state",
+                    test_pek_reset_clears_machine_state);
+     qtest_add_func("/pocketforge-a133/axp717/migration-idle",
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index 8f715ec..20991b8 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -16,6 +16,17 @@
+ #define PF_UART_CPR_32BIT_FIFO16 0x00010002
+ #define PF_VIRTIO_INPUT_BASE 0x0a000200
+ 
++#define PF_R_PIO_BASE       0x07022000
++#define PF_R_PIO_PL_CFG1    0x04
++#define PF_R_PIO_PL_DATA    0x10
++#define PF_R_PIO_IRQ_CFG1   0x204
++#define PF_R_PIO_IRQ_CTRL   0x210
++#define PF_R_PIO_IRQ_STATUS 0x214
++#define PF_R_PIO_PL9        (1u << 9)
++#define PF_R_PIO_PL9_SHIFT  4
++#define PF_R_PIO_FUNC_IRQ   6
++#define PF_R_PIO_IRQ_BOTH   4
++
+ #define UART_RBR_DLL 0x00
+ #define UART_IER_DLM 0x04
+ #define UART_IIR_FCR 0x08
+@@ -68,6 +79,16 @@ static QDict *raw_send(QTestState *qts, int type, int code, int value)
+         type, code, value);
+ }
+ 
++static QDict *lid_send(QTestState *qts, int type, int code, int value)
++{
++    return qtest_qmp(qts,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'lid-switch', 'events': ["
++        " { 'type': %d, 'code': %d, 'value': %d },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
++        type, code, value);
++}
++
+ static QDict *raw_send_two(QTestState *qts,
+                            int type0, int code0, int value0,
+                            int type1, int code1, int value1)
+@@ -174,7 +195,7 @@ static void test_query_and_transport(void)
+     int i;
+ 
+     g_assert_cmpint(qdict_get_int(version, "major"), ==, 2);
+-    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 2);
++    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 3);
+     g_assert_cmpint(qdict_get_int(result, "max_batch_events"), ==, 256);
+     g_assert_cmpstr(qdict_get_str(device, "id"), ==, "gamepad");
+     g_assert_cmpstr(qdict_get_str(device, "name"), ==, "TRIMUI Player1");
+@@ -202,6 +223,75 @@ static void test_query_and_transport(void)
+     qtest_quit(qts);
+ }
+ 
++
++static void test_lid_default_open_and_edges(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
++    QDict *response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    QDict *device = query_device_by_id(response, "lid-switch");
++
++    g_assert_cmpstr(qdict_get_str(device, "name"), ==, "gpio-keys-hall");
++    g_assert_cmpint(qdict_get_int(device, "bustype"), ==, BUS_HOST);
++    g_assert_cmpint(qdict_get_int(device, "vendor"), ==, 0x0001);
++    g_assert_cmpint(qdict_get_int(device, "product"), ==, 0x0001);
++    g_assert_cmpint(qdict_get_int(device, "version"), ==, 0x0100);
++    g_assert_true(qdict_get_bool(device, "ready"));
++    g_assert_true(query_has_code(device, EV_SYN, SYN_REPORT));
++    g_assert_true(query_has_code(device, EV_SW, SW_LID));
++    g_assert_false(query_has_code(device, EV_KEY, KEY_POWER));
++    qobject_unref(response);
++
++    /* Active-low PL9 is pulled high/open from reset. */
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_PL_DATA) &
++                    PF_R_PIO_PL9, ==, PF_R_PIO_PL9);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_STATUS),
++                    ==, 0);
++
++    qtest_writel(qts, PF_R_PIO_BASE + PF_R_PIO_PL_CFG1,
++                 PF_R_PIO_FUNC_IRQ << PF_R_PIO_PL9_SHIFT);
++    qtest_writel(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_CFG1,
++                 PF_R_PIO_IRQ_BOTH << PF_R_PIO_PL9_SHIFT);
++    qtest_writel(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_CTRL, PF_R_PIO_PL9);
++
++    /* Invalid capabilities fail before delivery and leave the line open. */
++    response = lid_send(qts, EV_KEY, KEY_POWER, 1);
++    assert_error_prefix(response,
++        "pocketforge-input: reason=invalid-parameter index=0:");
++    qobject_unref(response);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_PL_DATA) &
++                    PF_R_PIO_PL9, ==, PF_R_PIO_PL9);
++
++    response = lid_send(qts, EV_SW, SW_LID, 1);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_PL_DATA) &
++                    PF_R_PIO_PL9, ==, 0);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_STATUS),
++                    ==, PF_R_PIO_PL9);
++
++    qtest_writel(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_STATUS, PF_R_PIO_PL9);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_STATUS),
++                    ==, 0);
++
++    /* Duplicate CLOSED is idempotent and must not invent an edge. */
++    response = lid_send(qts, EV_SW, SW_LID, 1);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_STATUS),
++                    ==, 0);
++
++    response = lid_send(qts, EV_SW, SW_LID, 0);
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_PL_DATA) &
++                    PF_R_PIO_PL9, ==, PF_R_PIO_PL9);
++    g_assert_cmphex(qtest_readl(qts, PF_R_PIO_BASE + PF_R_PIO_IRQ_STATUS),
++                    ==, PF_R_PIO_PL9);
++
++    qtest_quit(qts);
++}
++
+ static void test_power_key_query_and_negative_control(void)
+ {
+     QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults");
+@@ -519,6 +609,8 @@ int main(int argc, char **argv)
+                    test_query_and_transport);
+     qtest_add_func("/aarch64/pocketforge-a133-input/power-key-query-negative",
+                    test_power_key_query_and_negative_control);
++    qtest_add_func("/aarch64/pocketforge-a133-input/lid-default-open-edges",
++                   test_lid_default_open_and_edges);
+     qtest_add_func("/aarch64/pocketforge-a133-input/uart-component-parameters",
+                    test_uart_component_parameters);
+     qtest_add_func("/aarch64/pocketforge-a133-input/uart-8n1-eps-ignored",
