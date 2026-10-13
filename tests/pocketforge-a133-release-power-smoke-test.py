@@ -17,6 +17,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ProvenanceTest(unittest.TestCase):
+    def test_release_boot_keeps_native_display_enabled(self) -> None:
+        command_line = MODULE.kernel_command_line()
+        self.assertNotIn("video=DSI-1:d", command_line)
+        self.assertNotIn("systemd.mask=", command_line)
+
     def test_expected_qemu_hash_positive_and_negative(self) -> None:
         with tempfile.TemporaryDirectory(prefix="pf-release-provenance-") as tmp:
             root = Path(tmp)
