@@ -279,7 +279,7 @@ if [ ! -f hw/misc/pocketforge_a100_r_pio.c ]; then
 fi
 
 echo "== apply PocketForge patch: classify stateful A133 R_PIO qtest region =="
-if grep -q '{ "pocketforge-a133.r_pio".*0x07022000.*0x400 }' \
+if ! grep -q 'Stateful R_PIO is intentionally covered' \
     tests/qtest/pocketforge-a133-mmio-map-test.c; then
   git apply "$ROOT/pocketforge/0036-tests-classify-A133-R-PIO-as-stateful.patch"
 fi
