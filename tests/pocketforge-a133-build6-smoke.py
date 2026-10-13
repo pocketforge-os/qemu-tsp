@@ -40,6 +40,30 @@ else
 fi
 printf 'PF_SMOKE_MULTI_USER active=%s gate=%s\\n' \
     "$multi_user_active" "$boot_gate" >&3
+tries=0
+while [ ! -c /dev/fb0 ] && [ "$tries" -lt 4000 ]; do
+    tries=$((tries + 1))
+done
+if [ ! -c /dev/fb0 ]; then
+    printf 'PF_SMOKE_FAIL reason=drm-fbdev-not-found\\n' >&3
+    exit 1
+fi
+fb_name=$(cat /sys/class/graphics/fb0/name)
+case "$fb_name" in
+    *sun4i*|*drmfb*) ;;
+    *)
+        printf 'PF_SMOKE_FAIL reason=unexpected-fbdev name=%s\\n' \
+            "$fb_name" >&3
+        exit 1
+        ;;
+esac
+if ! printf '\\377\\000\\377\\000' | \
+    dd of=/dev/fb0 bs=4 count=1 conv=notrunc status=none; then
+    printf 'PF_SMOKE_FAIL reason=drm-marker-write\\n' >&3
+    exit 1
+fi
+printf 'PF_DRM_MARKER driver=sun4i-drm fbdev=%s x=0 y=0 xr24=ff00ff\\n' \
+    "$fb_name" >&3
 if timeout 5s systemctl is-active --quiet pf-input-decode.service; then
     decoder_start=auto
 else
@@ -634,7 +658,7 @@ def main() -> int:
         "systemd.mask=sleep.target systemd.mask=suspend.target "
         "systemd.mask=systemd-suspend.service",
         "-drive", f"if=sd,format=raw,file={smoke_sd},snapshot=on",
-        "-display", "none", "-monitor", "none", "-no-reboot",
+        "-display", "dbus,p2p=yes", "-monitor", "none", "-no-reboot",
         "-d", "unimp", "-D", str(qemu_log),
         "-qmp", f"unix:{qmp_path},server=on,wait=off",
         "-serial", f"unix:{serial_path},server=on,wait=off",
@@ -668,6 +692,23 @@ def main() -> int:
 
         console = Console(connect(serial_path, 20.0), serial_log)
         console.until(b"PF_SMOKE_MULTI_USER ", 180.0)
+        console.until(b"PF_DRM_MARKER ", 120.0)
+        frame = args.work / "display.ppm"
+        response = qmp.command("screendump", {"filename": str(frame)})
+        if "return" not in response:
+            raise RuntimeError(f"display-screendump:{response}")
+        ppm = frame.read_bytes()
+        header_end = ppm.find(b"\\n255\\n")
+        if not ppm.startswith(b"P6\\n720 1280\\n") or header_end < 0:
+            raise RuntimeError("display-frame-format")
+        first = ppm[header_end + len(b"\\n255\\n"):][:3]
+        if first != bytes((0xff, 0x00, 0xff)):
+            raise RuntimeError(f"display-marker:{first.hex()}")
+        print(
+            "DRM_DISPLAY driver=sun4i-drm frame=720x1280 "
+            "marker=ff00ff export=QemuConsole",
+            flush=True,
+        )
         console.until(b"PF_SMOKE_READY ", 120.0)
 
         deadline = time.monotonic() + 30.0
@@ -859,6 +900,9 @@ def main() -> int:
         for path in (qmp_path, serial_path):
             if path.exists():
                 path.unlink()
+        frame = args.work / "display.ppm"
+        if frame.exists():
+            frame.unlink()
         if smoke_sd.exists():
             smoke_sd.unlink()
 
