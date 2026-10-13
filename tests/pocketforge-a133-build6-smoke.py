@@ -46,6 +46,25 @@ while [ ! -c /dev/fb0 ] && [ "$tries" -lt 4000 ]; do
     tries=$((tries + 1))
 done
 if [ ! -c /dev/fb0 ]; then
+    for device in 6000000.bus 6100000.mixer 6510000.tcon-top \
+                  6511000.lcd-controller 6504000.dsi 6505000.phy; do
+        path=/sys/bus/platform/devices/$device
+        driver=absent
+        if [ -L "$path/driver" ]; then
+            driver=$(basename "$(readlink "$path/driver")")
+        elif [ -e "$path" ]; then
+            driver=unbound
+        fi
+        printf 'PF_DRM_PROBE device=%s driver=%s\\n' "$device" "$driver" >&3
+    done
+    if [ -r /sys/kernel/debug/devices_deferred ]; then
+        while IFS= read -r deferred; do
+            case "$deferred" in
+                *6000000*|*6100000*|*6510000*|*6511000*|*6504000*|*6505000*)
+                    printf 'PF_DRM_DEFERRED %s\\n' "$deferred" >&3 ;;
+            esac
+        done </sys/kernel/debug/devices_deferred
+    fi
     printf 'PF_SMOKE_FAIL reason=drm-fbdev-not-found\\n' >&3
     exit 1
 fi
@@ -663,7 +682,8 @@ def main() -> int:
         "-initrd", str(args.initrd),
         "-append",
         "root=PARTLABEL=userdata rootwait rw console=ttyS0,115200 "
-        "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon loglevel=5 "
+        "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon loglevel=7 "
+        "sun4i_tcon.pf_display_diag=1 sun8i_tcon_top.pf_display_diag=1 "
         "panic=-1 pocketforge.root=volatile video=DSI-1:d "
         "systemd.log_target=kmsg systemd.log_level=info "
         "systemd.mask=pocketforge-boot-animator.service "
