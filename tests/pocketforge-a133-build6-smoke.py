@@ -684,7 +684,7 @@ def main() -> int:
         "root=PARTLABEL=userdata rootwait rw console=ttyS0,115200 "
         "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon loglevel=7 "
         "sun4i_tcon.pf_display_diag=1 sun8i_tcon_top.pf_display_diag=1 "
-        "panic=-1 pocketforge.root=volatile video=DSI-1:d "
+        "panic=-1 pocketforge.root=volatile "
         "systemd.log_target=kmsg systemd.log_level=info "
         "systemd.mask=pocketforge-boot-animator.service "
         "systemd.mask=pf-shell-selected.service "
