@@ -327,6 +327,12 @@ if [ ! -f tests/qtest/pocketforge-a133-dbus-listener.c ]; then
   git apply "$ROOT/pocketforge/0045-tests-add-A133-Display1-frame-listener.patch"
 fi
 
+echo "== apply PocketForge patch: advertised native display formats =="
+if ! grep -q 'checking DE2 format' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0046-hw-display-scan-out-advertised-A133-formats.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
