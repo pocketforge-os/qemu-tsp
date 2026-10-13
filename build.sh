@@ -294,6 +294,11 @@ if ! grep -q 'BIT(0), ==, BIT(0)' \
   git apply "$ROOT/pocketforge/0038-tests-require-timed-A133-display-transfer-completion.patch"
 fi
 
+echo "== apply PocketForge patch: DSI transfer and vblank completion =="
+if ! grep -q 'pf_display_vblank' hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0039-hw-display-complete-A133-DSI-transfers-and-vblank.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
