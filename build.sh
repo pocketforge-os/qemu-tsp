@@ -305,6 +305,12 @@ if ! grep -q 's->frame + y \* width \* 4' \
   git apply "$ROOT/pocketforge/0041-hw-display-make-A133-invalid-translations-atomic.patch"
 fi
 
+echo "== apply PocketForge patch: native display frame-cost evidence =="
+if ! grep -q 'FRAME_COST path=full-copy' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0042-tests-measure-A133-full-and-static-frame-costs.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
