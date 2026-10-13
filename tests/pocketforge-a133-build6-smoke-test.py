@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Hermetic positive and negative controls for build-6 smoke log gates."""
 
+import hashlib
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -14,6 +16,17 @@ SPEC.loader.exec_module(SMOKE)
 
 
 class DisplayTimeoutTest(unittest.TestCase):
+    def test_listener_digest_positive_and_negative(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="pf-dbus-listener-") as tmp:
+            listener = Path(tmp) / "listener"
+            listener.write_bytes(b"reviewed-listener\n")
+            expected = hashlib.sha256(listener.read_bytes()).hexdigest()
+
+            with self.assertRaisesRegex(RuntimeError,
+                                        "^artifact-mismatch:dbus-listener:"):
+                SMOKE.require_hash("dbus-listener", listener, "0" * 64)
+            SMOKE.require_hash("dbus-listener", listener, expected)
+
     def test_clean_display_log_is_accepted(self) -> None:
         log = """\
 [drm] Initialized sun4i-drm 1.0.0 for display-engine on minor 0
