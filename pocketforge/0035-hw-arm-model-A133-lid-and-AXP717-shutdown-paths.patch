@@ -70,10 +70,10 @@ index 0637a14..67f65d0 100644
 +    device = g_new0(PocketForgeInputDeviceInfo, 1);
 +    device->id = g_strdup("lid-switch");
 +    device->name = g_strdup("gpio-keys-hall");
-+    device->bustype = 0;
-+    device->vendor = 0;
-+    device->product = 0;
-+    device->version = 0;
++    device->bustype = BUS_HOST;
++    device->vendor = 0x0001;
++    device->product = 0x0001;
++    device->version = 0x0100;
 +    device->ready = s->r_pio != NULL;
 +    caps_tail = &device->caps;
 +
@@ -767,4 +767,3 @@ index 20991b8..3760c23 100644
      g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
 -- 
 2.43.0
-
