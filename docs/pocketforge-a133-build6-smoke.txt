@@ -1,10 +1,11 @@
-PocketForge A133 build-6 MCU-input smoke
-=========================================
+PocketForge A133 build-6 release smoke
+=======================================
 
 Result: PASS
-QEMU patch stack: through 0027-hw-arm-indent-gamepad-query-capabilities
-Run date: 2026-10-10 UTC
+QEMU head: 2b9089bcc9d239bd2afdc7d0e986838f4d79dede
+Run date: 2026-10-13 UTC
 Execution: TCG only, unprivileged Docker container, no device or bench
+Wall time: 61 seconds
 
 Pinned artifact identities
 --------------------------
@@ -32,15 +33,17 @@ DTB and initrd are never modified.
 Reproduction
 ------------
 
-Build QEMU through patch 0027, then run inside the pinned qemu-test image:
+Build QEMU at the head above, then run inside the pinned qemu-test image with
+the four source artifacts mounted read-only:
 
   python3 tests/pocketforge-a133-build6-smoke.py \
-    --qemu build/qemu-src/build-softmmu/qemu-system-aarch64 \
-    --image build/smoke/Image \
-    --dtb build/smoke/dtb.bin \
-    --initrd build/smoke/initrd.gz \
-    --sd build/smoke/Image.img \
-    --work build/smoke/run
+    --qemu build/qemu-tsp/qemu-system-aarch64 \
+    --dbus-listener build/qemu-tsp/pocketforge-a133-dbus-listener \
+    --image /inputs/Image \
+    --dtb /inputs/dtb.bin \
+    --initrd /inputs/initrd.gz \
+    --sd /inputs/Image.img \
+    --work build/release-smoke/run
 
 The smoke waits for the guest's systemd service stage. It records whether the
 release image started `pf-input-decode.service` itself and starts that exact
@@ -52,18 +55,24 @@ in the same invocation; it was inactive on this run.
 Observed concise output
 -----------------------
 
+  QEMU_PROVENANCE head=2b9089bcc9d239bd2afdc7d0e986838f4d79dede sha256=ffd32756a64c4b55909b445d6b2c35beafa9646dabbb15a35cd14dd2fb0adc33 status=ok
   ARTIFACT name=image sha256=db8a54a5c850afb3d1655a3e8062bbff77315f08cef1c1563611d676761d715d status=ok
   ARTIFACT name=dtb sha256=1a9042d839ee9d1548062efacc5dde332789c6dc846f21bb2c7877045d49b358 status=ok
   ARTIFACT name=initrd sha256=93504ef5954b7cda5fdeb16577353277a89ac8f12bb321cff227f059c54c9fe6 status=ok
   ARTIFACT name=sd sha256=c2e684bda333be6784fa47839776ba6b805ecdd70585cfe841f268f3c9f117ae status=ok
   ARTIFACT name=rootfs sha256=e76f7379c5684884da6469366b4e49103706a868ec3476d27d66530a2ef18af6 status=ok
   QMP_DISPLAY width=720 height=1280 fourcc=XR24 presentation_rotation=90
+  DBUS_FRAME result=PASS width=720 height=1280 stride=2880 marker=ff00ff
+  DRM_DISPLAY driver=sun4i-drm frame=720x1280 marker=ff00ff export=QemuConsole
   QMP_INPUT abi=2.2 devices=gamepad,power-key ready=true
   QMP_NEGATIVE reason=invalid-parameter delivered=false
   QMP_POWER_NEGATIVE reason=invalid-parameter delivered=false
   QMP_POSITIVE reports=12 atomic=true
   QMP_POWER short=true long=true explicit_release=true
+  DRM_PROBES result=PASS blocks=drm,mixer,tcon-top,tcon-lcd,dsi,panel,dcs timeouts=0
+  DRM_VBLANK result=PASS required=2 observed=227
   GUEST_INPUT uid=1001 device=TRIMUI_Player1 key=BTN_SOUTH:press,release hat=ABS_HAT0Y:-1,0 sticks=ABS_X:0,ABS_Y:4095,ABS_RX:4095,ABS_RY:0 triggers=ABS_Z:255,0,ABS_RZ:255,0 power=KEY_POWER:short,long ranges=sticks:0..4095,triggers:0..255 negative_ev_sw=absent broker_restored=true decoder=auto multi_user_active=false boot_gate=systemd-service-start
+  RELEASE_SMOKE_WALL seconds=61 rc=0
 
 Guest evtest evidence
 ---------------------
@@ -101,24 +110,17 @@ guest record before reporting PASS. Timeout failures include the serial tail,
 so a boot-order or guest-service failure cannot appear as a negative-control
 success.
 
-Native display extension (2026-10-13)
--------------------------------------
+Native display proof (2026-10-13)
+---------------------------------
 
-The current harness also requires:
-
-  --dbus-listener build/qemu-tsp/pocketforge-a133-dbus-listener
-
-The new leg requires the unmodified release kernel's own `sun4i-drm` fbdev,
+The harness requires the unmodified release kernel's own `sun4i-drm` fbdev,
 writes a magenta XR24 marker at native coordinate (0,0), and reads it from both
 upstream Display1 `Console_0` and the same QemuConsole's screendump path. The
 listener ignores the initial black Scanout, so only a post-modeset guest-RAM
-update can produce:
+update can pass. The serial transcript additionally proves the release mixer,
+TCON-TOP, TCON-LCD, DSI host and OTM1289A panel component binds; completed DCS
+panel prepare; no timeout attributed to a display component; and DRM vblank
+delivery beginning with counts 1 and 2 (227 observed before completion).
 
-  DBUS_FRAME result=PASS width=720 height=1280 stride=2880 marker=ff00ff
-  DRM_DISPLAY driver=sun4i-drm frame=720x1280 marker=ff00ff export=QemuConsole
-
-The release Image, DTB and initrd remain byte-identical. This display extension
-has not been appended to the historical PASS transcript above because the
-pinned artifact tuple was unavailable in the implementation worktree; the
-identity checks fail closed before QEMU starts when any supplied artifact does
-not match.
+The release Image, DTB, initrd and source raw image remained byte-identical.
+The harness modified only its disposable raw-image copy and removed it at exit.
