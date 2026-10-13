@@ -267,6 +267,12 @@ if ! grep -q 'pocketforge_a133_ccu_create' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0033-hw-arm-A133-stateful-CCU-PIO-UART0-MMC0-gating.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 native display register contract =="
+if ! grep -q 'native-display/register-contract' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0034-tests-cover-A133-native-display-register-contract.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
