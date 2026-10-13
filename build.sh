@@ -273,6 +273,11 @@ if ! grep -q 'native-display/register-contract' \
   git apply "$ROOT/pocketforge/0034-tests-cover-A133-native-display-register-contract.patch"
 fi
 
+echo "== apply PocketForge patch: native A133 display register pipeline =="
+if [ ! -f hw/display/pocketforge_a133_display.c ]; then
+  git apply "$ROOT/pocketforge/0035-hw-display-own-A133-display-register-pipeline.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
