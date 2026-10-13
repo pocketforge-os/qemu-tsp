@@ -316,6 +316,12 @@ if ! grep -q 'PF_DSI_CMD_RX_FLAG' hw/display/pocketforge_a133_display.c; then
   git apply "$ROOT/pocketforge/0043-hw-display-complete-A133-DCS-command-state.patch"
 fi
 
+echo "== apply PocketForge patch: vblank-driven native scanout refresh =="
+if ! grep -q 'bytes_published=0' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0044-hw-display-refresh-A133-scanout-on-vblank.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
