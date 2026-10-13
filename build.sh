@@ -273,6 +273,11 @@ if ! grep -q 'lid-default-open-edges' \
   git apply "$ROOT/pocketforge/0034-tests-require-A133-lid-and-AXP717-power-fidelity.patch"
 fi
 
+echo "== apply PocketForge patch: A133 lid and AXP717 shutdown paths =="
+if [ ! -f hw/misc/pocketforge_a100_r_pio.c ]; then
+  git apply "$ROOT/pocketforge/0035-hw-arm-model-A133-lid-and-AXP717-shutdown-paths.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
