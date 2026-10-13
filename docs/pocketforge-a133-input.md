@@ -19,8 +19,9 @@ gamepad MCU source behind the real DT's RX-only DW APB UART3 (right half) and
 UART4 (left half). It does not add a guest-visible device or DT node. The
 unmodified release image's `pf-input-decode.service` consumes the MCU frames
 and creates its normal `TRIMUI Player1` uinput node. With `off`, the source is
-absent, `query-pocketforge-input` returns an empty `devices` list, and injection
-returns `DeviceNotFound`.
+absent, the query omits only `gamepad`, and gamepad injection returns
+`DeviceNotFound`. The always-present AXP717 power key and PL9 lid switch remain
+available because they are independent physical devices.
 
 The copy-only v1 display is enabled at build time with `-Dgio=enabled
 -Ddbus_display=enabled` and at run time with `-display dbus,p2p=yes`. Upstream
@@ -72,14 +73,14 @@ XR24=`PIXMAN_x8r8g8b8`, XB24=`PIXMAN_x8b8g8r8`, and
 AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 `reason=unsupported-format` token.
 
-## Input capability query (ABI 2.2)
+## Input capability query (ABI 2.3)
 
 `query-pocketforge-input` reports the batch limit and every injectible device:
 
 ```json
 {
   "return": {
-    "abi_version": {"major": 2, "minor": 2},
+    "abi_version": {"major": 2, "minor": 3},
     "max_batch_events": 256,
     "devices": [{
       "id": "gamepad",
@@ -133,6 +134,18 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
         {"type": 0, "codes": [{"code": 0, "name": "SYN_REPORT"}]},
         {"type": 1, "codes": [{"code": 116, "name": "KEY_POWER"}]}
       ]
+    }, {
+      "id": "lid-switch",
+      "name": "gpio-keys-hall",
+      "bustype": 25,
+      "vendor": 1,
+      "product": 1,
+      "version": 256,
+      "ready": true,
+      "caps": [
+        {"type": 0, "codes": [{"code": 0, "name": "SYN_REPORT"}]},
+        {"type": 5, "codes": [{"code": 0, "name": "SW_LID"}]}
+      ]
     }]
   }
 }
@@ -147,8 +160,16 @@ include `fuzz` and `flat`; both are zero for this device. The physical L2/R2
 actuators are binary, so `ABS_Z` and `ABS_RZ` accept only the advertised
 endpoints 0 and 255; an intermediate value is an invalid parameter.
 
-`ready` means both physical UART streams have been configured by the guest and
-have accepted their initial centered/all-released frame. ABI major 2 fixes
+ABI 2.3 additively exposes `lid-switch`. The release DT wires
+`gpio-keys-hall` to R_PIO PL9 with `GPIO_ACTIVE_LOW | GPIO_PULL_UP`, so reset is
+OPEN (electrical high, `SW_LID=0`) and CLOSED is electrical low
+(`SW_LID=1`). The stateful R_PIO model supplies the bank-L mux/data and EINT
+config/control/status/W1C/debounce cells and routes its parent interrupt to GIC
+SPI 111. Repeating the current lid value is valid and produces no new edge.
+
+Gamepad `ready` means both physical UART streams have been configured by the
+guest and accepted their initial centered/all-released frame. The power and
+lid devices are ready when their PMIC and R_PIO models exist. ABI major 2 fixes
 command names, required fields, numeric evdev meaning, explicit framing,
 validation, per-stream ordering, and atomic failure behavior. A major change
 removes or reinterprets one of those rules. A minor change may add optional
@@ -244,9 +265,33 @@ ABI 2.x makes no guest-observable cross-stream ordering promise when one batch
 touches both. QMP execution on the main loop prevents another producer from
 interleaving a frame.
 
-The numeric form is device-neutral. A future machine can advertise touch or
-EV_SW without changing this command, but this machine advertises neither and
-rejects both.
+The numeric form is device-neutral. `lid-switch` accepts only `EV_SW/SW_LID`
+values 0 and 1; another type, code, or value fails the whole batch before the
+PL9 level changes.
+
+## AXP717 press timing and poweroff
+
+The model follows the public AXP717 v1.2 datasheet section 6.15.2.25. REG26
+bits 5:4 select the PEK interrupt threshold (1.0, 1.5, 2.0, or 2.5 seconds),
+with the POR value selecting 1.5 seconds. A held key sets the long-press status
+at that virtual-clock boundary; release before it reports short press, while a
+release after it does not also report short.
+
+REG26 bits 3:2 select OFFLEVEL (4, 6, 8, or 10 seconds). It is gated by
+REG22[1], which is disabled at POR. Once enabled, a continuous hold to the
+selected boundary makes exactly one host-UI shutdown request, the closest QEMU
+8.2 cause to physical forced power loss and deliberately distinct from guest
+shutdown. REG27[0], used by the release kernel's AXP717 sys-off handler,
+requests `SHUTDOWN_CAUSE_GUEST_SHUTDOWN`; ordinary QEMU invocation then exits.
+
+`tests/pocketforge-a133-release-power-smoke.py` is the bounded release-image
+proof. It verifies caller-supplied hashes, writes only a passive NoCloud
+observer to an ephemeral SD copy, and boots the normal default target without
+service masks, a substitute input listener, or a QMP quit fallback. Success
+requires the image's own logind and launcher to be active, logind-driven
+s2idle entry and PL9 wake/resume, the image's `Powering off` anchor, and QEMU
+exit status zero after a normal KEY_POWER press/release. The source image is
+hashed again after the run.
 
 ## Failure contract
 
