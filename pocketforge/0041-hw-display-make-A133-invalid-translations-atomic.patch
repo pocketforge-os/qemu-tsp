@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:13:48 +0000
+Subject: [PATCH] hw/display: make A133 invalid translations atomic
+
+---
+ hw/display/pocketforge_a133_display.c       | 11 +++++-
+ tests/qtest/pocketforge-a133-display-test.c | 44 +++++++++++++++++++++
+ 2 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+index d20b3bd..e6ba122 100644
+--- a/hw/display/pocketforge_a133_display.c
++++ b/hw/display/pocketforge_a133_display.c
+@@ -74,6 +74,7 @@ struct PocketForgeA133DisplayState {
+     SysBusDevice parent_obj;
+     PfDisplayBank bank[PF_BANK_COUNT];
+     QemuConsole *console;
++    uint8_t *frame;
+     bool enabled;
+     qemu_irq irq;
+     QEMUTimer *dsi_transfer_timer;
+@@ -275,14 +276,18 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+     }
+ 
+     surface = qemu_console_surface(s->console);
+-    destination = surface_data(surface);
+     for (y = 0; y < height; y++) {
+         if (!pocketforge_a133_display_iova_read(
+                 s, laddr + y * pitch,
+-                destination + y * surface_stride(surface), width * 4)) {
++                s->frame + y * width * 4, width * 4)) {
+             return;
+         }
+     }
++    destination = surface_data(surface);
++    for (y = 0; y < height; y++) {
++        memcpy(destination + y * surface_stride(surface),
++               s->frame + y * width * 4, width * 4);
++    }
+     dpy_gfx_update(s->console, 0, 0, width, height);
+ }
+ 
+@@ -356,6 +361,7 @@ static void pf_display_realize(DeviceState *dev, Error **errp)
+     timer_mod_ns(s->vblank_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PF_VBLANK_NS);
+     if (s->enabled) {
++        s->frame = g_malloc(PF_NATIVE_WIDTH * PF_NATIVE_HEIGHT * 4);
+         s->console = graphic_console_init(dev, 0, &pf_display_hw_ops, s);
+         qemu_console_resize(s->console, PF_NATIVE_WIDTH, PF_NATIVE_HEIGHT);
+     }
+@@ -369,6 +375,7 @@ static void pf_display_unrealize(DeviceState *dev)
+     timer_free(s->dsi_transfer_timer);
+     timer_free(s->tcon_transfer_timer);
+     timer_free(s->vblank_timer);
++    g_free(s->frame);
+     for (i = 0; i < PF_BANK_COUNT; i++) {
+         g_free(s->bank[i].regs);
+         s->bank[i].regs = NULL;
+diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
+index 5568798..77dfc9d 100644
+--- a/tests/qtest/pocketforge-a133-display-test.c
++++ b/tests/qtest/pocketforge-a133-display-test.c
+@@ -11,10 +11,13 @@
+ #define PF_WIDTH 720
+ #define PF_HEIGHT 1280
+ #define PF_IOMMU_BASE 0x030f0000
++#define PF_CCU_BASE   0x03001000
++#define PF_DE2_BASE   0x06000000
+ #define PF_MIXER_BASE 0x06100000
+ #define PF_DSI_BASE   0x06504000
+ #define PF_DPHY_BASE  0x06505000
+ #define PF_TCON_BASE  0x06511000
++#define PF_TCON_TOP_BASE 0x06510000
+ #define PF_IOMMU_TLB_FLUSH 0x080
+ #define PF_DSI_BASIC_CTL0   0x010
+ #define PF_TCON_CPU_IF      0x060
+@@ -280,9 +283,42 @@ static void test_native_register_contract(void)
+     QTestState *qts;
+     const uint32_t flush_request = BIT(17) | BIT(16) | 0x3f;
+     const uint32_t dphy_marker = 0x5a691234;
++    static const struct {
++        uint64_t address;
++        uint32_t value;
++    } persistent_registers[] = {
++        { PF_CCU_BASE + 0x600, 0x81000003 },
++        { PF_CCU_BASE + 0x60c, BIT(16) | BIT(0) },
++        { PF_CCU_BASE + 0xabc, BIT(16) | BIT(0) },
++        { PF_CCU_BASE + 0xb24, 0x81000000 },
++        { PF_CCU_BASE + 0xb4c, BIT(16) | BIT(0) },
++        { PF_CCU_BASE + 0xb60, 0x81000003 },
++        { PF_CCU_BASE + 0xb7c, BIT(16) | BIT(0) },
++        { PF_DE2_BASE + 0x000, BIT(0) | BIT(2) },
++        { PF_DE2_BASE + 0x004, BIT(0) | BIT(2) },
++        { PF_DE2_BASE + 0x008, BIT(0) | BIT(2) },
++        { PF_DE2_BASE + 0x00c, 0x00000101 },
++        { PF_MIXER_BASE + 0x1000, 0x00000301 },
++        { PF_MIXER_BASE + 0x2000, 0x01020304 },
++        { PF_MIXER_BASE + 0x3000, 0x11121314 },
++        { PF_MIXER_BASE + 0x4000, 0x21222324 },
++        { PF_MIXER_BASE + 0x5000, 0x31323334 },
++        { PF_TCON_TOP_BASE + 0x004, 0x00000000 },
++        { PF_TCON_TOP_BASE + 0x01c, 0x00000010 },
++        { PF_TCON_TOP_BASE + 0x020, BIT(16) },
++    };
++    unsigned int i;
+ 
+     qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
+ 
++    /* Every probe-visible clock, blender, VI/UI and TCON-TOP cell persists. */
++    for (i = 0; i < G_N_ELEMENTS(persistent_registers); i++) {
++        qtest_writel(qts, persistent_registers[i].address,
++                     persistent_registers[i].value);
++        g_assert_cmphex(qtest_readl(qts, persistent_registers[i].address), ==,
++                        persistent_registers[i].value);
++    }
++
+     /* Positive control: ordinary D-PHY state is stable and readable. */
+     qtest_writel(qts, PF_DPHY_BASE + 0x10, dphy_marker);
+     g_assert_cmphex(qtest_readl(qts, PF_DPHY_BASE + 0x10), ==,
+@@ -315,6 +351,14 @@ static void test_native_register_contract(void)
+     g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
+                     ==, 0);
+ 
++    /* VIDEO_VBLK is latched only when enabled and clears via W1C. */
++    qtest_writel(qts, PF_DSI_BASE + 0x004, BIT(2));
++    qtest_clock_step(qts, 17 * 1000 * 1000);
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + 0x004), ==,
++                    BIT(18) | BIT(2));
++    qtest_writel(qts, PF_DSI_BASE + 0x004, BIT(18) | BIT(2));
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + 0x004), ==, BIT(2));
++
+     qtest_quit(qts);
+ }
+ 

@@ -299,6 +299,12 @@ if grep -q '^static void pocketforge_a133_create_virtio_mmio' \
   git apply "$ROOT/pocketforge/0040-hw-arm-expose-only-release-A133-display-topology.patch"
 fi
 
+echo "== apply PocketForge patch: atomic native display scanout =="
+if ! grep -q 's->frame + y \* width \* 4' \
+    hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0041-hw-display-make-A133-invalid-translations-atomic.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
