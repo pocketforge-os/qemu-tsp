@@ -322,6 +322,11 @@ if ! grep -q 'bytes_published=0' \
   git apply "$ROOT/pocketforge/0044-hw-display-refresh-A133-scanout-on-vblank.patch"
 fi
 
+echo "== apply PocketForge patch: release-smoke Display1 listener =="
+if [ ! -f tests/qtest/pocketforge-a133-dbus-listener.c ]; then
+  git apply "$ROOT/pocketforge/0045-tests-add-A133-Display1-frame-listener.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
@@ -348,6 +353,7 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
 (cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features --with-pkgversion="$STACK_PKGVERSION" -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
+  tests/qtest/pocketforge-a133-dbus-listener \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-display-test \
   tests/qtest/pocketforge-a133-input-test \
@@ -368,6 +374,8 @@ meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a133-bootrom-test \
   qtest-aarch64/pocketforge-a133-ccu-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
+cp "$SYSTEM_BUILD_DIR/tests/qtest/pocketforge-a133-dbus-listener" \
+  "$OUT/pocketforge-a133-dbus-listener"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1
 "$OUT/qemu-system-aarch64" -M help | grep pocketforge-a133

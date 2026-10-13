@@ -2,6 +2,7 @@
 """Boot build 6 and prove MCU-backed QMP input at the guest evdev node."""
 
 import argparse
+import array
 import hashlib
 import json
 from pathlib import Path
@@ -447,6 +448,18 @@ class JsonLine:
             if "event" not in response:
                 return response
 
+    def command_fd(self, execute: str, arguments: dict, fd: int) -> dict:
+        request = {"execute": execute, "arguments": arguments}
+        rights = array.array("i", [fd])
+        self.sock.sendmsg(
+            [json.dumps(request).encode() + b"\n"],
+            [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        )
+        while True:
+            response = self.receive()
+            if "event" not in response:
+                return response
+
 
 class Console:
     def __init__(self, sock: socket.socket, transcript: Path):
@@ -609,6 +622,7 @@ def wait_device_ready(qmp: JsonLine, device: str, timeout: float = 10.0) -> dict
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--qemu", type=Path, required=True)
+    parser.add_argument("--dbus-listener", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--dtb", type=Path, required=True)
     parser.add_argument("--initrd", type=Path, required=True)
@@ -668,11 +682,33 @@ def main() -> int:
         command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
     )
     console = None
+    listener_process = None
     try:
         qmp = JsonLine(connect(qmp_path, 20.0))
         greeting = qmp.receive()
         if "QMP" not in greeting or "return" not in qmp.command("qmp_capabilities"):
             raise RuntimeError("qmp-handshake")
+        dbus_host, dbus_qemu = socket.socketpair()
+        response = qmp.command_fd(
+            "getfd", {"fdname": "dbus-display"}, dbus_qemu.fileno()
+        )
+        if "return" not in response:
+            raise RuntimeError(f"dbus-getfd:{response}")
+        response = qmp.command(
+            "add_client",
+            {"protocol": "@dbus-display", "fdname": "dbus-display"},
+        )
+        if "return" not in response:
+            raise RuntimeError(f"dbus-add-client:{response}")
+        dbus_qemu.close()
+        listener_process = subprocess.Popen(
+            [str(args.dbus_listener), str(dbus_host.fileno())],
+            pass_fds=(dbus_host.fileno(),),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        dbus_host.close()
         display = qmp.command("query-pocketforge-display").get("return", {})
         expected_display = {
             "profile": "hardware",
@@ -693,6 +729,14 @@ def main() -> int:
         console = Console(connect(serial_path, 20.0), serial_log)
         console.until(b"PF_SMOKE_MULTI_USER ", 180.0)
         console.until(b"PF_DRM_MARKER ", 120.0)
+        listener_stdout, listener_stderr = listener_process.communicate(timeout=30)
+        if (listener_process.returncode != 0 or
+                "DBUS_FRAME result=PASS" not in listener_stdout):
+            raise RuntimeError(
+                f"dbus-frame:rc={listener_process.returncode}:"
+                f"{listener_stderr[-500:]}"
+            )
+        print(listener_stdout.strip(), flush=True)
         frame = args.work / "display.ppm"
         response = qmp.command("screendump", {"filename": str(frame)})
         if "return" not in response:
@@ -885,6 +929,13 @@ def main() -> int:
         )
         return 0
     finally:
+        if listener_process is not None and listener_process.poll() is None:
+            listener_process.terminate()
+            try:
+                listener_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                listener_process.kill()
+                listener_process.wait(timeout=5)
         if console is not None:
             console.close()
         process.terminate()
