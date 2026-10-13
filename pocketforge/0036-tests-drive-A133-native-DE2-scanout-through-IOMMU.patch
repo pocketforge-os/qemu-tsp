@@ -4,13 +4,14 @@ Subject: [PATCH] tests: drive A133 native DE2 scanout through IOMMU
 
 Replace the virtio-gpu proxy path in the display export test with the
 release driver's native contract: populate sun50i IOMMU tables, program
-DE2 UI channel 2, and commit via the mixer double-buffer register.
+DE2 UI channel 2, and commit via the mixer double-buffer register. Require
+finite DSI and TCON command completion rather than write-discard stubs.
 
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 28dad13..d353d40 100644
+index 326846f..5568798 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
-@@ -5,34 +5,30 @@
+@@ -5,41 +5,30 @@
  #include <gio/gio.h>
  #include <gio/gunixfdlist.h>
  #include "libqtest.h"
@@ -34,6 +35,14 @@ index 28dad13..d353d40 100644
 -#define VIRTIO_MMIO_QUEUE_AVAIL_HIGH 0x094
 -#define VIRTIO_MMIO_QUEUE_USED_LOW  0x0a0
 -#define VIRTIO_MMIO_QUEUE_USED_HIGH 0x0a4
+ #define PF_IOMMU_BASE 0x030f0000
++#define PF_MIXER_BASE 0x06100000
+ #define PF_DSI_BASE   0x06504000
+ #define PF_DPHY_BASE  0x06505000
+ #define PF_TCON_BASE  0x06511000
+ #define PF_IOMMU_TLB_FLUSH 0x080
+ #define PF_DSI_BASIC_CTL0   0x010
+ #define PF_TCON_CPU_IF      0x060
 -
 -typedef struct GpuFixture {
 -    QTestState *qts;
@@ -42,14 +51,6 @@ index 28dad13..d353d40 100644
 -    QVirtQueue *vq;
 -    uint64_t framebuffer_addr;
 -} GpuFixture;
-+#define PF_IOMMU_BASE 0x030f0000
-+#define PF_MIXER_BASE 0x06100000
-+#define PF_DSI_BASE   0x06504000
-+#define PF_DPHY_BASE  0x06505000
-+#define PF_TCON_BASE  0x06511000
-+#define PF_IOMMU_TLB_FLUSH 0x080
-+#define PF_DSI_BASIC_CTL0   0x010
-+#define PF_TCON_CPU_IF      0x060
 +#define PF_IOMMU_TTB        0x050
 +#define PF_MIXER_DBUFF      0x008
 +#define PF_MIXER_UI2        0x4000
@@ -64,7 +65,7 @@ index 28dad13..d353d40 100644
  
  typedef struct DisplayTest {
      GMainLoop *loop;
-@@ -57,174 +53,39 @@ typedef struct DisplayTest {
+@@ -64,174 +53,39 @@ typedef struct DisplayTest {
      uint8_t update_pixel[4];
  } DisplayTest;
  
@@ -102,7 +103,8 @@ index 28dad13..d353d40 100644
 -}
 -
 -static void gpu_fixture_init(GpuFixture *f, QTestState *qts)
--{
++static void native_map_framebuffer(QTestState *qts)
+ {
 -    uint64_t features;
 -
 -    memset(f, 0, sizeof(*f));
@@ -143,8 +145,7 @@ index 28dad13..d353d40 100644
 -}
 -
 -static void gpu_draw_asymmetric_pattern(GpuFixture *f)
-+static void native_map_framebuffer(QTestState *qts)
- {
+-{
 -    const uint32_t resource_id = 1;
      const size_t framebuffer_size = PF_WIDTH * PF_HEIGHT * 4;
      g_autofree uint8_t *pixels = g_malloc0(framebuffer_size);
@@ -265,7 +266,7 @@ index 28dad13..d353d40 100644
  }
  
  static GDBusConnection *p2p_from_fd(int fd)
-@@ -337,7 +198,6 @@ static void test_native_scanout(void)
+@@ -344,7 +198,6 @@ static void test_native_scanout(void)
      QDict *info;
      QDict *scanout;
      DisplayTest test = { 0 };
@@ -273,7 +274,7 @@ index 28dad13..d353d40 100644
      int dbus_pair[2];
      int listener_pair[2];
      int presentation_rotation;
-@@ -347,8 +207,7 @@ static void test_native_scanout(void)
+@@ -354,8 +207,7 @@ static void test_native_scanout(void)
  
      qts = qtest_init("-machine pocketforge-a133 -nodefaults "
                       "-display dbus,p2p=yes");
@@ -283,7 +284,7 @@ index 28dad13..d353d40 100644
      g_assert_cmpint(qemu_socketpair(AF_UNIX, SOCK_STREAM, 0, dbus_pair), ==, 0);
      qtest_qmp_add_client(qts, "@dbus-display", dbus_pair[1]);
      conn = p2p_from_fd(dbus_pair[0]);
-@@ -396,21 +255,6 @@ static void test_native_scanout(void)
+@@ -403,21 +255,6 @@ static void test_native_scanout(void)
      g_assert_cmpuint(test.first[3], ==, 0x00);
      g_assert_cmpint(memcmp(test.first, test.last, sizeof(test.first)), !=, 0);
  
@@ -305,61 +306,32 @@ index 28dad13..d353d40 100644
      /* Map the observed native marker using the queried clockwise direction. */
      if (presentation_rotation == 90) {
          presented_x = PF_HEIGHT - 1;
-@@ -428,9 +272,45 @@ static void test_native_scanout(void)
+@@ -435,9 +272,6 @@ static void test_native_scanout(void)
      qobject_unref(response);
      g_clear_object(&test.server);
      g_clear_object(&test.listener_conn);
 -    qvirtio_reset(&gpu.mmio.vdev);
 -    qvirtqueue_cleanup(gpu.mmio.vdev.bus, gpu.vq, &gpu.alloc);
 -    alloc_destroy(&gpu.alloc);
-+    qtest_quit(qts);
-+}
-+
-+static void test_native_register_contract(void)
-+{
-+    QTestState *qts;
-+    const uint32_t flush_request = BIT(17) | BIT(16) | 0x3f;
-+    const uint32_t dphy_marker = 0x5a691234;
-+
-+    qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
-+
-+    /* Positive control: ordinary D-PHY state is stable and readable. */
-+    qtest_writel(qts, PF_DPHY_BASE + 0x10, dphy_marker);
-+    g_assert_cmphex(qtest_readl(qts, PF_DPHY_BASE + 0x10), ==,
-+                    dphy_marker);
-+
-+    /* Hardware-owned IOMMU flush requests must complete repeatedly. */
-+    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, flush_request);
-+    g_assert_cmphex(qtest_readl(qts,
-+                               PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
-+    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, BIT(16));
-+    g_assert_cmphex(qtest_readl(qts,
-+                               PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
-+
-+    /* DSI INST_ST completion is what every long DCS transfer polls. */
-+    qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, BIT(0));
-+    qtest_clock_step(qts, 100 * 1000);
-+    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0) &
-+                    BIT(0), ==, 0);
-+    qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, 0);
-+    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0), ==,
-+                    0);
-+
-+    /* TCON TRI_START is a command, not retained software state. */
-+    qtest_writel(qts, PF_TCON_BASE + PF_TCON_CPU_IF, BIT(1));
-+    qtest_clock_step(qts, 100 * 1000);
-+    g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
-+                    ==, 0);
-+
      qtest_quit(qts);
  }
  
-@@ -439,5 +319,7 @@ int main(int argc, char **argv)
-     g_test_init(&argc, &argv, NULL);
-     qtest_add_func("/aarch64/pocketforge-a133-display/native-scanout",
-                    test_native_scanout);
-+    qtest_add_func("/aarch64/pocketforge-a133-display/register-contract",
-+                   test_native_register_contract);
-     return g_test_run();
- }
+@@ -464,6 +298,8 @@ static void test_native_register_contract(void)
+ 
+     /* DSI INST_ST completion is what every long DCS transfer polls. */
+     qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, BIT(0));
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0) &
++                    BIT(0), ==, BIT(0));
+     qtest_clock_step(qts, 100 * 1000);
+     g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0) &
+                     BIT(0), ==, 0);
+@@ -473,6 +309,8 @@ static void test_native_register_contract(void)
+ 
+     /* TCON TRI_START is a command, not retained software state. */
+     qtest_writel(qts, PF_TCON_BASE + PF_TCON_CPU_IF, BIT(1));
++    g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
++                    ==, BIT(1));
+     qtest_clock_step(qts, 100 * 1000);
+     g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
+                     ==, 0);
 
