@@ -268,7 +268,7 @@ if ! grep -q 'pocketforge_a133_ccu_create' hw/arm/pocketforge_a133.c; then
 fi
 
 echo "== apply PocketForge patch: RED A133 native display register contract =="
-if ! grep -q 'native-display/register-contract' \
+if ! grep -q 'pocketforge-a133-display/register-contract' \
     tests/qtest/pocketforge-a133-display-test.c; then
   git apply "$ROOT/pocketforge/0034-tests-cover-A133-native-display-register-contract.patch"
 fi
