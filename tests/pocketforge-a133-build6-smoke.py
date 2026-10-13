@@ -28,6 +28,26 @@ QEMU_STACK_VERSION_PREFIX = "pocketforge-qemu-tsp-head="
 
 ROOTFS_OFFSET = 127_926_272
 ROOTFS_SIZE = 1_518_338_048
+
+
+def find_display_timeout(log_text: str) -> str | None:
+    """Return the first display-driver timeout line, if any."""
+    timeout_pattern = re.compile(r"\b(?:timeout|timed\s+out)\b", re.IGNORECASE)
+    component_pattern = re.compile(
+        r"(?:\[drm\]|display-engine|"
+        r"sun4i-drm|sun8i-mixer|sun8i-tcon-top|sun4i-tcon|"
+        r"sun6i-mipi-dsi|sun6i-mipi-dphy|panel-orisetech-otm1289a|"
+        r"6100000\.mixer|6510000\.tcon-top|"
+        r"6511000\.lcd-controller|6504000\.dsi|6505000\.phy|"
+        r"otm1289a)",
+        re.IGNORECASE,
+    )
+    for line in log_text.splitlines():
+        if timeout_pattern.search(line) and component_pattern.search(line):
+            return line
+    return None
+
+
 SMOKE_SCRIPT = """#!/bin/sh
 set -eu
 exec 3>/dev/kmsg
@@ -913,15 +933,9 @@ def main() -> int:
         for block, pattern in display_probes.items():
             if not re.search(pattern, log_text):
                 raise RuntimeError(f"display-probe-missing:{block}")
-        display_timeout = re.search(
-            r"^(?:.*(?:sun4i-drm|sun8i-mixer|sun8i-tcon-top|sun4i-tcon|"
-            r"sun6i-mipi-dsi|sun6i-mipi-dphy|panel-orisetech-otm1289a).*)"
-            r"timeout.*$",
-            log_text,
-            re.IGNORECASE | re.MULTILINE,
-        )
+        display_timeout = find_display_timeout(log_text)
         if display_timeout is not None:
-            raise RuntimeError(f"display-timeout:{display_timeout.group(0)}")
+            raise RuntimeError(f"display-timeout:{display_timeout}")
         vblanks = [
             (int(irq), int(drm))
             for irq, drm in re.findall(

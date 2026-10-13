@@ -25,6 +25,8 @@ git -C "$ROOT" diff --cached --quiet HEAD -- || {
   echo "FATAL: refusing to stamp a dirty PocketForge index"
   exit 1
 }
+echo "== test build-6 release-smoke log gates =="
+python3 "$ROOT/tests/pocketforge-a133-build6-smoke-test.py"
 STACK_PKGVERSION="pocketforge-qemu-tsp-head=$STACK_HEAD"
 REPO=$(sed -n 's/^repo *= *//p'   UPSTREAM)
 TAG=$(sed -n  's/^tag *= *//p'    UPSTREAM)
