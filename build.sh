@@ -27,6 +27,9 @@ git -C "$ROOT" diff --cached --quiet HEAD -- || {
 }
 echo "== test fresh Python evidence runner =="
 "$ROOT/tests/run-python-fresh-test.sh"
+echo "== test A133 IOMMU boot-loop evidence integrity =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-iommu-boot-loop-test.py"
 echo "== test build-6 release-smoke log gates =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-build6-smoke-test.py"
@@ -358,6 +361,12 @@ fi
 echo "== apply PocketForge patch: A133 soft-poweroff process-exit qtest =="
 if ! grep -q 'qtest_writel_no_rsp' tests/qtest/libqtest.h; then
   git apply "$ROOT/pocketforge/0050-tests-prove-A133-soft-poweroff-process-exit.patch"
+fi
+
+echo "== apply PocketForge patch: A133 IOMMU invalidation completion qtest =="
+if ! grep -q 'PF_IOMMU_PC_IVLD_ADDR' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0051-tests-cover-A133-IOMMU-invalidation-completion.patch"
 fi
 
 echo "== check applied PocketForge source whitespace =="

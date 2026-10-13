@@ -334,4 +334,3 @@ index 326846f..5568798 100644
      qtest_clock_step(qts, 100 * 1000);
      g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
                      ==, 0);
-
