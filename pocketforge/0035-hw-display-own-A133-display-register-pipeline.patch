@@ -1,0 +1,357 @@
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:02:00 +0000
+Subject: [PATCH] hw/display: own A133 display register pipeline
+
+Replace the display and IOMMU RAM stubs with a clean-room device that
+owns the real apertures. Complete the hardware-owned probe and transfer
+bits and implement the sun50i two-level IOVA walk required by DE2 scanout.
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 0637a14..d69d751 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -102,6 +102,7 @@
+ #include "hw/arm/pocketforge_a133.h"
+ #include "hw/boards.h"
+ #include "hw/char/dw_apb_uart.h"
++#include "hw/display/pocketforge_a133_display.h"
+ #include "hw/i2c/allwinner-i2c.h"
+ #include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
+@@ -185,6 +186,7 @@ struct PocketForgeA133MachineState {
+     DeviceState *pmic;
+     PfA133CcuState *ccu;
+     PfA133PioState *pio;
++    PocketForgeA133DisplayState *native_display;
+     MemoryRegion *uart0_mmio;
+     MemoryRegion *mmc0_mmio;
+     MemoryRegion r_intc_mmio;
+@@ -541,7 +543,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.watchdog",         0x030090a0, 0x20 },
+     { "pocketforge-a133.pwm",              0x0300a000, 0x400 },
+     { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
+-    { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+@@ -554,13 +555,8 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
+     { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
+     { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
+-    { "pocketforge-a133.de2",              0x06000000, 0x400000 },
+     { "pocketforge-a133.g2d_clk",          0x06480000, 0x100 },
+     { "pocketforge-a133.g2d_rotate",       0x064a8000, 0x100 },
+-    { "pocketforge-a133.dsi",              0x06504000, 0x1000 },
+-    { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
+-    { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
+-    { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
+     { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
+     { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
+     { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+@@ -1164,6 +1160,7 @@ static void pocketforge_a133_init(MachineState *machine)
+ 
+     pocketforge_a133_create_sram(s, sysmem);
+     pocketforge_a133_create_mmio_stubs();
++    s->native_display = pocketforge_a133_display_create();
+     pocketforge_a133_create_r_i2c0(
+         s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
+     qemu_register_reset(pocketforge_a133_power_reset, s);
+diff --git a/hw/display/meson.build b/hw/display/meson.build
+index 344dfe3..5ad55f7 100644
+--- a/hw/display/meson.build
++++ b/hw/display/meson.build
+@@ -5,6 +5,7 @@ system_ss.add(when: 'CONFIG_EDID', if_true: files('edid-generate.c', 'edid-regio
+ 
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb.c'))
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb-standalone.c'))
++system_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133_display.c'))
+ 
+ system_ss.add(when: 'CONFIG_VGA_CIRRUS', if_true: files('cirrus_vga.c'))
+ system_ss.add(when: ['CONFIG_VGA_CIRRUS', 'CONFIG_VGA_ISA'], if_true: files('cirrus_vga_isa.c'))
+
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+new file mode 100644
+index 0000000..6045915
+--- /dev/null
++++ b/hw/display/pocketforge_a133_display.c
+@@ -0,0 +1,258 @@
++/*
++ * PocketForge A133 native DE2/TCON/DSI display pipeline.
++ *
++ * This is a clean-room model derived from the mainline sun8i DRM and
++ * sun50i-iommu drivers, DT bindings, and public Allwinner register docs.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++#include "qapi/error.h"
++#include "hw/display/pocketforge_a133_display.h"
++#include "exec/address-spaces.h"
++#include "hw/qdev-properties.h"
++
++#define PF_IOMMU_BASE      0x030f0000
++#define PF_IOMMU_SIZE      0x10000
++#define PF_DE2_BASE        0x06000000
++#define PF_DE2_SIZE        0x400000
++#define PF_DSI_BASE        0x06504000
++#define PF_DSI_SIZE        0x1000
++#define PF_DPHY_BASE       0x06505000
++#define PF_DPHY_SIZE       0x1000
++#define PF_TCON_TOP_BASE   0x06510000
++#define PF_TCON_TOP_SIZE   0x1000
++#define PF_TCON_LCD_BASE   0x06511000
++#define PF_TCON_LCD_SIZE   0x1000
++
++#define PF_IOMMU_TTB       0x50
++#define PF_IOMMU_TLB_FLUSH 0x80
++#define PF_IOMMU_TLB_IVLD  0x98
++#define PF_IOMMU_PC_IVLD   0xa8
++#define PF_DSI_BASIC_CTL0  0x10
++#define PF_DSI_INST_ST     BIT(0)
++#define PF_TCON_CPU_IF     0x60
++#define PF_TCON_TRI_START  BIT(1)
++
++typedef enum PfDisplayBankKind {
++    PF_BANK_IOMMU,
++    PF_BANK_DE2,
++    PF_BANK_DSI,
++    PF_BANK_DPHY,
++    PF_BANK_TCON_TOP,
++    PF_BANK_TCON_LCD,
++    PF_BANK_COUNT,
++} PfDisplayBankKind;
++
++typedef struct PfDisplayBank {
++    MemoryRegion mr;
++    uint32_t *regs;
++    uint32_t size;
++    PfDisplayBankKind kind;
++} PfDisplayBank;
++
++struct PocketForgeA133DisplayState {
++    SysBusDevice parent_obj;
++    PfDisplayBank bank[PF_BANK_COUNT];
++};
++
++static uint64_t pf_display_read(void *opaque, hwaddr offset, unsigned size)
++{
++    PfDisplayBank *bank = opaque;
++    uint64_t value = 0;
++
++    if (offset + size > bank->size) {
++        return 0;
++    }
++    memcpy(&value, (uint8_t *)bank->regs + offset, size);
++    return value;
++}
++
++static void pf_display_write(void *opaque, hwaddr offset, uint64_t value,
++                             unsigned size)
++{
++    PfDisplayBank *bank = opaque;
++
++    if (offset + size > bank->size) {
++        return;
++    }
++    memcpy((uint8_t *)bank->regs + offset, &value, size);
++
++    if (size != 4 || (offset & 3)) {
++        return;
++    }
++
++    switch (bank->kind) {
++    case PF_BANK_IOMMU:
++        if (offset == PF_IOMMU_TLB_FLUSH || offset == PF_IOMMU_TLB_IVLD ||
++            offset == PF_IOMMU_PC_IVLD) {
++            bank->regs[offset / 4] = 0;
++        }
++        break;
++    case PF_BANK_DSI:
++        if (offset == PF_DSI_BASIC_CTL0) {
++            bank->regs[offset / 4] &= ~PF_DSI_INST_ST;
++        }
++        break;
++    case PF_BANK_TCON_LCD:
++        if (offset == PF_TCON_CPU_IF) {
++            bank->regs[offset / 4] &= ~PF_TCON_TRI_START;
++        }
++        break;
++    default:
++        break;
++    }
++}
++
++static const MemoryRegionOps pf_display_ops = {
++    .read = pf_display_read,
++    .write = pf_display_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 1,
++        .max_access_size = 4,
++    },
++    .impl = {
++        .min_access_size = 1,
++        .max_access_size = 4,
++    },
++};
++
++static bool pf_phys_read_le32(hwaddr address, uint32_t *value)
++{
++    MemTxResult result;
++    uint32_t raw;
++
++    result = address_space_read(&address_space_memory, address,
++                                MEMTXATTRS_UNSPECIFIED, &raw, sizeof(raw));
++    *value = le32_to_cpu(raw);
++    return result == MEMTX_OK;
++}
++
++bool pocketforge_a133_display_iova_read(PocketForgeA133DisplayState *s,
++                                        uint32_t iova, void *buf, size_t len)
++{
++    PfDisplayBank *iommu = &s->bank[PF_BANK_IOMMU];
++    uint32_t ttb = iommu->regs[PF_IOMMU_TTB / 4] & 0xfffffc00;
++    uint8_t *out = buf;
++
++    while (len) {
++        uint32_t dte, pte;
++        hwaddr dte_addr = ttb + ((iova >> 20) * sizeof(uint32_t));
++        hwaddr pte_addr;
++        hwaddr physical;
++        size_t chunk = MIN(len, (size_t)(0x1000 - (iova & 0xfff)));
++
++        if (!ttb || !pf_phys_read_le32(dte_addr, &dte) ||
++            (dte & 3) != 1) {
++            return false;
++        }
++        pte_addr = (dte & 0xfffffc00) +
++                   (((iova >> 12) & 0xff) * sizeof(uint32_t));
++        if (!pf_phys_read_le32(pte_addr, &pte) || !(pte & BIT(1))) {
++            return false;
++        }
++        physical = (pte & 0xfffff000) | (iova & 0xfff);
++        if (address_space_read(&address_space_memory, physical,
++                               MEMTXATTRS_UNSPECIFIED, out, chunk) !=
++            MEMTX_OK) {
++            return false;
++        }
++        iova += chunk;
++        out += chunk;
++        len -= chunk;
++    }
++    return true;
++}
++
++static void pf_display_reset(DeviceState *dev)
++{
++    PocketForgeA133DisplayState *s = POCKETFORGE_A133_DISPLAY(dev);
++    unsigned int i;
++
++    for (i = 0; i < PF_BANK_COUNT; i++) {
++        memset(s->bank[i].regs, 0, s->bank[i].size);
++    }
++}
++
++static void pf_display_realize(DeviceState *dev, Error **errp)
++{
++    static const char *const names[PF_BANK_COUNT] = {
++        "pocketforge-a133-display.iommu",
++        "pocketforge-a133-display.de2",
++        "pocketforge-a133-display.dsi",
++        "pocketforge-a133-display.dphy",
++        "pocketforge-a133-display.tcon-top",
++        "pocketforge-a133-display.tcon-lcd",
++    };
++    static const uint32_t sizes[PF_BANK_COUNT] = {
++        PF_IOMMU_SIZE, PF_DE2_SIZE, PF_DSI_SIZE, PF_DPHY_SIZE,
++        PF_TCON_TOP_SIZE, PF_TCON_LCD_SIZE,
++    };
++    PocketForgeA133DisplayState *s = POCKETFORGE_A133_DISPLAY(dev);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++    unsigned int i;
++
++    for (i = 0; i < PF_BANK_COUNT; i++) {
++        PfDisplayBank *bank = &s->bank[i];
++
++        bank->kind = i;
++        bank->size = sizes[i];
++        bank->regs = g_new0(uint32_t, bank->size / sizeof(uint32_t));
++        memory_region_init_io(&bank->mr, OBJECT(s), &pf_display_ops, bank,
++                              names[i], bank->size);
++        sysbus_init_mmio(sbd, &bank->mr);
++    }
++}
++
++static void pf_display_unrealize(DeviceState *dev)
++{
++    PocketForgeA133DisplayState *s = POCKETFORGE_A133_DISPLAY(dev);
++    unsigned int i;
++
++    for (i = 0; i < PF_BANK_COUNT; i++) {
++        g_free(s->bank[i].regs);
++        s->bank[i].regs = NULL;
++    }
++}
++
++static void pf_display_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->realize = pf_display_realize;
++    dc->unrealize = pf_display_unrealize;
++    dc->reset = pf_display_reset;
++    dc->desc = "PocketForge A133 native display pipeline";
++}
++
++static const TypeInfo pf_display_type_info = {
++    .name = TYPE_POCKETFORGE_A133_DISPLAY,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PocketForgeA133DisplayState),
++    .class_init = pf_display_class_init,
++};
++
++static void pf_display_register_types(void)
++{
++    type_register_static(&pf_display_type_info);
++}
++
++type_init(pf_display_register_types)
++
++PocketForgeA133DisplayState *pocketforge_a133_display_create(void)
++{
++    static const hwaddr bases[PF_BANK_COUNT] = {
++        PF_IOMMU_BASE, PF_DE2_BASE, PF_DSI_BASE, PF_DPHY_BASE,
++        PF_TCON_TOP_BASE, PF_TCON_LCD_BASE,
++    };
++    DeviceState *dev = qdev_new(TYPE_POCKETFORGE_A133_DISPLAY);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++    unsigned int i;
++
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    for (i = 0; i < PF_BANK_COUNT; i++) {
++        sysbus_mmio_map(sbd, i, bases[i]);
++    }
++    return POCKETFORGE_A133_DISPLAY(dev);
++}
+diff --git a/include/hw/display/pocketforge_a133_display.h b/include/hw/display/pocketforge_a133_display.h
+new file mode 100644
+index 0000000..48b8e90
+--- /dev/null
++++ b/include/hw/display/pocketforge_a133_display.h
+@@ -0,0 +1,16 @@
++/* PocketForge A133 native display pipeline. */
++#ifndef HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
++#define HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
++
++#include "hw/sysbus.h"
++
++#define TYPE_POCKETFORGE_A133_DISPLAY "pocketforge-a133-display"
++OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133DisplayState,
++                           POCKETFORGE_A133_DISPLAY)
++
++PocketForgeA133DisplayState *pocketforge_a133_display_create(void);
++bool pocketforge_a133_display_iova_read(PocketForgeA133DisplayState *s,
++                                        uint32_t iova, void *buf,
++                                        size_t len);
++
++#endif

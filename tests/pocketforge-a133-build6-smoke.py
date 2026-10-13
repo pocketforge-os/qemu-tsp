@@ -2,6 +2,7 @@
 """Boot build 6 and prove MCU-backed QMP input at the guest evdev node."""
 
 import argparse
+import array
 import hashlib
 import json
 from pathlib import Path
@@ -27,6 +28,26 @@ QEMU_STACK_VERSION_PREFIX = "pocketforge-qemu-tsp-head="
 
 ROOTFS_OFFSET = 127_926_272
 ROOTFS_SIZE = 1_518_338_048
+
+
+def find_display_timeout(log_text: str) -> str | None:
+    """Return the first display-driver timeout line, if any."""
+    timeout_pattern = re.compile(r"\b(?:timeout|timed\s+out)\b", re.IGNORECASE)
+    component_pattern = re.compile(
+        r"(?:\[drm\]|display-engine|"
+        r"sun4i-drm|sun8i-mixer|sun8i-tcon-top|sun4i-tcon|"
+        r"sun6i-mipi-dsi|sun6i-mipi-dphy|panel-orisetech-otm1289a|"
+        r"6100000\.mixer|6510000\.tcon-top|"
+        r"6511000\.lcd-controller|6504000\.dsi|6505000\.phy|"
+        r"otm1289a)",
+        re.IGNORECASE,
+    )
+    for line in log_text.splitlines():
+        if timeout_pattern.search(line) and component_pattern.search(line):
+            return line
+    return None
+
+
 SMOKE_SCRIPT = """#!/bin/sh
 set -eu
 exec 3>/dev/kmsg
@@ -40,6 +61,49 @@ else
 fi
 printf 'PF_SMOKE_MULTI_USER active=%s gate=%s\\n' \
     "$multi_user_active" "$boot_gate" >&3
+tries=0
+while [ ! -c /dev/fb0 ] && [ "$tries" -lt 4000 ]; do
+    tries=$((tries + 1))
+done
+if [ ! -c /dev/fb0 ]; then
+    for device in 6000000.bus 6100000.mixer 6510000.tcon-top \
+                  6511000.lcd-controller 6504000.dsi 6505000.phy; do
+        path=/sys/bus/platform/devices/$device
+        driver=absent
+        if [ -L "$path/driver" ]; then
+            driver=$(basename "$(readlink "$path/driver")")
+        elif [ -e "$path" ]; then
+            driver=unbound
+        fi
+        printf 'PF_DRM_PROBE device=%s driver=%s\\n' "$device" "$driver" >&3
+    done
+    if [ -r /sys/kernel/debug/devices_deferred ]; then
+        while IFS= read -r deferred; do
+            case "$deferred" in
+                *6000000*|*6100000*|*6510000*|*6511000*|*6504000*|*6505000*)
+                    printf 'PF_DRM_DEFERRED %s\\n' "$deferred" >&3 ;;
+            esac
+        done </sys/kernel/debug/devices_deferred
+    fi
+    printf 'PF_SMOKE_FAIL reason=drm-fbdev-not-found\\n' >&3
+    exit 1
+fi
+fb_name=$(cat /sys/class/graphics/fb0/name)
+case "$fb_name" in
+    *sun4i*|*drmfb*) ;;
+    *)
+        printf 'PF_SMOKE_FAIL reason=unexpected-fbdev name=%s\\n' \
+            "$fb_name" >&3
+        exit 1
+        ;;
+esac
+if ! printf '\\377\\000\\377\\000' | \
+    dd of=/dev/fb0 bs=4 count=1 conv=notrunc status=none; then
+    printf 'PF_SMOKE_FAIL reason=drm-marker-write\\n' >&3
+    exit 1
+fi
+printf 'PF_DRM_MARKER driver=sun4i-drm fbdev=%s x=0 y=0 xr24=ff00ff\\n' \
+    "$fb_name" >&3
 if timeout 5s systemctl is-active --quiet pf-input-decode.service; then
     decoder_start=auto
 else
@@ -423,6 +487,18 @@ class JsonLine:
             if "event" not in response:
                 return response
 
+    def command_fd(self, execute: str, arguments: dict, fd: int) -> dict:
+        request = {"execute": execute, "arguments": arguments}
+        rights = array.array("i", [fd])
+        self.sock.sendmsg(
+            [json.dumps(request).encode() + b"\n"],
+            [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        )
+        while True:
+            response = self.receive()
+            if "event" not in response:
+                return response
+
 
 class Console:
     def __init__(self, sock: socket.socket, transcript: Path):
@@ -585,6 +661,7 @@ def wait_device_ready(qmp: JsonLine, device: str, timeout: float = 10.0) -> dict
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--qemu", type=Path, required=True)
+    parser.add_argument("--dbus-listener", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--dtb", type=Path, required=True)
     parser.add_argument("--initrd", type=Path, required=True)
@@ -625,8 +702,9 @@ def main() -> int:
         "-initrd", str(args.initrd),
         "-append",
         "root=PARTLABEL=userdata rootwait rw console=ttyS0,115200 "
-        "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon loglevel=5 "
-        "panic=-1 pocketforge.root=volatile video=DSI-1:d "
+        "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon loglevel=7 "
+        "sun4i_tcon.pf_display_diag=1 sun8i_tcon_top.pf_display_diag=1 "
+        "panic=-1 pocketforge.root=volatile "
         "systemd.log_target=kmsg systemd.log_level=info "
         "systemd.mask=pocketforge-boot-animator.service "
         "systemd.mask=pf-shell-selected.service "
@@ -634,7 +712,7 @@ def main() -> int:
         "systemd.mask=sleep.target systemd.mask=suspend.target "
         "systemd.mask=systemd-suspend.service",
         "-drive", f"if=sd,format=raw,file={smoke_sd},snapshot=on",
-        "-display", "none", "-monitor", "none", "-no-reboot",
+        "-display", "dbus,p2p=yes", "-monitor", "none", "-no-reboot",
         "-d", "unimp", "-D", str(qemu_log),
         "-qmp", f"unix:{qmp_path},server=on,wait=off",
         "-serial", f"unix:{serial_path},server=on,wait=off",
@@ -644,11 +722,33 @@ def main() -> int:
         command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
     )
     console = None
+    listener_process = None
     try:
         qmp = JsonLine(connect(qmp_path, 20.0))
         greeting = qmp.receive()
         if "QMP" not in greeting or "return" not in qmp.command("qmp_capabilities"):
             raise RuntimeError("qmp-handshake")
+        dbus_host, dbus_qemu = socket.socketpair()
+        response = qmp.command_fd(
+            "getfd", {"fdname": "dbus-display"}, dbus_qemu.fileno()
+        )
+        if "return" not in response:
+            raise RuntimeError(f"dbus-getfd:{response}")
+        response = qmp.command(
+            "add_client",
+            {"protocol": "@dbus-display", "fdname": "dbus-display"},
+        )
+        if "return" not in response:
+            raise RuntimeError(f"dbus-add-client:{response}")
+        dbus_qemu.close()
+        listener_process = subprocess.Popen(
+            [str(args.dbus_listener), str(dbus_host.fileno())],
+            pass_fds=(dbus_host.fileno(),),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        dbus_host.close()
         display = qmp.command("query-pocketforge-display").get("return", {})
         expected_display = {
             "profile": "hardware",
@@ -668,6 +768,31 @@ def main() -> int:
 
         console = Console(connect(serial_path, 20.0), serial_log)
         console.until(b"PF_SMOKE_MULTI_USER ", 180.0)
+        console.until(b"PF_DRM_MARKER ", 120.0)
+        listener_stdout, listener_stderr = listener_process.communicate(timeout=30)
+        if (listener_process.returncode != 0 or
+                "DBUS_FRAME result=PASS" not in listener_stdout):
+            raise RuntimeError(
+                f"dbus-frame:rc={listener_process.returncode}:"
+                f"{listener_stderr[-500:]}"
+            )
+        print(listener_stdout.strip(), flush=True)
+        frame = args.work / "display.ppm"
+        response = qmp.command("screendump", {"filename": str(frame)})
+        if "return" not in response:
+            raise RuntimeError(f"display-screendump:{response}")
+        ppm = frame.read_bytes()
+        header_end = ppm.find(b"\n255\n")
+        if not ppm.startswith(b"P6\n720 1280\n") or header_end < 0:
+            raise RuntimeError("display-frame-format")
+        first = ppm[header_end + len(b"\n255\n"):][:3]
+        if first != bytes((0xff, 0x00, 0xff)):
+            raise RuntimeError(f"display-marker:{first.hex()}")
+        print(
+            "DRM_DISPLAY driver=sun4i-drm frame=720x1280 "
+            "marker=ff00ff export=QemuConsole",
+            flush=True,
+        )
         console.until(b"PF_SMOKE_READY ", 120.0)
 
         deadline = time.monotonic() + 30.0
@@ -796,6 +921,41 @@ def main() -> int:
         console.until(b"PF_SMOKE_PASS ", 60.0)
         console.until(b"\n", 5.0)
         log_text = serial_log.read_text(errors="replace")
+        display_probes = {
+            "drm": r"\[drm\] Initialized sun4i-drm 1\.0\.0",
+            "mixer": r"bound 6100000\.mixer",
+            "tcon-top": r"bound 6510000\.tcon-top",
+            "tcon-lcd": r"bound 6511000\.lcd-controller",
+            "dsi": r"bound 6504000\.dsi",
+            "panel": r"Attached device otm1289a",
+            "dcs": r"PFDBG-DISP: DSI panel prepare done",
+        }
+        for block, pattern in display_probes.items():
+            if not re.search(pattern, log_text):
+                raise RuntimeError(f"display-probe-missing:{block}")
+        display_timeout = find_display_timeout(log_text)
+        if display_timeout is not None:
+            raise RuntimeError(f"display-timeout:{display_timeout}")
+        vblanks = [
+            (int(irq), int(drm))
+            for irq, drm in re.findall(
+                r"DSI VIDEO_VBLK irq_count=(\d+) drm_vblank_calls=(\d+)",
+                log_text,
+            )
+        ]
+        if not vblanks or max(min(pair) for pair in vblanks) < 2:
+            raise RuntimeError(f"display-vblank-count:{vblanks[-4:]}")
+        observed_vblanks = max(min(pair) for pair in vblanks)
+        print(
+            "DRM_PROBES result=PASS "
+            "blocks=drm,mixer,tcon-top,tcon-lcd,dsi,panel,dcs "
+            "timeouts=0",
+            flush=True,
+        )
+        print(
+            f"DRM_VBLANK result=PASS required=2 observed={observed_vblanks}",
+            flush=True,
+        )
         patterns = (
             r"code 304 \(BTN_(SOUTH|A)\), value 1",
             r"code 304 \(BTN_(SOUTH|A)\), value 0",
@@ -844,6 +1004,13 @@ def main() -> int:
         )
         return 0
     finally:
+        if listener_process is not None and listener_process.poll() is None:
+            listener_process.terminate()
+            try:
+                listener_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                listener_process.kill()
+                listener_process.wait(timeout=5)
         if console is not None:
             console.close()
         process.terminate()
@@ -859,6 +1026,9 @@ def main() -> int:
         for path in (qmp_path, serial_path):
             if path.exists():
                 path.unlink()
+        frame = args.work / "display.ppm"
+        if frame.exists():
+            frame.unlink()
         if smoke_sd.exists():
             smoke_sd.unlink()
 

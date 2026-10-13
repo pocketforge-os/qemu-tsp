@@ -1,0 +1,79 @@
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 18:52:00 +0000
+Subject: [PATCH] tests: cover A133 native display register contract
+
+Add the first route-(b) RED qtest. It requires hardware-owned completion
+semantics that RAM-backed probe stubs cannot provide: IOMMU TLB flush,
+DSI instruction completion, and TCON trigger completion. The D-PHY
+read/write case is the positive control in the same invocation.
+
+diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
+index 28dad13..118d35a 100644
+--- a/tests/qtest/pocketforge-a133-display-test.c
++++ b/tests/qtest/pocketforge-a133-display-test.c
+@@ -25,6 +25,13 @@
+ #define VIRTIO_MMIO_QUEUE_AVAIL_HIGH 0x094
+ #define VIRTIO_MMIO_QUEUE_USED_LOW  0x0a0
+ #define VIRTIO_MMIO_QUEUE_USED_HIGH 0x0a4
++#define PF_IOMMU_BASE 0x030f0000
++#define PF_DSI_BASE   0x06504000
++#define PF_DPHY_BASE  0x06505000
++#define PF_TCON_BASE  0x06511000
++#define PF_IOMMU_TLB_FLUSH 0x080
++#define PF_DSI_BASIC_CTL0   0x010
++#define PF_TCON_CPU_IF      0x060
+ 
+ typedef struct GpuFixture {
+     QTestState *qts;
+@@ -434,10 +441,51 @@ static void test_native_scanout(void)
+     qtest_quit(qts);
+ }
+ 
++static void test_native_register_contract(void)
++{
++    QTestState *qts;
++    const uint32_t flush_request = BIT(17) | BIT(16) | 0x3f;
++    const uint32_t dphy_marker = 0x5a691234;
++
++    qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
++
++    /* Positive control: ordinary D-PHY state is stable and readable. */
++    qtest_writel(qts, PF_DPHY_BASE + 0x10, dphy_marker);
++    g_assert_cmphex(qtest_readl(qts, PF_DPHY_BASE + 0x10), ==,
++                    dphy_marker);
++
++    /* Hardware-owned IOMMU flush requests must complete repeatedly. */
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, flush_request);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, BIT(16));
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
++
++    /* DSI INST_ST completion is what every long DCS transfer polls. */
++    qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, BIT(0));
++    qtest_clock_step(qts, 100 * 1000);
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0) &
++                    BIT(0), ==, 0);
++    qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, 0);
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0), ==,
++                    0);
++
++    /* TCON TRI_START is a command, not retained software state. */
++    qtest_writel(qts, PF_TCON_BASE + PF_TCON_CPU_IF, BIT(1));
++    qtest_clock_step(qts, 100 * 1000);
++    g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
++                    ==, 0);
++
++    qtest_quit(qts);
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+     qtest_add_func("/aarch64/pocketforge-a133-display/native-scanout",
+                    test_native_scanout);
++    qtest_add_func("/aarch64/pocketforge-a133-display/register-contract",
++                   test_native_register_contract);
+     return g_test_run();
+ }

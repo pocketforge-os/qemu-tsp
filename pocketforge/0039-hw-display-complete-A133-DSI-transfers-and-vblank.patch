@@ -1,0 +1,218 @@
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:10:00 +0000
+Subject: [PATCH] hw/display: complete A133 DSI transfers and vblank
+
+Model finite DSI/TCON command execution, the A100 combined VIDEO_VBLK
+enable/status register with W1C acknowledgement, and the shared SPI 68
+interrupt at the native 60 Hz cadence.
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 84d3718..8e98617 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -1161,7 +1161,7 @@ static void pocketforge_a133_init(MachineState *machine)
+     pocketforge_a133_create_sram(s, sysmem);
+     pocketforge_a133_create_mmio_stubs();
+     s->native_display = pocketforge_a133_display_create(
+-        !strcmp(s->display, "hardware"));
++        !strcmp(s->display, "hardware"), pic[68]);
+     pocketforge_a133_create_r_i2c0(
+         s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
+     qemu_register_reset(pocketforge_a133_power_reset, s);
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+index fa94c2f..f1d60ff 100644
+--- a/hw/display/pocketforge_a133_display.c
++++ b/hw/display/pocketforge_a133_display.c
+@@ -7,8 +7,10 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/bswap.h"
++#include "qemu/timer.h"
+ #include "qapi/error.h"
+ #include "hw/display/pocketforge_a133_display.h"
++#include "hw/irq.h"
+ #include "exec/address-spaces.h"
+ #include "hw/qdev-properties.h"
+ #include "ui/console.h"
+@@ -33,6 +35,9 @@
+ #define PF_IOMMU_PC_IVLD   0xa8
+ #define PF_DSI_BASIC_CTL0  0x10
+ #define PF_DSI_INST_ST     BIT(0)
++#define PF_DSI_IRQ_REG     0x4
++#define PF_DSI_IRQ_EN      BIT(2)
++#define PF_DSI_IRQ_PENDING BIT(18)
+ #define PF_TCON_CPU_IF     0x60
+ #define PF_TCON_TRI_START  BIT(1)
+ #define PF_MIXER_OFFSET    0x100000
+@@ -44,6 +49,8 @@
+ #define PF_UI_LADDR        (PF_MIXER_UI2 + 0x10)
+ #define PF_NATIVE_WIDTH    720
+ #define PF_NATIVE_HEIGHT   1280
++#define PF_TRANSFER_NS     10000
++#define PF_VBLANK_NS       16666667
+ 
+ typedef enum PfDisplayBankKind {
+     PF_BANK_IOMMU,
+@@ -68,10 +75,50 @@ struct PocketForgeA133DisplayState {
+     PfDisplayBank bank[PF_BANK_COUNT];
+     QemuConsole *console;
+     bool enabled;
++    qemu_irq irq;
++    QEMUTimer *dsi_transfer_timer;
++    QEMUTimer *tcon_transfer_timer;
++    QEMUTimer *vblank_timer;
+ };
+ 
+ static void pf_display_scanout(PocketForgeA133DisplayState *s);
+ 
++static void pf_display_update_irq(PocketForgeA133DisplayState *s)
++{
++    uint32_t irq = s->bank[PF_BANK_DSI].regs[PF_DSI_IRQ_REG / 4];
++
++    qemu_set_irq(s->irq, (irq & PF_DSI_IRQ_EN) &&
++                         (irq & PF_DSI_IRQ_PENDING));
++}
++
++static void pf_display_dsi_transfer_done(void *opaque)
++{
++    PocketForgeA133DisplayState *s = opaque;
++
++    s->bank[PF_BANK_DSI].regs[PF_DSI_BASIC_CTL0 / 4] &= ~PF_DSI_INST_ST;
++}
++
++static void pf_display_tcon_transfer_done(void *opaque)
++{
++    PocketForgeA133DisplayState *s = opaque;
++
++    s->bank[PF_BANK_TCON_LCD].regs[PF_TCON_CPU_IF / 4] &=
++        ~PF_TCON_TRI_START;
++}
++
++static void pf_display_vblank(void *opaque)
++{
++    PocketForgeA133DisplayState *s = opaque;
++    uint32_t *irq = &s->bank[PF_BANK_DSI].regs[PF_DSI_IRQ_REG / 4];
++
++    if (*irq & PF_DSI_IRQ_EN) {
++        *irq |= PF_DSI_IRQ_PENDING;
++        pf_display_update_irq(s);
++    }
++    timer_mod_ns(s->vblank_timer,
++                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PF_VBLANK_NS);
++}
++
+ static uint64_t pf_display_read(void *opaque, hwaddr offset, unsigned size)
+ {
+     PfDisplayBank *bank = opaque;
+@@ -92,6 +139,17 @@ static void pf_display_write(void *opaque, hwaddr offset, uint64_t value,
+     if (offset + size > bank->size) {
+         return;
+     }
++
++    if (bank->kind == PF_BANK_DSI && offset == PF_DSI_IRQ_REG && size == 4) {
++        uint32_t pending = bank->regs[offset / 4] & PF_DSI_IRQ_PENDING;
++
++        if (value & PF_DSI_IRQ_PENDING) {
++            pending = 0;
++        }
++        bank->regs[offset / 4] = (value & 0xffff) | pending;
++        pf_display_update_irq(bank->display);
++        return;
++    }
+     memcpy((uint8_t *)bank->regs + offset, &value, size);
+ 
+     if (size != 4 || (offset & 3)) {
+@@ -112,13 +170,17 @@ static void pf_display_write(void *opaque, hwaddr offset, uint64_t value,
+         }
+         break;
+     case PF_BANK_DSI:
+-        if (offset == PF_DSI_BASIC_CTL0) {
+-            bank->regs[offset / 4] &= ~PF_DSI_INST_ST;
++        if (offset == PF_DSI_BASIC_CTL0 && (value & PF_DSI_INST_ST)) {
++            timer_mod_ns(bank->display->dsi_transfer_timer,
++                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                         PF_TRANSFER_NS);
+         }
+         break;
+     case PF_BANK_TCON_LCD:
+-        if (offset == PF_TCON_CPU_IF) {
+-            bank->regs[offset / 4] &= ~PF_TCON_TRI_START;
++        if (offset == PF_TCON_CPU_IF && (value & PF_TCON_TRI_START)) {
++            timer_mod_ns(bank->display->tcon_transfer_timer,
++                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                         PF_TRANSFER_NS);
+         }
+         break;
+     default:
+@@ -247,6 +309,12 @@ static void pf_display_reset(DeviceState *dev)
+     for (i = 0; i < PF_BANK_COUNT; i++) {
+         memset(s->bank[i].regs, 0, s->bank[i].size);
+     }
++    timer_del(s->dsi_transfer_timer);
++    timer_del(s->tcon_transfer_timer);
++    timer_del(s->vblank_timer);
++    qemu_set_irq(s->irq, 0);
++    timer_mod_ns(s->vblank_timer,
++                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PF_VBLANK_NS);
+ }
+ 
+ static void pf_display_realize(DeviceState *dev, Error **errp)
+@@ -278,6 +346,15 @@ static void pf_display_realize(DeviceState *dev, Error **errp)
+                               names[i], bank->size);
+         sysbus_init_mmio(sbd, &bank->mr);
+     }
++    sysbus_init_irq(sbd, &s->irq);
++    s->dsi_transfer_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                         pf_display_dsi_transfer_done, s);
++    s->tcon_transfer_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                          pf_display_tcon_transfer_done, s);
++    s->vblank_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                   pf_display_vblank, s);
++    timer_mod_ns(s->vblank_timer,
++                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PF_VBLANK_NS);
+     if (s->enabled) {
+         s->console = graphic_console_init(dev, 0, &pf_display_hw_ops, s);
+         qemu_console_resize(s->console, PF_NATIVE_WIDTH, PF_NATIVE_HEIGHT);
+@@ -289,6 +366,9 @@ static void pf_display_unrealize(DeviceState *dev)
+     PocketForgeA133DisplayState *s = POCKETFORGE_A133_DISPLAY(dev);
+     unsigned int i;
+ 
++    timer_free(s->dsi_transfer_timer);
++    timer_free(s->tcon_transfer_timer);
++    timer_free(s->vblank_timer);
+     for (i = 0; i < PF_BANK_COUNT; i++) {
+         g_free(s->bank[i].regs);
+         s->bank[i].regs = NULL;
+@@ -326,7 +406,8 @@ static void pf_display_register_types(void)
+ 
+ type_init(pf_display_register_types)
+ 
+-PocketForgeA133DisplayState *pocketforge_a133_display_create(bool enabled)
++PocketForgeA133DisplayState *pocketforge_a133_display_create(bool enabled,
++                                                             qemu_irq irq)
+ {
+     static const hwaddr bases[PF_BANK_COUNT] = {
+         PF_IOMMU_BASE, PF_DE2_BASE, PF_DSI_BASE, PF_DPHY_BASE,
+@@ -341,6 +422,7 @@ PocketForgeA133DisplayState *pocketforge_a133_display_create(bool enabled)
+     for (i = 0; i < PF_BANK_COUNT; i++) {
+         sysbus_mmio_map(sbd, i, bases[i]);
+     }
++    sysbus_connect_irq(sbd, 0, irq);
+     return POCKETFORGE_A133_DISPLAY(dev);
+ }
+ 
+diff --git a/include/hw/display/pocketforge_a133_display.h b/include/hw/display/pocketforge_a133_display.h
+index e5077f8..3355ae2 100644
+--- a/include/hw/display/pocketforge_a133_display.h
++++ b/include/hw/display/pocketforge_a133_display.h
+@@ -9,7 +9,8 @@
+ OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133DisplayState,
+                            POCKETFORGE_A133_DISPLAY)
+ 
+-PocketForgeA133DisplayState *pocketforge_a133_display_create(bool enabled);
++PocketForgeA133DisplayState *pocketforge_a133_display_create(bool enabled,
++                                                             qemu_irq irq);
+ QemuConsole *pocketforge_a133_display_console(
+     PocketForgeA133DisplayState *s);
+ bool pocketforge_a133_display_iova_read(PocketForgeA133DisplayState *s,
+
