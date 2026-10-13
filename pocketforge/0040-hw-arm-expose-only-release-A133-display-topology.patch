@@ -1,0 +1,187 @@
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:14:00 +0000
+Subject: [PATCH] hw/arm: expose only the release A133 display topology
+
+Remove the synthetic virtio-gpu transport and its DT augmentation now that
+the release kernel drives the native DE2/TCON/DSI model. The input and PMIC
+paths remain unchanged and the guest DT is no longer display-modified.
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 8e98617..3e95241 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -118,8 +118,6 @@
+ #include "hw/sd/allwinner-sdhost.h"
+ #include "hw/sd/sd.h"
+ #include "hw/sysbus.h"
+-#include "hw/virtio/virtio-mmio.h"
+-#include "hw/virtio/virtio-gpu.h"
+ #include "exec/address-spaces.h"
+ #include "migration/vmstate.h"
+ #include "sysemu/device_tree.h"
+@@ -180,7 +178,6 @@ struct PocketForgeA133MachineState {
+     bool input;
+     bool initialized;
+     char *display;
+-    VirtIOGPUBase *gpu;
+     PocketForgeA133Input *input_device;
+     DWApbUartState *gamepad_uart[2];
+     DeviceState *pmic;
+@@ -511,10 +508,6 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+  * deliverable-1's `-M virt` recipe (pocketforge-automation
+  * scripts/qemu-a133-virt.sh) does.
+  */
+-#define PF_A133_VIRTIO_MMIO_BASE   0x0a000000
+-#define PF_A133_VIRTIO_MMIO_SIZE   0x200
+-#define PF_A133_VIRTIO_MMIO_IRQ0   150 /* GIC_SPI 150: virtio-gpu */
+-#define PF_A133_VIRTIO_MMIO_COUNT  1   /* [0]=virtio-gpu */
+ 
+ #define PF_A133_NUM_CPUS        4
+ #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
+@@ -995,85 +988,6 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+     }
+ }
+ 
+-static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+-                                                qemu_irq *pic)
+-{
+-    PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(machine);
+-    int i;
+-
+-    for (i = 0; i < PF_A133_VIRTIO_MMIO_COUNT; i++) {
+-        hwaddr base = PF_A133_VIRTIO_MMIO_BASE + i * PF_A133_VIRTIO_MMIO_SIZE;
+-        int irq = PF_A133_VIRTIO_MMIO_IRQ0 + i;
+-        DeviceState *dev = qdev_new("virtio-mmio");
+-
+-        /*
+-         * Set force-legacy=false BEFORE realization: virtio-mmio's
+-         * force-legacy property defaults to true (pre-VIRTIO_F_VERSION_1
+-         * legacy virtio), and sysbus_create_simple() realizes the device
+-         * with no way to set a property first. Doing it this way makes the
+-         * machine self-contained -- it supplies modern transports without
+-         * an external CLI override.
+-         */
+-        object_property_set_bool(OBJECT(dev), "force-legacy", false,
+-                                   &error_fatal);
+-        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
+-        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, pic[irq]);
+-
+-        if (i == 0 && !strcmp(s->display, "hardware")) {
+-            DeviceState *gpu = qdev_new(TYPE_VIRTIO_GPU);
+-
+-            object_property_set_uint(OBJECT(gpu), "xres",
+-                                     PF_A133_NATIVE_WIDTH, &error_fatal);
+-            object_property_set_uint(OBJECT(gpu), "yres",
+-                                     PF_A133_NATIVE_HEIGHT, &error_fatal);
+-            object_property_set_bool(OBJECT(gpu), "edid", true,
+-                                     &error_fatal);
+-            object_property_add_child(OBJECT(machine), "pocketforge-gpu",
+-                                      OBJECT(gpu));
+-            qdev_realize(gpu, BUS(&VIRTIO_MMIO(dev)->bus), &error_fatal);
+-            s->gpu = VIRTIO_GPU_BASE(gpu);
+-            qemu_console_resize(s->gpu->scanout[0].con,
+-                                PF_A133_NATIVE_WIDTH,
+-                                PF_A133_NATIVE_HEIGHT);
+-            object_unref(OBJECT(gpu));
+-        }
+-
+-    }
+-}
+-
+-/*
+- * modify_dtb hook (see hw/arm/boot.c: arm_load_dtb() calls this on the
+- * already-loaded real DT blob, after its routine /memory + /chosen
+- * fixups). ONLY appends new `virtio,mmio` nodes for the synthetic
+- * transports created above -- identical node shape to -M virt's own
+- * create_virtio_devices() (hw/arm/virt.c), so the in-kernel virtio_mmio
+- * driver (CONFIG_VIRTIO_MMIO=y, already proven working under -M virt in
+- * deliverable-1) binds them with no kernel/DT-source change required.
+- * Every node the real board declares is left completely untouched.
+- */
+-static void pocketforge_a133_modify_dtb(const struct arm_boot_info *binfo,
+-                                        void *fdt)
+-{
+-    int i;
+-
+-    for (i = 0; i < PF_A133_VIRTIO_MMIO_COUNT; i++) {
+-        hwaddr base = PF_A133_VIRTIO_MMIO_BASE + i * PF_A133_VIRTIO_MMIO_SIZE;
+-        int irq = PF_A133_VIRTIO_MMIO_IRQ0 + i;
+-        char *nodename = g_strdup_printf("/virtio_mmio@%" PRIx64, base);
+-
+-        qemu_fdt_add_subnode(fdt, nodename);
+-        qemu_fdt_setprop_string(fdt, nodename, "compatible", "virtio,mmio");
+-        qemu_fdt_setprop_sized_cells(fdt, nodename, "reg",
+-                                     2, base, 2, PF_A133_VIRTIO_MMIO_SIZE);
+-        qemu_fdt_setprop_cells(fdt, nodename, "interrupts",
+-                               GIC_FDT_IRQ_TYPE_SPI, irq,
+-                               GIC_FDT_IRQ_FLAGS_EDGE_LO_HI);
+-        qemu_fdt_setprop(fdt, nodename, "dma-coherent", NULL, 0);
+-        g_free(nodename);
+-    }
+-}
+-
+ static void pocketforge_a133_init(MachineState *machine)
+ {
+     PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(machine);
+@@ -1170,14 +1084,12 @@ static void pocketforge_a133_init(MachineState *machine)
+     pocketforge_a133_create_mmc0(s, pic[PF_A133_MMC0_IRQ]);
+     pocketforge_a133_create_ccu_pio(s, machine);
+ 
+-    pocketforge_a133_create_virtio_mmio(machine, pic);
+-
+     binfo->ram_size = machine->ram_size;
+     binfo->board_id = -1; /* device-tree boot only, no ATAGS board id */
+     binfo->loader_start = PF_A133_RAM_BASE;
+     binfo->dtb_filename = machine->dtb;
+     binfo->psci_conduit = QEMU_PSCI_CONDUIT_SMC;
+-    binfo->modify_dtb = pocketforge_a133_modify_dtb;
++    binfo->modify_dtb = NULL;
+     arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
+ 
+     /*
+@@ -1198,7 +1110,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+     };
+ 
+     mc->desc = "PocketForge OS A133 fidelity-CI machine "
+-               "(real kernel + real DT, boots to userspace, virtio-gpu)";
++               "(real kernel + real DT, boots to userspace, native DRM)";
+     mc->init = pocketforge_a133_init;
+     mc->max_cpus = PF_A133_NUM_CPUS;
+     mc->min_cpus = PF_A133_NUM_CPUS;
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+index f1d60ff..d20b3bd 100644
+--- a/hw/display/pocketforge_a133_display.c
++++ b/hw/display/pocketforge_a133_display.c
+@@ -320,12 +320,12 @@ static void pf_display_reset(DeviceState *dev)
+ static void pf_display_realize(DeviceState *dev, Error **errp)
+ {
+     static const char *const names[PF_BANK_COUNT] = {
+-        "pocketforge-a133-display.iommu",
+-        "pocketforge-a133-display.de2",
+-        "pocketforge-a133-display.dsi",
+-        "pocketforge-a133-display.dphy",
+-        "pocketforge-a133-display.tcon-top",
+-        "pocketforge-a133-display.tcon-lcd",
++        "pocketforge-a133.iommu",
++        "pocketforge-a133.de2",
++        "pocketforge-a133.dsi",
++        "pocketforge-a133.dphy",
++        "pocketforge-a133.tcon_top",
++        "pocketforge-a133.tcon_lcd0",
+     };
+     static const uint32_t sizes[PF_BANK_COUNT] = {
+         PF_IOMMU_SIZE, PF_DE2_SIZE, PF_DSI_SIZE, PF_DPHY_SIZE,
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index 105de00..16e44e3 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -64,7 +64,6 @@ static const ExpectedRegion expected_regions[] = {
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+     { "allwinner.i2c",                     0x07081400, 0x24 },
+     { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },
+-    { "virtio-mmio",                       0x0a000000, 0x200 },
+ };
+ 
+ static const ExpectedRegion stub_regions[] = {
+

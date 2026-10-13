@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:19:32 +0000
+Subject: [PATCH] hw/display: refresh A133 scanout on vblank
+
+---
+ hw/display/pocketforge_a133_display.c       | 5 +++++
+ tests/qtest/pocketforge-a133-display-test.c | 3 ++-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+index 54389a0..2a7da68 100644
+--- a/hw/display/pocketforge_a133_display.c
++++ b/hw/display/pocketforge_a133_display.c
+@@ -126,6 +126,7 @@ static void pf_display_vblank(void *opaque)
+         *irq |= PF_DSI_IRQ_PENDING;
+         pf_display_update_irq(s);
+     }
++    pf_display_scanout(s);
+     timer_mod_ns(s->vblank_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PF_VBLANK_NS);
+ }
+@@ -301,6 +302,10 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+         }
+     }
+     destination = surface_data(surface);
++    if (surface_stride(surface) == width * 4 &&
++        !memcmp(destination, s->frame, width * height * 4)) {
++        return;
++    }
+     for (y = 0; y < height; y++) {
+         memcpy(destination + y * surface_stride(surface),
+                s->frame + y * width * 4, width * 4);
+diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
+index b128ef7..4fb68f4 100644
+--- a/tests/qtest/pocketforge-a133-display-test.c
++++ b/tests/qtest/pocketforge-a133-display-test.c
+@@ -99,7 +99,8 @@ static void report_frame_cost(QTestState *qts)
+     g_test_message("FRAME_COST path=full-copy frames=300 bytes=3686400 "
+                    "p50_us=%" PRId64 " p95_us=%" PRId64 " max_us=%" PRId64,
+                    full[149], full[284], full[299]);
+-    g_test_message("FRAME_COST path=static-vblank frames=300 bytes=0 "
++    g_test_message("FRAME_COST path=static-vblank frames=300 bytes_read=3686400 "
++                   "bytes_published=0 "
+                    "p50_us=%" PRId64 " p95_us=%" PRId64 " max_us=%" PRId64,
+                    idle[149], idle[284], idle[299]);
+ }

@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:18:22 +0000
+Subject: [PATCH] hw/display: complete A133 DCS command state
+
+---
+ hw/display/pocketforge_a133_display.c       | 19 ++++++++++++++++++-
+ tests/qtest/pocketforge-a133-display-test.c |  9 +++++++++
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+index e6ba122..54389a0 100644
+--- a/hw/display/pocketforge_a133_display.c
++++ b/hw/display/pocketforge_a133_display.c
+@@ -38,6 +38,12 @@
+ #define PF_DSI_IRQ_REG     0x4
+ #define PF_DSI_IRQ_EN      BIT(2)
+ #define PF_DSI_IRQ_PENDING BIT(18)
++#define PF_DSI_CMD_CTL     0x200
++#define PF_DSI_CMD_RX0     0x240
++#define PF_DSI_CMD_RX_FLAG BIT(25)
++#define PF_DSI_CMD_TX_FLAG BIT(9)
++#define PF_DSI_CMD_FLAGS   (BIT(26) | PF_DSI_CMD_RX_FLAG | \
++                            PF_DSI_CMD_TX_FLAG)
+ #define PF_TCON_CPU_IF     0x60
+ #define PF_TCON_TRI_START  BIT(1)
+ #define PF_MIXER_OFFSET    0x100000
+@@ -95,8 +101,12 @@ static void pf_display_update_irq(PocketForgeA133DisplayState *s)
+ static void pf_display_dsi_transfer_done(void *opaque)
+ {
+     PocketForgeA133DisplayState *s = opaque;
++    uint32_t *dsi = s->bank[PF_BANK_DSI].regs;
+ 
+-    s->bank[PF_BANK_DSI].regs[PF_DSI_BASIC_CTL0 / 4] &= ~PF_DSI_INST_ST;
++    dsi[PF_DSI_BASIC_CTL0 / 4] &= ~PF_DSI_INST_ST;
++    dsi[PF_DSI_CMD_CTL / 4] |= PF_DSI_CMD_RX_FLAG | PF_DSI_CMD_TX_FLAG;
++    /* MIPI_DSI_RX_DCS_SHORT_READ_RESPONSE_1BYTE, payload 0x9c. */
++    dsi[PF_DSI_CMD_RX0 / 4] = 0x00009c21;
+ }
+ 
+ static void pf_display_tcon_transfer_done(void *opaque)
+@@ -151,6 +161,13 @@ static void pf_display_write(void *opaque, hwaddr offset, uint64_t value,
+         pf_display_update_irq(bank->display);
+         return;
+     }
++    if (bank->kind == PF_BANK_DSI && offset == PF_DSI_CMD_CTL && size == 4) {
++        uint32_t flags = bank->regs[offset / 4] & PF_DSI_CMD_FLAGS;
++
++        flags &= ~(value & PF_DSI_CMD_FLAGS);
++        bank->regs[offset / 4] = (value & ~PF_DSI_CMD_FLAGS) | flags;
++        return;
++    }
+     memcpy((uint8_t *)bank->regs + offset, &value, size);
+ 
+     if (size != 4 || (offset & 3)) {
+diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
+index 584b297..b128ef7 100644
+--- a/tests/qtest/pocketforge-a133-display-test.c
++++ b/tests/qtest/pocketforge-a133-display-test.c
+@@ -20,6 +20,8 @@
+ #define PF_TCON_TOP_BASE 0x06510000
+ #define PF_IOMMU_TLB_FLUSH 0x080
+ #define PF_DSI_BASIC_CTL0   0x010
++#define PF_DSI_CMD_CTL      0x200
++#define PF_DSI_CMD_RX0      0x240
+ #define PF_TCON_CPU_IF      0x060
+ #define PF_IOMMU_TTB        0x050
+ #define PF_MIXER_DBUFF      0x008
+@@ -386,6 +388,13 @@ static void test_native_register_contract(void)
+     qtest_clock_step(qts, 100 * 1000);
+     g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0) &
+                     BIT(0), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_CMD_CTL) &
++                    (BIT(25) | BIT(9)), ==, BIT(25) | BIT(9));
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_CMD_RX0), ==,
++                    0x00009c21);
++    qtest_writel(qts, PF_DSI_BASE + PF_DSI_CMD_CTL, BIT(25) | BIT(9));
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_CMD_CTL) &
++                    (BIT(25) | BIT(9)), ==, 0);
+     qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, 0);
+     g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0), ==,
+                     0);

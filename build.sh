@@ -25,6 +25,8 @@ git -C "$ROOT" diff --cached --quiet HEAD -- || {
   echo "FATAL: refusing to stamp a dirty PocketForge index"
   exit 1
 }
+echo "== test build-6 release-smoke log gates =="
+python3 "$ROOT/tests/pocketforge-a133-build6-smoke-test.py"
 STACK_PKGVERSION="pocketforge-qemu-tsp-head=$STACK_HEAD"
 REPO=$(sed -n 's/^repo *= *//p'   UPSTREAM)
 TAG=$(sed -n  's/^tag *= *//p'    UPSTREAM)
@@ -267,6 +269,72 @@ if ! grep -q 'pocketforge_a133_ccu_create' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0033-hw-arm-A133-stateful-CCU-PIO-UART0-MMC0-gating.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 native display register contract =="
+if ! grep -q 'pocketforge-a133-display/register-contract' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0034-tests-cover-A133-native-display-register-contract.patch"
+fi
+
+echo "== apply PocketForge patch: native A133 display register pipeline =="
+if [ ! -f hw/display/pocketforge_a133_display.c ]; then
+  git apply "$ROOT/pocketforge/0035-hw-display-own-A133-display-register-pipeline.patch"
+fi
+
+echo "== apply PocketForge patch: native DE2 scanout qtest =="
+if grep -q 'GpuFixture gpu' tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0036-tests-drive-A133-native-DE2-scanout-through-IOMMU.patch"
+fi
+
+echo "== apply PocketForge patch: native DE2 IOMMU scanout =="
+if ! grep -q 'pf_display_scanout' hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0037-hw-display-scan-out-A133-DE2-UI-plane-through-IOMMU.patch"
+fi
+
+echo "== apply PocketForge patch: DSI transfer and vblank completion =="
+if ! grep -q 'pf_display_vblank' hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0039-hw-display-complete-A133-DSI-transfers-and-vblank.patch"
+fi
+
+echo "== apply PocketForge patch: release-only display topology =="
+if grep -q '^static void pocketforge_a133_create_virtio_mmio' \
+    hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0040-hw-arm-expose-only-release-A133-display-topology.patch"
+fi
+
+echo "== apply PocketForge patch: atomic native display scanout =="
+if ! grep -q 's->frame + y \* width \* 4' \
+    hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0041-hw-display-make-A133-invalid-translations-atomic.patch"
+fi
+
+echo "== apply PocketForge patch: native display frame-cost evidence =="
+if ! grep -q 'FRAME_COST path=full-copy' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0042-tests-measure-A133-full-and-static-frame-costs.patch"
+fi
+
+echo "== apply PocketForge patch: native DCS transfer completion =="
+if ! grep -q 'PF_DSI_CMD_RX_FLAG' hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0043-hw-display-complete-A133-DCS-command-state.patch"
+fi
+
+echo "== apply PocketForge patch: vblank-driven native scanout refresh =="
+if ! grep -q 'bytes_published=0' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0044-hw-display-refresh-A133-scanout-on-vblank.patch"
+fi
+
+echo "== apply PocketForge patch: release-smoke Display1 listener =="
+if [ ! -f tests/qtest/pocketforge-a133-dbus-listener.c ]; then
+  git apply "$ROOT/pocketforge/0045-tests-add-A133-Display1-frame-listener.patch"
+fi
+
+echo "== apply PocketForge patch: advertised native display formats =="
+if ! grep -q 'checking DE2 format' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0046-hw-display-scan-out-advertised-A133-formats.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
@@ -293,6 +361,7 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
 (cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features --with-pkgversion="$STACK_PKGVERSION" -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
+  tests/qtest/pocketforge-a133-dbus-listener \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-display-test \
   tests/qtest/pocketforge-a133-input-test \
@@ -313,6 +382,8 @@ meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
   qtest-aarch64/pocketforge-a133-bootrom-test \
   qtest-aarch64/pocketforge-a133-ccu-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
+cp "$SYSTEM_BUILD_DIR/tests/qtest/pocketforge-a133-dbus-listener" \
+  "$OUT/pocketforge-a133-dbus-listener"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1
 "$OUT/qemu-system-aarch64" -M help | grep pocketforge-a133

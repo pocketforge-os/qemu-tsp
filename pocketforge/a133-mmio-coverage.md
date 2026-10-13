@@ -91,7 +91,7 @@ accepted as map evidence.  It then enforces all of the following:
 - every DT-backed QEMU region is wholly contained in at least one enabled DT
   address tuple (no oversized or catch-all mapping);
 - actual system-memory regions do not overlap;
-- the live DT-backed, synthetic virtio, and RAM regions match the manifest at
+- the live DT-backed and RAM regions match the manifest at
   their exact bases and extents;
 - the DTB hash and source pins match the manifest and workflow pins;
 - malformed cells, truncated tuples, ambiguous/missing translations, zero
@@ -99,15 +99,15 @@ accepted as map evidence.  It then enforces all of the following:
   regions, overlap, status/ancestor changes, translated-range changes, and
   multi-range changes all fail closed.
 
-The QEMU-only virtio-mmio display transport at `0x0a000000` is typed
-`synthetic`; it is intentionally not used to cover real-DT ranges.  The former
-machine-owned virtio-input transport at `0x0a000200` was removed with the
-virtio-input device; input now follows the real MCU UART and PMIC paths.
+The former machine-owned virtio display and input transports are absent;
+display, input, and power keys follow the real DE2/TCON/DSI, MCU UART, and
+PMIC paths declared by the unmodified release DT.
 
 ## Model and stub decisions
 
-The GICv2, four DesignWare APB UARTs, RTC, R-I2C0, AXP717 PMIC, MMC0, virtio
-transports, Cortex-A53 CPUs, and RAM use functional or bounded models. The
+The GICv2, four DesignWare APB UARTs, RTC, R-I2C0, AXP717 PMIC, MMC0,
+DE2/TCON/DSI display pipeline, Cortex-A53 CPUs, and RAM use functional or
+bounded models. The
 UART aperture is expanded to the DT-exact
 `0x400`, and enabled UART0/1/3/4 are instantiated with their DT SPI lines.
 QEMU's generic GIC model exposes only `0x1000` at the first half of the DT's

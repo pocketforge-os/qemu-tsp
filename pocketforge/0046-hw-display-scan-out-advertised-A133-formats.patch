@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:41:00 +0000
+Subject: [PATCH] hw/display: scan out advertised A133 formats
+
+Exercise every DE2 format exposed by query-pocketforge-display and convert
+the red/blue byte order of XB24 into the host x8r8g8b8 surface.  Keep AR24
+and XR24 on the direct-copy path used by the release framebuffer.
+
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+index e6ba122..9ff3b24 100644
+--- a/hw/display/pocketforge_a133_display.c
++++ b/hw/display/pocketforge_a133_display.c
+@@ -271,6 +271,6 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+     DisplaySurface *surface;
+     uint32_t attr, size, pitch, laddr;
+-    unsigned int width, height, format, y;
++    unsigned int width, height, format, x, y;
+     uint8_t *destination;
+ 
+     if (!s->console) {
+@@ -288,7 +288,7 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+ 
+     if (!(attr & BIT(0)) || width != PF_NATIVE_WIDTH ||
+         height != PF_NATIVE_HEIGHT || pitch < width * 4 ||
+-        (format != 0 && format != 4)) {
++        (format != 0 && format != 4 && format != 5)) {
+         return;
+     }
+ 
+@@ -299,6 +299,16 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+                 s->frame + y * width * 4, width * 4)) {
+             return;
+         }
++        if (format == 5) {
++            uint8_t *row = s->frame + y * width * 4;
++
++            for (x = 0; x < width; x++) {
++                uint8_t red = row[x * 4];
++
++                row[x * 4] = row[x * 4 + 2];
++                row[x * 4 + 2] = red;
++            }
++        }
+     }
+     destination = surface_data(surface);
+     if (surface_stride(surface) == width * 4 &&
+diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
+index 40f84c0..3c712b1 100644
+--- a/tests/qtest/pocketforge-a133-display-test.c
++++ b/tests/qtest/pocketforge-a133-display-test.c
+@@ -55,6 +55,7 @@ typedef struct DisplayTest {
+     guint update_format;
+     gsize update_bytes;
+     uint8_t update_pixel[4];
++    bool format_timed_out;
+ } DisplayTest;
+ 
+ enum {
+@@ -168,6 +169,8 @@ static gboolean handle_scanout(QemuDBusDisplay1Listener *object,
+     memcpy(test->first, pixels, sizeof(test->first));
+     memcpy(test->last, pixels + test->bytes - sizeof(test->last),
+            sizeof(test->last));
++    test->got_update = true;
++    memcpy(test->update_pixel, pixels, sizeof(test->update_pixel));
+     g_main_loop_quit(test->loop);
+     return DBUS_METHOD_INVOCATION_HANDLED;
+ }
+@@ -239,6 +242,40 @@ static gpointer server_thread(gpointer data)
+     return p2p_from_fd(GPOINTER_TO_INT(data));
+ }
+ 
++static gboolean format_deadline(gpointer opaque)
++{
++    DisplayTest *test = opaque;
++
++    test->format_timed_out = true;
++    g_main_loop_quit(test->loop);
++    return G_SOURCE_REMOVE;
++}
++
++static void assert_native_format(QTestState *qts, DisplayTest *test,
++                                 unsigned int format,
++                                 const uint8_t input[4],
++                                 const uint8_t expected[4])
++{
++    guint deadline_id;
++
++    g_test_message("checking DE2 format %u", format);
++    test->got_update = false;
++    test->format_timed_out = false;
++    qtest_memwrite(qts, PF_FB_ADDRESS, input, 4);
++    qtest_writel(qts, PF_MIXER_BASE + PF_MIXER_UI2 + PF_UI_ATTR,
++                 0xff000001 | (format << 8));
++    qtest_writel(qts, PF_MIXER_BASE + PF_MIXER_DBUFF, BIT(0));
++    deadline_id = g_timeout_add_seconds(1, format_deadline, test);
++    g_main_loop_run(test->loop);
++    if (!test->format_timed_out) {
++        g_source_remove(deadline_id);
++    }
++    g_assert_false(test->format_timed_out);
++    g_assert_true(test->got_update);
++    g_assert_cmpmem(test->update_pixel, sizeof(test->update_pixel),
++                    expected, 4);
++}
++
+ static void test_native_scanout(void)
+ {
+     g_autoptr(GError) err = NULL;
+@@ -314,6 +351,17 @@ static void test_native_scanout(void)
+     g_assert_cmpuint(test.first[3], ==, 0x00);
+     g_assert_cmpint(memcmp(test.first, test.last, sizeof(test.first)), !=, 0);
+ 
++    /* All formats advertised by query-pocketforge-display must scan out. */
++    assert_native_format(qts, &test, 0,
++                         (const uint8_t[]) { 0x10, 0x20, 0x30, 0x40 },
++                         (const uint8_t[]) { 0x10, 0x20, 0x30, 0x40 });
++    assert_native_format(qts, &test, 4,
++                         (const uint8_t[]) { 0x11, 0x21, 0x31, 0x00 },
++                         (const uint8_t[]) { 0x11, 0x21, 0x31, 0x00 });
++    assert_native_format(qts, &test, 5,
++                         (const uint8_t[]) { 0x32, 0x22, 0x12, 0x00 },
++                         (const uint8_t[]) { 0x12, 0x22, 0x32, 0x00 });
++
+     /* Map the observed native marker using the queried clockwise direction. */
+     if (presentation_rotation == 90) {
+         presented_x = PF_HEIGHT - 1;

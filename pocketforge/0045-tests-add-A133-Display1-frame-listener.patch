@@ -1,0 +1,223 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:23:31 +0000
+Subject: [PATCH] tests: add A133 Display1 frame listener
+
+---
+ tests/qtest/meson.build                      |   4 +
+ tests/qtest/pocketforge-a133-dbus-listener.c | 191 +++++++++++++++++++
+ 2 files changed, 195 insertions(+)
+ create mode 100644 tests/qtest/pocketforge-a133-dbus-listener.c
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 887f670..a3428b9 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -346,6 +346,10 @@ endif
+ if dbus_display
+   qtests += {'dbus-display-test': [dbus_display1_dep, gio]}
+   qtests += {'pocketforge-a133-display-test': [dbus_display1_dep, gio]}
++  executable('pocketforge-a133-dbus-listener',
++             'pocketforge-a133-dbus-listener.c',
++             dependencies: [dbus_display1_dep, gio],
++             build_by_default: false)
+ endif
+ 
+ qtest_executables = {}
+diff --git a/tests/qtest/pocketforge-a133-dbus-listener.c b/tests/qtest/pocketforge-a133-dbus-listener.c
+new file mode 100644
+index 0000000..930afe8
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-dbus-listener.c
+@@ -0,0 +1,191 @@
++#include "qemu/osdep.h"
++#include "qemu/dbus.h"
++
++#include <gio/gio.h>
++#include <gio/gunixfdlist.h>
++
++#include "ui/dbus-display1.h"
++
++typedef struct ListenerState {
++    GMainLoop *loop;
++    GThread *thread;
++    GDBusConnection *listener_connection;
++    GDBusObjectManagerServer *server;
++    bool passed;
++} ListenerState;
++
++static GDBusConnection *connection_from_fd(int fd)
++{
++    g_autoptr(GError) error = NULL;
++    g_autoptr(GSocket) socket = g_socket_new_from_fd(fd, &error);
++    g_autoptr(GSocketConnection) socket_connection = NULL;
++    GDBusConnection *connection;
++
++    if (!socket) {
++        g_printerr("DBUS_FRAME result=FAIL reason=socket error=%s\n",
++                   error->message);
++        return NULL;
++    }
++    socket_connection = g_socket_connection_factory_create_connection(socket);
++    connection = g_dbus_connection_new_sync(
++        G_IO_STREAM(socket_connection), NULL,
++        G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT |
++        G_DBUS_CONNECTION_FLAGS_DELAY_MESSAGE_PROCESSING,
++        NULL, NULL, &error);
++    if (!connection) {
++        g_printerr("DBUS_FRAME result=FAIL reason=connection error=%s\n",
++                   error->message);
++    }
++    return connection;
++}
++
++static gpointer listener_connection_thread(gpointer opaque)
++{
++    return connection_from_fd(GPOINTER_TO_INT(opaque));
++}
++
++static gboolean check_pixels(guint width, guint height, guint stride,
++                             gint x, gint y, GVariant *data,
++                             ListenerState *state)
++{
++    gsize bytes;
++    const uint8_t *pixels = g_variant_get_fixed_array(data, &bytes, 1);
++
++    if (width && height && stride >= width * 4 &&
++        bytes == (gsize)stride * height && x == 0 && y == 0 &&
++        pixels[0] == 0xff && pixels[1] == 0x00 && pixels[2] == 0xff) {
++        g_print("DBUS_FRAME result=PASS width=%u height=%u stride=%u "
++                "marker=ff00ff\n", width, height, stride);
++        state->passed = true;
++        g_main_loop_quit(state->loop);
++    }
++    return true;
++}
++
++static gboolean handle_scanout(QemuDBusDisplay1Listener *object,
++                               GDBusMethodInvocation *invocation,
++                               guint width, guint height, guint stride,
++                               guint format, GVariant *data,
++                               ListenerState *state)
++{
++    return check_pixels(width, height, stride, 0, 0, data, state);
++}
++
++static gboolean handle_update(QemuDBusDisplay1Listener *object,
++                              GDBusMethodInvocation *invocation,
++                              gint x, gint y, gint width, gint height,
++                              guint stride, guint format, GVariant *data,
++                              ListenerState *state)
++{
++    return check_pixels(width, height, stride, x, y, data, state);
++}
++
++static void setup_listener(ListenerState *state)
++{
++    g_autoptr(GDBusObjectSkeleton) listener = NULL;
++    g_autoptr(QemuDBusDisplay1ListenerSkeleton) interface = NULL;
++
++    state->server = g_dbus_object_manager_server_new(DBUS_DISPLAY1_ROOT);
++    listener = g_dbus_object_skeleton_new(DBUS_DISPLAY1_ROOT "/Listener");
++    interface = QEMU_DBUS_DISPLAY1_LISTENER_SKELETON(
++        qemu_dbus_display1_listener_skeleton_new());
++    g_object_connect(interface,
++                     "signal::handle-scanout", handle_scanout, state,
++                     "signal::handle-update", handle_update, state, NULL);
++    g_dbus_object_skeleton_add_interface(
++        listener, G_DBUS_INTERFACE_SKELETON(interface));
++    g_dbus_object_manager_server_export(state->server, listener);
++    g_dbus_object_manager_server_set_connection(
++        state->server, state->listener_connection);
++    g_dbus_connection_start_message_processing(state->listener_connection);
++}
++
++static void registered(GObject *source, GAsyncResult *result, gpointer opaque)
++{
++    ListenerState *state = opaque;
++    g_autoptr(GError) error = NULL;
++
++    qemu_dbus_display1_console_call_register_listener_finish(
++        QEMU_DBUS_DISPLAY1_CONSOLE(source), NULL, result, &error);
++    if (error) {
++        g_printerr("DBUS_FRAME result=FAIL reason=register error=%s\n",
++                   error->message);
++        g_main_loop_quit(state->loop);
++        return;
++    }
++    state->listener_connection = g_thread_join(state->thread);
++    if (!state->listener_connection) {
++        g_main_loop_quit(state->loop);
++        return;
++    }
++    setup_listener(state);
++}
++
++static gboolean deadline(gpointer opaque)
++{
++    ListenerState *state = opaque;
++
++    g_printerr("DBUS_FRAME result=FAIL reason=deadline\n");
++    g_main_loop_quit(state->loop);
++    return G_SOURCE_REMOVE;
++}
++
++int main(int argc, char **argv)
++{
++    g_autoptr(GError) error = NULL;
++    g_autoptr(GDBusConnection) connection = NULL;
++    g_autoptr(QemuDBusDisplay1ConsoleProxy) console = NULL;
++    g_autoptr(GUnixFDList) fd_list = NULL;
++    ListenerState state = { 0 };
++    int pair[2];
++    int index;
++    int fd;
++    char *end;
++    long parsed;
++
++    errno = 0;
++    parsed = argc == 2 ? strtol(argv[1], &end, 10) : -1;
++    if (argc != 2 || errno || *end || parsed < 0 || parsed > INT_MAX) {
++        g_printerr("usage: %s DBUS_FD\n", argv[0]);
++        return 2;
++    }
++    fd = parsed;
++    connection = connection_from_fd(fd);
++    if (!connection) {
++        return 1;
++    }
++    g_dbus_connection_start_message_processing(connection);
++    console = QEMU_DBUS_DISPLAY1_CONSOLE_PROXY(
++        qemu_dbus_display1_console_proxy_new_sync(
++            connection, G_DBUS_PROXY_FLAGS_NONE, NULL,
++            DBUS_DISPLAY1_ROOT "/Console_0", NULL, &error));
++    if (!console) {
++        g_printerr("DBUS_FRAME result=FAIL reason=console error=%s\n",
++                   error->message);
++        return 1;
++    }
++    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) < 0) {
++        g_printerr("DBUS_FRAME result=FAIL reason=listener-socket errno=%d\n",
++                   errno);
++        return 1;
++    }
++    fd_list = g_unix_fd_list_new();
++    index = g_unix_fd_list_append(fd_list, pair[1], &error);
++    if (index < 0) {
++        g_printerr("DBUS_FRAME result=FAIL reason=listener-fd error=%s\n",
++                   error->message);
++        return 1;
++    }
++    state.loop = g_main_loop_new(NULL, false);
++    state.thread = g_thread_new(NULL, listener_connection_thread,
++                                GINT_TO_POINTER(pair[0]));
++    qemu_dbus_display1_console_call_register_listener(
++        QEMU_DBUS_DISPLAY1_CONSOLE(console), g_variant_new_handle(index),
++        G_DBUS_CALL_FLAGS_NONE, -1, fd_list, NULL, registered, &state);
++    g_timeout_add_seconds(240, deadline, &state);
++    g_main_loop_run(state.loop);
++    g_clear_object(&state.server);
++    g_clear_object(&state.listener_connection);
++    g_main_loop_unref(state.loop);
++    return state.passed ? 0 : 1;
++}
