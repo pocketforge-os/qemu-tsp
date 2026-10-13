@@ -166,10 +166,13 @@ def nonnegative_int(value: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--qemu", type=Path, required=True)
+    parser.add_argument("--qemu-evidence", type=Path, required=True,
+                        help="ELF payload whose digest identifies the QEMU build")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--dtb", type=Path, required=True)
     parser.add_argument("--initrd", type=Path, required=True)
     parser.add_argument("--expect-qemu", required=True)
+    parser.add_argument("--expect-qemu-evidence", required=True)
     parser.add_argument("--expect-kernel", required=True)
     parser.add_argument("--expect-dtb", required=True)
     parser.add_argument("--expect-initrd", required=True)
@@ -187,6 +190,9 @@ def main() -> int:
         raise RuntimeError(f"output-not-empty:{args.output}")
     args.output.mkdir(parents=True, exist_ok=True)
     qemu_hash = require_hash("qemu", args.qemu, args.expect_qemu)
+    qemu_evidence_hash = require_hash(
+        "qemu-evidence", args.qemu_evidence, args.expect_qemu_evidence
+    )
     source_hashes = {
         "kernel": require_hash("kernel", args.kernel, args.expect_kernel),
         "dtb": require_hash("dtb", args.dtb, args.expect_dtb),
@@ -211,6 +217,7 @@ def main() -> int:
         "boots_with_ptw": boots_with_ptw,
         "wall_seconds": wall_seconds,
         "qemu_sha256": qemu_hash,
+        "qemu_evidence_sha256": qemu_evidence_hash,
         **{f"{name}_sha256": digest for name, digest in source_hashes.items()},
         "results": results,
     }
@@ -228,6 +235,8 @@ def main() -> int:
     )
     # Re-hash immutable inputs after the complete run.
     require_hash("qemu-after", args.qemu, args.expect_qemu)
+    require_hash("qemu-evidence-after", args.qemu_evidence,
+                 args.expect_qemu_evidence)
     require_hash("kernel-after", args.kernel, args.expect_kernel)
     require_hash("dtb-after", args.dtb, args.expect_dtb)
     require_hash("initrd-after", args.initrd, args.expect_initrd)
