@@ -8,6 +8,7 @@ from pathlib import Path
 import select
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -164,16 +165,43 @@ def cloud_config() -> str:
     )
 
 
+def gpt_partition_offsets(image: Path) -> list[int]:
+    sector_size = 512
+    with image.open("rb") as stream:
+        stream.seek(sector_size)
+        header = stream.read(92)
+        if header[:8] != b"EFI PART":
+            raise RuntimeError("gpt-header-missing")
+        header_size = struct.unpack_from("<I", header, 12)[0]
+        entries_lba = struct.unpack_from("<Q", header, 72)[0]
+        entry_count = struct.unpack_from("<I", header, 80)[0]
+        entry_size = struct.unpack_from("<I", header, 84)[0]
+        if not 92 <= header_size <= sector_size:
+            raise RuntimeError(f"gpt-header-size:{header_size}")
+        if not 128 <= entry_size <= 4096 or entry_count > 4096:
+            raise RuntimeError(
+                f"gpt-entry-layout:{entry_count}:{entry_size}")
+        stream.seek(entries_lba * sector_size)
+        entries = stream.read(entry_count * entry_size)
+        if len(entries) != entry_count * entry_size:
+            raise RuntimeError("gpt-entry-table-short-read")
+
+    offsets = []
+    for index in range(entry_count):
+        entry = entries[index * entry_size:(index + 1) * entry_size]
+        if entry[:16] == bytes(16):
+            continue
+        first_lba = struct.unpack_from("<Q", entry, 32)[0]
+        last_lba = struct.unpack_from("<Q", entry, 40)[0]
+        if first_lba == 0 or last_lba < first_lba:
+            raise RuntimeError(f"gpt-entry-range:{index}")
+        offsets.append(first_lba * sector_size)
+    return offsets
+
+
 def pocketforge_partition_offset(image: Path) -> int:
-    output = subprocess.run(
-        ["sfdisk", "--json", str(image)], check=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    ).stdout
-    table = json.loads(output)["partitiontable"]
-    sector_size = table.get("sectorsize", 512)
     matches = []
-    for part in table["partitions"]:
-        offset = int(part["start"]) * int(sector_size)
+    for offset in gpt_partition_offsets(image):
         label = subprocess.run(
             ["mlabel", "-i", mtools_image(image, offset), "-s", "::"],
             check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
