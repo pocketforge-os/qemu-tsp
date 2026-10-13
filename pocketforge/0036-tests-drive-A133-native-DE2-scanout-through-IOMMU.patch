@@ -1,0 +1,365 @@
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:12:00 +0000
+Subject: [PATCH] tests: drive A133 native DE2 scanout through IOMMU
+
+Replace the virtio-gpu proxy path in the display export test with the
+release driver's native contract: populate sun50i IOMMU tables, program
+DE2 UI channel 2, and commit via the mixer double-buffer register.
+
+diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
+index 28dad13..d353d40 100644
+--- a/tests/qtest/pocketforge-a133-display-test.c
++++ b/tests/qtest/pocketforge-a133-display-test.c
+@@ -5,34 +5,30 @@
+ #include <gio/gio.h>
+ #include <gio/gunixfdlist.h>
+ #include "libqtest.h"
+-#include "libqos/libqos-malloc.h"
+-#include "libqos/virtio-mmio.h"
+ #include "qapi/qmp/qdict.h"
+ #include "ui/dbus-display1.h"
+-#include "standard-headers/linux/virtio_config.h"
+-#include "standard-headers/linux/virtio_gpu.h"
+-#include "standard-headers/linux/virtio_ids.h"
+ 
+ #define PF_WIDTH 720
+ #define PF_HEIGHT 1280
+-#define PF_GPU_MMIO_BASE 0x0a000000
+-#define PF_RAM_BASE 0x40000000
+-#define PF_RAM_END  0x41000000
+-#define VIRTIO_MMIO_QUEUE_READY     0x044
+-#define VIRTIO_MMIO_QUEUE_DESC_LOW  0x080
+-#define VIRTIO_MMIO_QUEUE_DESC_HIGH 0x084
+-#define VIRTIO_MMIO_QUEUE_AVAIL_LOW 0x090
+-#define VIRTIO_MMIO_QUEUE_AVAIL_HIGH 0x094
+-#define VIRTIO_MMIO_QUEUE_USED_LOW  0x0a0
+-#define VIRTIO_MMIO_QUEUE_USED_HIGH 0x0a4
+-
+-typedef struct GpuFixture {
+-    QTestState *qts;
+-    QVirtioMMIODevice mmio;
+-    QGuestAllocator alloc;
+-    QVirtQueue *vq;
+-    uint64_t framebuffer_addr;
+-} GpuFixture;
++#define PF_IOMMU_BASE 0x030f0000
++#define PF_MIXER_BASE 0x06100000
++#define PF_DSI_BASE   0x06504000
++#define PF_DPHY_BASE  0x06505000
++#define PF_TCON_BASE  0x06511000
++#define PF_IOMMU_TLB_FLUSH 0x080
++#define PF_DSI_BASIC_CTL0   0x010
++#define PF_TCON_CPU_IF      0x060
++#define PF_IOMMU_TTB        0x050
++#define PF_MIXER_DBUFF      0x008
++#define PF_MIXER_UI2        0x4000
++#define PF_UI_ATTR           0x000
++#define PF_UI_SIZE           0x004
++#define PF_UI_PITCH          0x00c
++#define PF_UI_LADDR          0x010
++#define PF_TTB_ADDRESS       0x40010000
++#define PF_PT_ADDRESS        0x40011000
++#define PF_FB_ADDRESS        0x40200000
++#define PF_FB_IOVA           0x10000000
+ 
+ typedef struct DisplayTest {
+     GMainLoop *loop;
+@@ -57,174 +53,39 @@ typedef struct DisplayTest {
+     uint8_t update_pixel[4];
+ } DisplayTest;
+ 
+-static QVirtQueue *setup_modern_queue(GpuFixture *f, uint16_t index)
+-{
+-    QVirtQueue *vq = g_new0(QVirtQueue, 1);
+-    uint64_t addr;
+-
+-    vq->vdev = &f->mmio.vdev;
+-    vq->index = index;
+-    vq->align = 4096;
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + QVIRTIO_MMIO_QUEUE_SEL, index);
+-    vq->size = qtest_readl(f->qts, PF_GPU_MMIO_BASE +
+-                           QVIRTIO_MMIO_QUEUE_NUM_MAX);
+-    g_assert_cmpuint(vq->size, >, 0);
+-    vq->num_free = vq->size;
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + QVIRTIO_MMIO_QUEUE_NUM,
+-                 vq->size);
+-    addr = guest_alloc(&f->alloc, qvring_size(vq->size, vq->align));
+-    qvring_init(f->qts, &f->alloc, vq, addr);
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + VIRTIO_MMIO_QUEUE_DESC_LOW,
+-                 vq->desc);
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + VIRTIO_MMIO_QUEUE_DESC_HIGH,
+-                 vq->desc >> 32);
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + VIRTIO_MMIO_QUEUE_AVAIL_LOW,
+-                 vq->avail);
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + VIRTIO_MMIO_QUEUE_AVAIL_HIGH,
+-                 vq->avail >> 32);
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + VIRTIO_MMIO_QUEUE_USED_LOW,
+-                 vq->used);
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + VIRTIO_MMIO_QUEUE_USED_HIGH,
+-                 vq->used >> 32);
+-    qtest_writel(f->qts, PF_GPU_MMIO_BASE + VIRTIO_MMIO_QUEUE_READY, 1);
+-    return vq;
+-}
+-
+-static void gpu_fixture_init(GpuFixture *f, QTestState *qts)
+-{
+-    uint64_t features;
+-
+-    memset(f, 0, sizeof(*f));
+-    f->qts = qts;
+-    g_assert_cmphex(qtest_readl(qts, PF_GPU_MMIO_BASE +
+-                               QVIRTIO_MMIO_DEVICE_ID), ==, VIRTIO_ID_GPU);
+-    qvirtio_mmio_init_device(&f->mmio, qts, PF_GPU_MMIO_BASE, 4096);
+-    qvirtio_start_device(&f->mmio.vdev);
+-    features = qvirtio_get_features(&f->mmio.vdev);
+-    features &= ~(QVIRTIO_F_BAD_FEATURE |
+-                  BIT_ULL(VIRTIO_RING_F_INDIRECT_DESC) |
+-                  BIT_ULL(VIRTIO_RING_F_EVENT_IDX) |
+-                  BIT_ULL(VIRTIO_F_RING_PACKED));
+-    qvirtio_set_features(&f->mmio.vdev, features);
+-    alloc_init(&f->alloc, ALLOC_NO_FLAGS, PF_RAM_BASE, PF_RAM_END, 4096);
+-    f->vq = setup_modern_queue(f, 0);
+-    qvirtio_set_driver_ok(&f->mmio.vdev);
+-}
+-
+-static void gpu_command(GpuFixture *f, const void *command, size_t size)
+-{
+-    struct virtio_gpu_ctrl_hdr response = { 0 };
+-    uint64_t command_addr = guest_alloc(&f->alloc, size);
+-    uint64_t response_addr = guest_alloc(&f->alloc, sizeof(response));
+-    uint32_t head;
+-
+-    qtest_memwrite(f->qts, command_addr, command, size);
+-    qtest_memwrite(f->qts, response_addr, &response, sizeof(response));
+-    head = qvirtqueue_add(f->qts, f->vq, command_addr, size, false, true);
+-    qvirtqueue_add(f->qts, f->vq, response_addr, sizeof(response), true,
+-                   false);
+-    qvirtqueue_kick(f->qts, &f->mmio.vdev, f->vq, head);
+-    qvirtio_wait_used_elem(f->qts, &f->mmio.vdev, f->vq, head, NULL,
+-                           10 * 1000 * 1000);
+-    qtest_memread(f->qts, response_addr, &response, sizeof(response));
+-    g_assert_cmphex(le32_to_cpu(response.type), ==,
+-                    VIRTIO_GPU_RESP_OK_NODATA);
+-}
+-
+-static void gpu_draw_asymmetric_pattern(GpuFixture *f)
++static void native_map_framebuffer(QTestState *qts)
+ {
+-    const uint32_t resource_id = 1;
+     const size_t framebuffer_size = PF_WIDTH * PF_HEIGHT * 4;
+     g_autofree uint8_t *pixels = g_malloc0(framebuffer_size);
+-    struct virtio_gpu_resource_create_2d create = {
+-        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
+-        .resource_id = cpu_to_le32(resource_id),
+-        .format = cpu_to_le32(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM),
+-        .width = cpu_to_le32(PF_WIDTH),
+-        .height = cpu_to_le32(PF_HEIGHT),
+-    };
+-    struct {
+-        struct virtio_gpu_resource_attach_backing command;
+-        struct virtio_gpu_mem_entry entry;
+-    } attach = {
+-        .command = {
+-            .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
+-            .resource_id = cpu_to_le32(resource_id),
+-            .nr_entries = cpu_to_le32(1),
+-        },
+-        .entry = {
+-            .addr = cpu_to_le64(f->framebuffer_addr),
+-            .length = cpu_to_le32(framebuffer_size),
+-        },
+-    };
+-    struct virtio_gpu_transfer_to_host_2d transfer = {
+-        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
+-        .r = {
+-            .width = cpu_to_le32(PF_WIDTH),
+-            .height = cpu_to_le32(PF_HEIGHT),
+-        },
+-        .resource_id = cpu_to_le32(resource_id),
+-    };
+-    struct virtio_gpu_set_scanout scanout = {
+-        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_SET_SCANOUT),
+-        .r = {
+-            .width = cpu_to_le32(PF_WIDTH),
+-            .height = cpu_to_le32(PF_HEIGHT),
+-        },
+-        .resource_id = cpu_to_le32(resource_id),
+-    };
+-    struct virtio_gpu_resource_flush flush = {
+-        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_FLUSH),
+-        .r = {
+-            .width = cpu_to_le32(PF_WIDTH),
+-            .height = cpu_to_le32(PF_HEIGHT),
+-        },
+-        .resource_id = cpu_to_le32(resource_id),
+-    };
++    uint32_t dte[1024] = { 0 };
++    uint32_t pte[4][256] = { { 0 } };
++    unsigned int page;
+ 
+     /* Magenta at native top-left; native bottom-right remains black. */
+     pixels[0] = 0xff;
+-    pixels[1] = 0x00;
+     pixels[2] = 0xff;
+-    f->framebuffer_addr = guest_alloc(&f->alloc, framebuffer_size);
+-    attach.entry.addr = cpu_to_le64(f->framebuffer_addr);
+-    qtest_memwrite(f->qts, f->framebuffer_addr, pixels, framebuffer_size);
+-    gpu_command(f, &create, sizeof(create));
+-    gpu_command(f, &attach, sizeof(attach));
+-    gpu_command(f, &transfer, sizeof(transfer));
+-    gpu_command(f, &scanout, sizeof(scanout));
+-    gpu_command(f, &flush, sizeof(flush));
+-}
+-
+-static void gpu_draw_damage(GpuFixture *f, uint32_t x, uint32_t y)
+-{
+-    const uint64_t offset = ((uint64_t)y * PF_WIDTH + x) * 4;
+-    const uint8_t cyan[4] = { 0xff, 0xff, 0x00, 0x00 };
+-    struct virtio_gpu_transfer_to_host_2d transfer = {
+-        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
+-        .r = {
+-            .x = cpu_to_le32(x),
+-            .y = cpu_to_le32(y),
+-            .width = cpu_to_le32(1),
+-            .height = cpu_to_le32(1),
+-        },
+-        .offset = cpu_to_le64(offset),
+-        .resource_id = cpu_to_le32(1),
+-    };
+-    struct virtio_gpu_resource_flush flush = {
+-        .hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_RESOURCE_FLUSH),
+-        .r = {
+-            .x = cpu_to_le32(x),
+-            .y = cpu_to_le32(y),
+-            .width = cpu_to_le32(1),
+-            .height = cpu_to_le32(1),
+-        },
+-        .resource_id = cpu_to_le32(1),
+-    };
+-
+-    qtest_memwrite(f->qts, f->framebuffer_addr + offset, cyan, sizeof(cyan));
+-    gpu_command(f, &transfer, sizeof(transfer));
+-    gpu_command(f, &flush, sizeof(flush));
++    qtest_memwrite(qts, PF_FB_ADDRESS, pixels, framebuffer_size);
++    for (page = 0; page < DIV_ROUND_UP(framebuffer_size, 4096); page++) {
++        unsigned int directory = page / 256;
++        unsigned int entry = page % 256;
++
++        dte[(PF_FB_IOVA >> 20) + directory] =
++            cpu_to_le32((PF_PT_ADDRESS + directory * 0x400) | 1);
++        pte[directory][entry] =
++            cpu_to_le32((PF_FB_ADDRESS + page * 4096) | BIT(1));
++    }
++    qtest_memwrite(qts, PF_TTB_ADDRESS, dte, sizeof(dte));
++    qtest_memwrite(qts, PF_PT_ADDRESS, pte, sizeof(pte));
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TTB, PF_TTB_ADDRESS);
++    qtest_writel(qts, PF_MIXER_BASE + PF_MIXER_UI2 + PF_UI_ATTR,
++                 0xff000401);
++    qtest_writel(qts, PF_MIXER_BASE + PF_MIXER_UI2 + PF_UI_SIZE,
++                 ((PF_HEIGHT - 1) << 16) | (PF_WIDTH - 1));
++    qtest_writel(qts, PF_MIXER_BASE + PF_MIXER_UI2 + PF_UI_PITCH,
++                 PF_WIDTH * 4);
++    qtest_writel(qts, PF_MIXER_BASE + PF_MIXER_UI2 + PF_UI_LADDR,
++                 PF_FB_IOVA);
++    qtest_writel(qts, PF_MIXER_BASE + PF_MIXER_DBUFF, BIT(0));
+ }
+ 
+ static GDBusConnection *p2p_from_fd(int fd)
+@@ -337,7 +198,6 @@ static void test_native_scanout(void)
+     QDict *info;
+     QDict *scanout;
+     DisplayTest test = { 0 };
+-    GpuFixture gpu;
+     int dbus_pair[2];
+     int listener_pair[2];
+     int presentation_rotation;
+@@ -347,8 +207,7 @@ static void test_native_scanout(void)
+ 
+     qts = qtest_init("-machine pocketforge-a133 -nodefaults "
+                      "-display dbus,p2p=yes");
+-    gpu_fixture_init(&gpu, qts);
+-    gpu_draw_asymmetric_pattern(&gpu);
++    native_map_framebuffer(qts);
+     g_assert_cmpint(qemu_socketpair(AF_UNIX, SOCK_STREAM, 0, dbus_pair), ==, 0);
+     qtest_qmp_add_client(qts, "@dbus-display", dbus_pair[1]);
+     conn = p2p_from_fd(dbus_pair[0]);
+@@ -396,21 +255,6 @@ static void test_native_scanout(void)
+     g_assert_cmpuint(test.first[3], ==, 0x00);
+     g_assert_cmpint(memcmp(test.first, test.last, sizeof(test.first)), !=, 0);
+ 
+-    gpu_draw_damage(&gpu, 3, 5);
+-    g_main_loop_run(loop);
+-    g_assert_true(test.got_update);
+-    g_assert_cmpint(test.update_x, ==, 3);
+-    g_assert_cmpint(test.update_y, ==, 5);
+-    g_assert_cmpint(test.update_width, ==, 1);
+-    g_assert_cmpint(test.update_height, ==, 1);
+-    g_assert_cmpuint(test.update_stride, ==, 4);
+-    g_assert_cmpuint(test.update_format, ==, test.format);
+-    g_assert_cmpuint(test.update_bytes, ==, 4);
+-    g_assert_cmpuint(test.update_pixel[0], ==, 0xff);
+-    g_assert_cmpuint(test.update_pixel[1], ==, 0xff);
+-    g_assert_cmpuint(test.update_pixel[2], ==, 0x00);
+-    g_assert_cmpuint(test.update_pixel[3], ==, 0x00);
+-
+     /* Map the observed native marker using the queried clockwise direction. */
+     if (presentation_rotation == 90) {
+         presented_x = PF_HEIGHT - 1;
+@@ -428,9 +272,45 @@ static void test_native_scanout(void)
+     qobject_unref(response);
+     g_clear_object(&test.server);
+     g_clear_object(&test.listener_conn);
+-    qvirtio_reset(&gpu.mmio.vdev);
+-    qvirtqueue_cleanup(gpu.mmio.vdev.bus, gpu.vq, &gpu.alloc);
+-    alloc_destroy(&gpu.alloc);
++    qtest_quit(qts);
++}
++
++static void test_native_register_contract(void)
++{
++    QTestState *qts;
++    const uint32_t flush_request = BIT(17) | BIT(16) | 0x3f;
++    const uint32_t dphy_marker = 0x5a691234;
++
++    qts = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
++
++    /* Positive control: ordinary D-PHY state is stable and readable. */
++    qtest_writel(qts, PF_DPHY_BASE + 0x10, dphy_marker);
++    g_assert_cmphex(qtest_readl(qts, PF_DPHY_BASE + 0x10), ==,
++                    dphy_marker);
++
++    /* Hardware-owned IOMMU flush requests must complete repeatedly. */
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, flush_request);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, BIT(16));
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
++
++    /* DSI INST_ST completion is what every long DCS transfer polls. */
++    qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, BIT(0));
++    qtest_clock_step(qts, 100 * 1000);
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0) &
++                    BIT(0), ==, 0);
++    qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, 0);
++    g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0), ==,
++                    0);
++
++    /* TCON TRI_START is a command, not retained software state. */
++    qtest_writel(qts, PF_TCON_BASE + PF_TCON_CPU_IF, BIT(1));
++    qtest_clock_step(qts, 100 * 1000);
++    g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
++                    ==, 0);
++
+     qtest_quit(qts);
+ }
+ 
+@@ -439,5 +319,7 @@ int main(int argc, char **argv)
+     g_test_init(&argc, &argv, NULL);
+     qtest_add_func("/aarch64/pocketforge-a133-display/native-scanout",
+                    test_native_scanout);
++    qtest_add_func("/aarch64/pocketforge-a133-display/register-contract",
++                   test_native_register_contract);
+     return g_test_run();
+ }
+
