@@ -163,13 +163,13 @@
     {"base":"0x5200000","size":"0x100","name":"pocketforge-a133.ehci1","kind":"stub","source":"dt"},
     {"base":"0x5200400","size":"0x100","name":"pocketforge-a133.ohci1","kind":"stub","source":"dt"},
     {"base":"0x5200800","size":"0x100","name":"pocketforge-a133.usbphy_pmu1","kind":"stub","source":"dt"},
-    {"base":"0x6000000","size":"0x400000","name":"pocketforge-a133.de2","kind":"stub","source":"dt"},
+    {"base":"0x6000000","size":"0x400000","name":"pocketforge-a133.de2","kind":"model","source":"dt"},
     {"base":"0x6480000","size":"0x100","name":"pocketforge-a133.g2d_clk","kind":"stub","source":"build6"},
     {"base":"0x64a8000","size":"0x100","name":"pocketforge-a133.g2d_rotate","kind":"stub","source":"build6"},
-    {"base":"0x6504000","size":"0x1000","name":"pocketforge-a133.dsi","kind":"stub","source":"dt"},
-    {"base":"0x6505000","size":"0x1000","name":"pocketforge-a133.dphy","kind":"stub","source":"dt"},
-    {"base":"0x6510000","size":"0x1000","name":"pocketforge-a133.tcon_top","kind":"stub","source":"dt"},
-    {"base":"0x6511000","size":"0x1000","name":"pocketforge-a133.tcon_lcd0","kind":"stub","source":"dt"},
+    {"base":"0x6504000","size":"0x1000","name":"pocketforge-a133.dsi","kind":"model","source":"dt"},
+    {"base":"0x6505000","size":"0x1000","name":"pocketforge-a133.dphy","kind":"model","source":"dt"},
+    {"base":"0x6510000","size":"0x1000","name":"pocketforge-a133.tcon_top","kind":"model","source":"dt"},
+    {"base":"0x6511000","size":"0x1000","name":"pocketforge-a133.tcon_lcd0","kind":"model","source":"dt"},
     {"base":"0x7000000","size":"0x400","name":"pocketforge-a100-rtc","kind":"model","source":"dt"},
     {"base":"0x7001000","size":"0x40","name":"pocketforge-a133.gpu_power_domain","kind":"stub","source":"dt"},
     {"base":"0x7010000","size":"0x300","name":"pocketforge-a133.r_ccu","kind":"stub","source":"dt"},
@@ -177,7 +177,6 @@
     {"base":"0x7022000","size":"0x400","name":"pocketforge-a133.r_pio","kind":"stub","source":"dt"},
     {"base":"0x7040000","size":"0x400","name":"pocketforge-a133.ir","kind":"stub","source":"dt"},
     {"base":"0x7081400","size":"0x24","name":"allwinner.i2c","kind":"model","source":"dt"},
-    {"base":"0x7081424","size":"0x3dc","name":"pocketforge-a133.r_i2c0.reserved","kind":"stub","source":"dt"},
-    {"base":"0xa000000","size":"0x200","name":"virtio-mmio","kind":"model","source":"synthetic"}
+    {"base":"0x7081424","size":"0x3dc","name":"pocketforge-a133.r_i2c0.reserved","kind":"stub","source":"dt"}
   ]
 }
