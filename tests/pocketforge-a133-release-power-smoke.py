@@ -171,11 +171,20 @@ def pocketforge_partition_offset(image: Path) -> int:
     ).stdout
     table = json.loads(output)["partitiontable"]
     sector_size = table.get("sectorsize", 512)
-    matches = [part for part in table["partitions"]
-               if part.get("name") == "POCKETFORGE"]
+    matches = []
+    for part in table["partitions"]:
+        offset = int(part["start"]) * int(sector_size)
+        label = subprocess.run(
+            ["mlabel", "-i", mtools_image(image, offset), "-s", "::"],
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if label.returncode == 0 and label.stdout.strip().endswith(
+                "POCKETFORGE"):
+            matches.append(offset)
     if len(matches) != 1:
         raise RuntimeError(f"pocketforge-partition-count:{len(matches)}")
-    return int(matches[0]["start"]) * int(sector_size)
+    return matches[0]
 
 
 def mtools_image(image: Path, offset: int) -> str:
