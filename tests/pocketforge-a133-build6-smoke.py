@@ -382,6 +382,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def require_hash(name: str, path: Path, expected: str) -> None:
+    actual = sha256(path)
+    if actual != expected:
+        raise RuntimeError(f"artifact-mismatch:{name}:{actual}")
+    print(f"ARTIFACT name={name} sha256={actual} status=ok", flush=True)
+
+
 def checked_out_head(source_root: Path) -> str:
     head = subprocess.run(
         ["git", "-C", str(source_root), "rev-parse", "HEAD"],
@@ -662,6 +669,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--qemu", type=Path, required=True)
     parser.add_argument("--dbus-listener", type=Path, required=True)
+    parser.add_argument("--expect-dbus-listener", required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--dtb", type=Path, required=True)
     parser.add_argument("--initrd", type=Path, required=True)
@@ -675,6 +683,8 @@ def main() -> int:
     args = parser.parse_args()
 
     verify_qemu_provenance(args.qemu, args.source_root)
+    require_hash("dbus-listener", args.dbus_listener,
+                 args.expect_dbus_listener)
     args.work.mkdir(parents=True, exist_ok=True)
     for stale in ("qmp.sock", "serial.sock"):
         path = args.work / stale
@@ -684,10 +694,7 @@ def main() -> int:
         if name == "rootfs":
             continue
         path = getattr(args, name)
-        actual = sha256(path)
-        if actual != expected:
-            raise RuntimeError(f"artifact-mismatch:{name}:{actual}")
-        print(f"ARTIFACT name={name} sha256={actual} status=ok", flush=True)
+        require_hash(name, path, expected)
 
     smoke_sd = prepare_smoke_disk(args.sd, args.work)
     qmp_path = args.work / "qmp.sock"

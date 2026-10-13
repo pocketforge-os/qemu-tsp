@@ -39,6 +39,7 @@ the four source artifacts mounted read-only:
   python3 tests/pocketforge-a133-build6-smoke.py \
     --qemu build/qemu-tsp/qemu-system-aarch64 \
     --dbus-listener build/qemu-tsp/pocketforge-a133-dbus-listener \
+    --expect-dbus-listener 3b4c6519c73ad503eaf424d36fa0571d2611284774e23d0d2155da9b0e878300 \
     --image /inputs/Image \
     --dtb /inputs/dtb.bin \
     --initrd /inputs/initrd.gz \
