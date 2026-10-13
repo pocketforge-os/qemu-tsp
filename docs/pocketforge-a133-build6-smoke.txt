@@ -100,3 +100,25 @@ guest-reported ranges and identity, every event above, and absence of an EV_SW
 guest record before reporting PASS. Timeout failures include the serial tail,
 so a boot-order or guest-service failure cannot appear as a negative-control
 success.
+
+Native display extension (2026-10-13)
+-------------------------------------
+
+The current harness also requires:
+
+  --dbus-listener build/qemu-tsp/pocketforge-a133-dbus-listener
+
+The new leg requires the unmodified release kernel's own `sun4i-drm` fbdev,
+writes a magenta XR24 marker at native coordinate (0,0), and reads it from both
+upstream Display1 `Console_0` and the same QemuConsole's screendump path. The
+listener ignores the initial black Scanout, so only a post-modeset guest-RAM
+update can produce:
+
+  DBUS_FRAME result=PASS width=720 height=1280 stride=2880 marker=ff00ff
+  DRM_DISPLAY driver=sun4i-drm frame=720x1280 marker=ff00ff export=QemuConsole
+
+The release Image, DTB and initrd remain byte-identical. This display extension
+has not been appended to the historical PASS transcript above because the
+pinned artifact tuple was unavailable in the implementation worktree; the
+identity checks fail closed before QEMU starts when any supplied artifact does
+not match.
