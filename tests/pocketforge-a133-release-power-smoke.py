@@ -413,6 +413,7 @@ def main() -> int:
         "root=PARTLABEL=userdata rootwait rw console=ttyS0,115200 "
         "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon "
         "loglevel=6 panic=-1 pocketforge.root=volatile video=DSI-1:d "
+        "ds=nocloud;s=file:///boot/ "
         "systemd.log_target=kmsg systemd.log_level=info",
         "-drive", f"if=sd,format=raw,file={run_disk},snapshot=on",
         "-display", "none", "-monitor", "none", "-no-reboot",
