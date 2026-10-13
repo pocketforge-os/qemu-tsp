@@ -4,14 +4,15 @@ Subject: [PATCH] tests: cover A133 native display register contract
 
 Add the first route-(b) RED qtest. It requires hardware-owned completion
 semantics that RAM-backed probe stubs cannot provide: IOMMU TLB flush,
-DSI instruction completion, and TCON trigger completion. The D-PHY
-read/write case is the positive control in the same invocation.
+range TLB invalidation, PTW-cache invalidation, DSI instruction completion,
+and TCON trigger completion. Ordinary IOMMU address/mask registers and the
+D-PHY read/write case are retained-state controls in the same invocation.
 
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
 index 28dad13..118d35a 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
-@@ -25,6 +25,13 @@
+@@ -25,6 +25,18 @@
  #define VIRTIO_MMIO_QUEUE_AVAIL_HIGH 0x094
  #define VIRTIO_MMIO_QUEUE_USED_LOW  0x0a0
  #define VIRTIO_MMIO_QUEUE_USED_HIGH 0x0a4
@@ -19,13 +20,18 @@ index 28dad13..118d35a 100644
 +#define PF_DSI_BASE   0x06504000
 +#define PF_DPHY_BASE  0x06505000
 +#define PF_TCON_BASE  0x06511000
-+#define PF_IOMMU_TLB_FLUSH 0x080
++#define PF_IOMMU_TLB_FLUSH     0x080
++#define PF_IOMMU_TLB_IVLD_ADDR 0x090
++#define PF_IOMMU_TLB_IVLD_MASK 0x094
++#define PF_IOMMU_TLB_IVLD      0x098
++#define PF_IOMMU_PC_IVLD_ADDR  0x0a0
++#define PF_IOMMU_PC_IVLD       0x0a8
 +#define PF_DSI_BASIC_CTL0   0x010
 +#define PF_TCON_CPU_IF      0x060
  
  typedef struct GpuFixture {
      QTestState *qts;
-@@ -434,10 +441,51 @@ static void test_native_scanout(void)
+@@ -434,10 +446,72 @@ static void test_native_scanout(void)
      qtest_quit(qts);
  }
  
@@ -49,6 +55,27 @@ index 28dad13..118d35a 100644
 +    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, BIT(16));
 +    g_assert_cmphex(qtest_readl(qts,
 +                               PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
++
++    /* Address and mask are retained; each adjacent enable is a command. */
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_ADDR, 0x12345000);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_MASK, 0xfffff000);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD, BIT(0));
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_ADDR), ==,
++                    0x12345000);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_MASK), ==,
++                    0xfffff000);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD), ==, 0);
++
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_PC_IVLD_ADDR, 0x23456000);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_PC_IVLD, BIT(0));
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_PC_IVLD_ADDR), ==,
++                    0x23456000);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_PC_IVLD), ==, 0);
 +
 +    /* DSI INST_ST completion is what every long DCS transfer polls. */
 +    qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, BIT(0));
