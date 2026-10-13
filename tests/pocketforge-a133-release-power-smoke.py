@@ -30,6 +30,7 @@ timeout 120 sh -c '
         sleep 1
     done
 ' || fail logind-not-active
+printf '<3>PF_RELEASE_STAGE logind=active\\n' >&3
 
 launcher=$(timeout 120 sh -c '
     while :; do
@@ -233,7 +234,16 @@ def prepare_run_disk(source: Path, work: Path) -> Path:
         "user-data": cloud_config(),
         "meta-data": "instance-id: pf-release-power-smoke\n"
                      "local-hostname: pocketforge-smoke\n",
-        "network-config": "version: 2\nethernets: {}\n",
+        "network-config": (
+            "version: 2\n"
+            "wifis:\n"
+            "  wlan0:\n"
+            "    dhcp4: true\n"
+            "    optional: true\n"
+            "    access-points:\n"
+            "      pf-qemu-no-radio:\n"
+            "        password: qemu-ci-placeholder\n"
+        ),
     }
     for name, contents in seed_files.items():
         local = work / f"seed-{name}"
