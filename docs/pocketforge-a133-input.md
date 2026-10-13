@@ -8,11 +8,15 @@ the query.
 ## Machine options and display ownership
 
 `pocketforge-display=hardware|off` selects the display profile and defaults to
-`hardware`. The hardware profile creates exactly one `virtio-gpu-device` on
-modern virtio-mmio transport 0, enables EDID, and advertises the native
-720x1280 mode. A launcher must not add another virtio GPU; machine construction
-fails with `pocketforge-display: reason=duplicate-gpu:` if it does. `off` leaves
-transport 0 empty. The profile cannot change after machine initialization.
+`hardware`. The hardware profile models the release DT's DE2 mixer,
+TCON-TOP/LCD, MIPI DSI host and D-PHY and exports one native 720x1280 console.
+It also translates the mixer's layer IOVA through the release-programmed
+sun50i IOMMU page tables before reading guest RAM. There is no virtio GPU or
+QEMU-only DT node: the unmodified release image binds its own sun4i DRM stack.
+A launcher must not add another GPU; machine construction fails with
+`pocketforge-display: reason=duplicate-gpu:` if it does. `off` keeps the guest
+MMIO pipeline available for driver probe while suppressing the host console.
+The profile cannot change after machine initialization.
 
 `pocketforge-input-device=on|off` defaults to `on`. It places the deterministic
 gamepad MCU source behind the real DT's RX-only DW APB UART3 (right half) and
@@ -27,6 +31,15 @@ The copy-only v1 display is enabled at build time with `-Dgio=enabled
 QEMU D-Bus `Scanout` and `Update` listener calls carry copied pixel arrays.
 DMA-BUF, OpenGL/GBM, audio, snapshots, and a guest agent are not ABI 1.0
 features.
+
+The normal release path is DE2 UI channel 2 in XR24, XB24 or AR24 format.
+Writing the mixer double-buffer latch snapshots its base IOVA, pitch, format
+and 720x1280 size. A complete frame is staged before publication, so an invalid
+directory/page-table entry cannot expose a partially updated host frame. DSI
+and TCON transfer-start bits complete on virtual timers inside the release
+driver's 5 ms poll budget. DSI VIDEO_VBLK is delivered on SPI 68 at 60 Hz and
+uses the hardware's combined enable/status register with W1C acknowledgement.
+Unused analogue PHY behavior and wire-level DSI packet transmission are inert.
 
 ## Display query (ABI 1.0)
 
