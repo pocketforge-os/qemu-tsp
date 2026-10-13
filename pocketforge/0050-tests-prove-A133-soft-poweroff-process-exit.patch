@@ -18,7 +18,7 @@ diff --git a/tests/qtest/libqtest.h b/tests/qtest/libqtest.h
 index 6e3d3525ad..b580166a6b 100644
 --- a/tests/qtest/libqtest.h
 +++ b/tests/qtest/libqtest.h
-@@ -506,6 +506,17 @@ void qtest_writew(QTestState *s, uint64_t addr, uint16_t value);
+@@ -506,6 +506,18 @@ void qtest_writew(QTestState *s, uint64_t addr, uint16_t value);
   */
  void qtest_writel(QTestState *s, uint64_t addr, uint32_t value);
  
@@ -29,7 +29,8 @@ index 6e3d3525ad..b580166a6b 100644
 + * @value: value to write.
 + *
 + * Submit a 32-bit MMIO write without waiting for the qtest response.  This is
-+ * only for a write whose expected effect is immediate emulator termination.
++ * only for a write whose expected effect is immediate clean emulator
++ * termination.
 + */
 +void qtest_writel_no_rsp(QTestState *s, uint64_t addr, uint32_t value);
 +

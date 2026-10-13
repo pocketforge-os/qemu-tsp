@@ -2,7 +2,7 @@ From 5b0ca16065f4c4846a46fb7fe97de594c18219b0 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 15:15:42 -0400
-Subject: [PATCH] hw/arm: model A133 lid and AXP717 shutdown paths
+Subject: [PATCH] hw/arm: model A133 hall and AXP717 shutdown paths
 
 ---
  hw/arm/pocketforge_a133.c                  | 108 ++++++++++-

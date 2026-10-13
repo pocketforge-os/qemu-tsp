@@ -270,23 +270,23 @@ fi
 echo "== apply PocketForge patch: RED A133 lid and AXP717 power fidelity =="
 if ! grep -q 'lid-default-open-edges' \
     tests/qtest/pocketforge-a133-input-test.c; then
-  git apply "$ROOT/pocketforge/0034-tests-require-A133-lid-and-AXP717-power-fidelity.patch"
+  git apply "$ROOT/pocketforge/0047-tests-require-A133-lid-and-AXP717-power-fidelity.patch"
 fi
 
 echo "== apply PocketForge patch: A133 lid and AXP717 shutdown paths =="
 if [ ! -f hw/misc/pocketforge_a100_r_pio.c ]; then
-  git apply "$ROOT/pocketforge/0035-hw-arm-model-A133-lid-and-AXP717-shutdown-paths.patch"
+  git apply "$ROOT/pocketforge/0048-hw-arm-model-A133-lid-and-AXP717-shutdown-paths.patch"
 fi
 
 echo "== apply PocketForge patch: classify stateful A133 R_PIO qtest region =="
 if ! grep -q 'Stateful R_PIO is intentionally covered' \
     tests/qtest/pocketforge-a133-mmio-map-test.c; then
-  git apply "$ROOT/pocketforge/0036-tests-classify-A133-R-PIO-as-stateful.patch"
+  git apply "$ROOT/pocketforge/0049-tests-classify-A133-R-PIO-as-stateful.patch"
 fi
 
 echo "== apply PocketForge patch: A133 soft-poweroff process-exit qtest =="
 if ! grep -q 'qtest_writel_no_rsp' tests/qtest/libqtest.h; then
-  git apply "$ROOT/pocketforge/0037-tests-prove-A133-soft-poweroff-process-exit.patch"
+  git apply "$ROOT/pocketforge/0050-tests-prove-A133-soft-poweroff-process-exit.patch"
 fi
 
 echo "== check applied PocketForge source whitespace =="

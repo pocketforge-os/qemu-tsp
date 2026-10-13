@@ -6,7 +6,7 @@ index d347743f42..b9091b74c1 100644
  };
  
  static const ExpectedRegion stub_regions[] = {
-+    /* Stateful R_PIO is intentionally covered by its dedicated qtest. */
++    /* Stateful R_PIO has dedicated qtest coverage. */
      { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
      { "pocketforge-a133.crypto",           0x01904000, 0x800 },
      { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },

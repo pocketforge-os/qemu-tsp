@@ -1,6 +1,6 @@
 From: qlid <qlid@pocketforge.local>
 Date: Tue, 13 Oct 2026 18:58:00 +0000
-Subject: [PATCH 34/35] tests: require A133 lid and AXP717 power fidelity
+Subject: [PATCH] tests: require A133 lid and AXP717 power fidelity
 
 Add RED coverage for the active-low PL9 hall switch, the AXP717
 IRQLEVEL and OFFLEVEL timers, and both observable and process-exit
