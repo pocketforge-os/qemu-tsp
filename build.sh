@@ -27,6 +27,9 @@ git -C "$ROOT" diff --cached --quiet HEAD -- || {
 }
 echo "== test fresh Python evidence runner =="
 "$ROOT/tests/run-python-fresh-test.sh"
+echo "== test A133 IOMMU boot-loop evidence integrity =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-iommu-boot-loop-test.py"
 echo "== test build-6 release-smoke log gates =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-build6-smoke-test.py"
