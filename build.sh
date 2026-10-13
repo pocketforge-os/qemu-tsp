@@ -311,6 +311,11 @@ if ! grep -q 'FRAME_COST path=full-copy' \
   git apply "$ROOT/pocketforge/0042-tests-measure-A133-full-and-static-frame-costs.patch"
 fi
 
+echo "== apply PocketForge patch: native DCS transfer completion =="
+if ! grep -q 'PF_DSI_CMD_RX_FLAG' hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0043-hw-display-complete-A133-DCS-command-state.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
