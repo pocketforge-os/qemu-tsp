@@ -382,6 +382,16 @@ def send_report(qmp: JsonLine, device: str, *events: dict) -> None:
         raise RuntimeError(f"input-send:{device}:{response}")
 
 
+def kernel_command_line() -> str:
+    return (
+        "root=PARTLABEL=userdata rootwait rw console=ttyS0,115200 "
+        "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon "
+        "loglevel=6 panic=-1 pocketforge.root=volatile "
+        "ds=nocloud;s=file:///boot/ "
+        "systemd.log_target=kmsg systemd.log_level=info"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--qemu", type=Path, required=True)
@@ -422,12 +432,7 @@ def main() -> int:
         str(args.qemu), "-accel", "tcg", "-M", "pocketforge-a133",
         "-cpu", "cortex-a53", "-smp", "4", "-m", "1024", "-nodefaults",
         "-kernel", str(args.image), "-dtb", str(args.dtb),
-        "-initrd", str(args.initrd), "-append",
-        "root=PARTLABEL=userdata rootwait rw console=ttyS0,115200 "
-        "earlycon=uart8250,mmio32,0x05000000,115200n8 keep_bootcon "
-        "loglevel=6 panic=-1 pocketforge.root=volatile video=DSI-1:d "
-        "ds=nocloud;s=file:///boot/ "
-        "systemd.log_target=kmsg systemd.log_level=info",
+        "-initrd", str(args.initrd), "-append", kernel_command_line(),
         "-drive", f"if=sd,format=raw,file={run_disk},snapshot=on",
         "-display", "none", "-monitor", "none", "-no-reboot",
         "-d", "unimp", "-D", str(qemu_log),
