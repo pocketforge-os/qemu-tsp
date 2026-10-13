@@ -20,6 +20,10 @@ PTW_TIMEOUT = b"PTW cache invalidation timed out!"
 LOG_LIMIT = 256 * 1024
 
 
+class EvidenceError(RuntimeError):
+    """The launched process could not be bound to the verified payload."""
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -45,7 +49,7 @@ def require_process_payload(
     last = "process-not-inspectable"
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise RuntimeError(
+            raise EvidenceError(
                 f"qemu-evidence-unbound:process-exited:{process.returncode}"
             )
         try:
@@ -68,7 +72,7 @@ def require_process_payload(
         except (FileNotFoundError, OSError) as error:
             last = type(error).__name__
         time.sleep(0.01)
-    raise RuntimeError(f"qemu-evidence-unbound:{last}")
+    raise EvidenceError(f"qemu-evidence-unbound:{last}")
 
 
 def publish_verified_summary(
@@ -138,6 +142,7 @@ def boot_once(index: int, args: argparse.Namespace) -> dict[str, object]:
     serial = bytearray()
     ready = False
     reason = "boot-timeout"
+    integrity_failure = ""
     qemu_payload = "unbound"
     process: subprocess.Popen[bytes] | None = None
     with stderr_path.open("wb") as stderr:
@@ -183,7 +188,10 @@ def boot_once(index: int, args: argparse.Namespace) -> dict[str, object]:
                                 break
                             bounded_append(serial, chunk)
                         break
-        except (OSError, RuntimeError, TimeoutError) as error:
+        except EvidenceError as error:
+            integrity_failure = str(error)
+            reason = integrity_failure.replace(" ", "_")
+        except (OSError, TimeoutError) as error:
             reason = str(error).replace(" ", "_")
         finally:
             if process is not None:
@@ -197,6 +205,7 @@ def boot_once(index: int, args: argparse.Namespace) -> dict[str, object]:
         "reason": reason,
         "elapsed_ms": elapsed_ms,
         "ptw_timeouts": ptw_lines,
+        "integrity_failure": integrity_failure,
         "qemu_payload": qemu_payload,
     }
     (boot_dir / "result.json").write_text(
@@ -263,6 +272,8 @@ def main() -> int:
     results.sort(key=lambda result: int(result["boot"]))
     ready = sum(bool(result["ready"]) for result in results)
     failures = args.boots - ready
+    integrity_failures = sum(bool(result["integrity_failure"])
+                             for result in results)
     ptw_timeouts = sum(int(result["ptw_timeouts"]) for result in results)
     boots_with_ptw = sum(int(result["ptw_timeouts"]) > 0 for result in results)
     wall_seconds = round(time.monotonic() - started, 3)
@@ -271,6 +282,7 @@ def main() -> int:
         "jobs": args.jobs,
         "ready": ready,
         "readiness_failures": failures,
+        "integrity_failures": integrity_failures,
         "ptw_timeouts": ptw_timeouts,
         "boots_with_ptw": boots_with_ptw,
         "wall_seconds": wall_seconds,
@@ -278,11 +290,13 @@ def main() -> int:
            for name, digest in initial_hashes.items()},
         "results": results,
     }
-    result = "PASS" if (failures <= args.max_readiness_failures and
+    result = "PASS" if (integrity_failures == 0 and
+                         failures <= args.max_readiness_failures and
                          ptw_timeouts <= args.max_ptw_timeouts) else "FAIL"
     result_line = (
         f"IOMMU_BOOT_LOOP result={result} boots={args.boots} jobs={args.jobs} "
         f"ready={ready} readiness_failures={failures} "
+        f"integrity_failures={integrity_failures} "
         f"ptw_timeouts={ptw_timeouts} boots_with_ptw={boots_with_ptw} "
         f"wall_seconds={wall_seconds} "
         f"qemu_sha256={initial_hashes['qemu']}"
