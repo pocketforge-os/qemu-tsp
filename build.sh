@@ -288,6 +288,12 @@ if ! grep -q 'pf_display_scanout' hw/display/pocketforge_a133_display.c; then
   git apply "$ROOT/pocketforge/0037-hw-display-scan-out-A133-DE2-UI-plane-through-IOMMU.patch"
 fi
 
+echo "== apply PocketForge patch: timed display transfer completion qtest =="
+if ! grep -q 'BIT(0), ==, BIT(0)' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0038-tests-require-timed-A133-display-transfer-completion.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
