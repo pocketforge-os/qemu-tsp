@@ -1,0 +1,55 @@
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 21:44:00 +0000
+Subject: [PATCH] tests: cover A133 IOMMU invalidation completion
+
+The mainline sun50i-iommu driver polls the range-TLB and PTW-cache
+invalidation enable registers until the hardware clears each command.
+Assert those completion semantics directly, alongside retained address
+and mask registers so a write-discard implementation cannot pass.
+
+diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
+index 1ae5335..166af93 100644
+--- a/tests/qtest/pocketforge-a133-display-test.c
++++ b/tests/qtest/pocketforge-a133-display-test.c
+@@ -18,7 +18,12 @@
+ #define PF_DPHY_BASE  0x06505000
+ #define PF_TCON_BASE  0x06511000
+ #define PF_TCON_TOP_BASE 0x06510000
+-#define PF_IOMMU_TLB_FLUSH 0x080
++#define PF_IOMMU_TLB_FLUSH     0x080
++#define PF_IOMMU_TLB_IVLD_ADDR 0x090
++#define PF_IOMMU_TLB_IVLD_MASK 0x094
++#define PF_IOMMU_TLB_IVLD      0x098
++#define PF_IOMMU_PC_IVLD_ADDR  0x0a0
++#define PF_IOMMU_PC_IVLD       0x0a8
+ #define PF_DSI_BASIC_CTL0   0x010
+ #define PF_DSI_CMD_CTL      0x200
+ #define PF_DSI_CMD_RX0      0x240
+@@ -429,6 +434,27 @@ static void test_native_register_contract(void)
+     qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH, BIT(16));
+     g_assert_cmphex(qtest_readl(qts,
+                                PF_IOMMU_BASE + PF_IOMMU_TLB_FLUSH), ==, 0);
++
++    /* Address and mask are retained; each adjacent enable is a command. */
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_ADDR, 0x12345000);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_MASK, 0xfffff000);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD, BIT(0));
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_ADDR), ==,
++                    0x12345000);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD_MASK), ==,
++                    0xfffff000);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_TLB_IVLD), ==, 0);
++
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_PC_IVLD_ADDR, 0x23456000);
++    qtest_writel(qts, PF_IOMMU_BASE + PF_IOMMU_PC_IVLD, BIT(0));
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_PC_IVLD_ADDR), ==,
++                    0x23456000);
++    g_assert_cmphex(qtest_readl(qts,
++                               PF_IOMMU_BASE + PF_IOMMU_PC_IVLD), ==, 0);
+ 
+     /* DSI INST_ST completion is what every long DCS transfer polls. */
+     qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, BIT(0));

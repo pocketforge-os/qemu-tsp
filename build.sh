@@ -360,6 +360,12 @@ if ! grep -q 'qtest_writel_no_rsp' tests/qtest/libqtest.h; then
   git apply "$ROOT/pocketforge/0050-tests-prove-A133-soft-poweroff-process-exit.patch"
 fi
 
+echo "== apply PocketForge patch: A133 IOMMU invalidation completion qtest =="
+if ! grep -q 'PF_IOMMU_PC_IVLD_ADDR' \
+    tests/qtest/pocketforge-a133-display-test.c; then
+  git apply "$ROOT/pocketforge/0051-tests-cover-A133-IOMMU-invalidation-completion.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
