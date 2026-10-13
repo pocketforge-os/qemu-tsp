@@ -762,10 +762,10 @@ def main() -> int:
         if "return" not in response:
             raise RuntimeError(f"display-screendump:{response}")
         ppm = frame.read_bytes()
-        header_end = ppm.find(b"\\n255\\n")
-        if not ppm.startswith(b"P6\\n720 1280\\n") or header_end < 0:
+        header_end = ppm.find(b"\n255\n")
+        if not ppm.startswith(b"P6\n720 1280\n") or header_end < 0:
             raise RuntimeError("display-frame-format")
-        first = ppm[header_end + len(b"\\n255\\n"):][:3]
+        first = ppm[header_end + len(b"\n255\n"):][:3]
         if first != bytes((0xff, 0x00, 0xff)):
             raise RuntimeError(f"display-marker:{first.hex()}")
         print(
@@ -901,6 +901,47 @@ def main() -> int:
         console.until(b"PF_SMOKE_PASS ", 60.0)
         console.until(b"\n", 5.0)
         log_text = serial_log.read_text(errors="replace")
+        display_probes = {
+            "drm": r"\[drm\] Initialized sun4i-drm 1\.0\.0",
+            "mixer": r"bound 6100000\.mixer",
+            "tcon-top": r"bound 6510000\.tcon-top",
+            "tcon-lcd": r"bound 6511000\.lcd-controller",
+            "dsi": r"bound 6504000\.dsi",
+            "panel": r"Attached device otm1289a",
+            "dcs": r"PFDBG-DISP: DSI panel prepare done",
+        }
+        for block, pattern in display_probes.items():
+            if not re.search(pattern, log_text):
+                raise RuntimeError(f"display-probe-missing:{block}")
+        display_timeout = re.search(
+            r"^(?:.*(?:sun4i-drm|sun8i-mixer|sun8i-tcon-top|sun4i-tcon|"
+            r"sun6i-mipi-dsi|sun6i-mipi-dphy|panel-orisetech-otm1289a).*)"
+            r"timeout.*$",
+            log_text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if display_timeout is not None:
+            raise RuntimeError(f"display-timeout:{display_timeout.group(0)}")
+        vblanks = [
+            (int(irq), int(drm))
+            for irq, drm in re.findall(
+                r"DSI VIDEO_VBLK irq_count=(\d+) drm_vblank_calls=(\d+)",
+                log_text,
+            )
+        ]
+        if not vblanks or max(min(pair) for pair in vblanks) < 2:
+            raise RuntimeError(f"display-vblank-count:{vblanks[-4:]}")
+        observed_vblanks = max(min(pair) for pair in vblanks)
+        print(
+            "DRM_PROBES result=PASS "
+            "blocks=drm,mixer,tcon-top,tcon-lcd,dsi,panel,dcs "
+            "timeouts=0",
+            flush=True,
+        )
+        print(
+            f"DRM_VBLANK result=PASS required=2 observed={observed_vblanks}",
+            flush=True,
+        )
         patterns = (
             r"code 304 \(BTN_(SOUTH|A)\), value 1",
             r"code 304 \(BTN_(SOUTH|A)\), value 0",
