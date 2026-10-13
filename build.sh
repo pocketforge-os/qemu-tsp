@@ -267,6 +267,12 @@ if ! grep -q 'pocketforge_a133_ccu_create' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0033-hw-arm-A133-stateful-CCU-PIO-UART0-MMC0-gating.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 lid and AXP717 power fidelity =="
+if ! grep -q 'lid-default-open-edges' \
+    tests/qtest/pocketforge-a133-input-test.c; then
+  git apply "$ROOT/pocketforge/0034-tests-require-A133-lid-and-AXP717-power-fidelity.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
