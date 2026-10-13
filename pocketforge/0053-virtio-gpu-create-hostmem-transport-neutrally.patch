@@ -1,6 +1,6 @@
-From f933ed9a752be711ccc6aac5cf0d293449e78eec Mon Sep 17 00:00:00 2001
+From e546266ccb5cb5839f016779de00eba63034f7b1 Mon Sep 17 00:00:00 2001
 From: qlid <qlid@invalid>
-Date: Tue, 13 Oct 2026 19:47:16 -0400
+Date: Tue, 13 Oct 2026 19:51:20 -0400
 Subject: [PATCH 53/54] virtio-gpu: create hostmem transport-neutrally
 
 Create the host-visible shared-memory descriptor in the common GPU realization path. Keep PCI BAR4 registration unchanged while allowing non-PCI transports to publish the same region.
@@ -47,7 +47,7 @@ index 270fbaae10..ec27051f35 100644
          /* use larger control queue in 3d mode */
          virtio_add_queue(vdev, 256, ctrl_cb);
 diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
-index 2b7a41c466..02242e59c2 100644
+index 2b7a41c466..090995764e 100644
 --- a/hw/display/virtio-gpu-gl.c
 +++ b/hw/display/virtio-gpu-gl.c
 @@ -156,11 +156,27 @@ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
@@ -62,7 +62,7 @@ index 2b7a41c466..02242e59c2 100644
 +    if (*errp) {
 +#if !defined(CONFIG_WIN32)
 +        if (gl->hostmem_mmap) {
-+            memory_region_destroy(&gl->hostmem_background);
++            object_unparent(OBJECT(&gl->hostmem_background));
 +            qemu_ram_munmap(-1, gl->hostmem_mmap, b->conf.hostmem);
 +            gl->hostmem_mmap = NULL;
 +        }

@@ -1,6 +1,6 @@
-From bbbc939a33afe621f2786136ac022268ea7ac8f8 Mon Sep 17 00:00:00 2001
+From a7e84ca4796a6447dcdc77b618a4c6bea7af3c8b Mon Sep 17 00:00:00 2001
 From: qlid <qlid@invalid>
-Date: Tue, 13 Oct 2026 19:47:11 -0400
+Date: Tue, 13 Oct 2026 19:51:20 -0400
 Subject: [PATCH 52/54] virtio: validate shared memory descriptors
 
 Make shared-memory descriptor construction report zero sizes and duplicate IDs. This keeps the existing vhost-user SHMEM vocabulary while making it safe for transports to consume the descriptors.

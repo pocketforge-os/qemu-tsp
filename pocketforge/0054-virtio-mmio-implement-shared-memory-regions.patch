@@ -1,6 +1,6 @@
-From ab170aced772d6269077c45746efa2e36c42bf1b Mon Sep 17 00:00:00 2001
+From be7eeb37ed9eb81d123fa56adc9b9352f90e1e85 Mon Sep 17 00:00:00 2001
 From: qlid <qlid@invalid>
-Date: Tue, 13 Oct 2026 19:47:16 -0400
+Date: Tue, 13 Oct 2026 19:51:20 -0400
 Subject: [PATCH 54/54] virtio-mmio: implement shared memory regions
 
 Implement the Virtio 1.2 shared-memory selector, length, and base registers for MMIO transports. Map static descriptors at a machine-provided base, migrate and reset the selector, and reject invalid or overlapping windows.
