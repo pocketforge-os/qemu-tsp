@@ -283,6 +283,11 @@ if grep -q 'GpuFixture gpu' tests/qtest/pocketforge-a133-display-test.c; then
   git apply "$ROOT/pocketforge/0036-tests-drive-A133-native-DE2-scanout-through-IOMMU.patch"
 fi
 
+echo "== apply PocketForge patch: native DE2 IOMMU scanout =="
+if ! grep -q 'pf_display_scanout' hw/display/pocketforge_a133_display.c; then
+  git apply "$ROOT/pocketforge/0037-hw-display-scan-out-A133-DE2-UI-plane-through-IOMMU.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree

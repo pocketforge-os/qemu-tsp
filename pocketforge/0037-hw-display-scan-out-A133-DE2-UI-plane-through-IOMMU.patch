@@ -1,0 +1,243 @@
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:22:00 +0000
+Subject: [PATCH] hw/display: scan out A133 DE2 UI plane through IOMMU
+
+Create the native 720x1280 QemuConsole, decode the A100 primary UI channel
+on mixer double-buffer commits, translate its IOVA page by page, and copy
+the XR24 frame into the standard QEMU display surface used by D-Bus.
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index d69d751..84d3718 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -1160,7 +1160,8 @@ static void pocketforge_a133_init(MachineState *machine)
+ 
+     pocketforge_a133_create_sram(s, sysmem);
+     pocketforge_a133_create_mmio_stubs();
+-    s->native_display = pocketforge_a133_display_create();
++    s->native_display = pocketforge_a133_display_create(
++        !strcmp(s->display, "hardware"));
+     pocketforge_a133_create_r_i2c0(
+         s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
+     qemu_register_reset(pocketforge_a133_power_reset, s);
+@@ -1526,10 +1527,11 @@ PocketForgeDisplayInfo *pocketforge_a133_query_display(Error **errp)
+     QAPI_LIST_APPEND(format_tail, g_strdup("XB24"));
+     QAPI_LIST_APPEND(format_tail, g_strdup("AR24"));
+ 
+-    if (!s->gpu || !s->gpu->scanout[0].con) {
++    if (!pocketforge_a133_display_console(s->native_display)) {
+         return info;
+     }
+-    surface = qemu_console_surface(s->gpu->scanout[0].con);
++    surface = qemu_console_surface(
++        pocketforge_a133_display_console(s->native_display));
+     if (!surface) {
+         return info;
+     }
+diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
+index 6045915..fa94c2f 100644
+--- a/hw/display/pocketforge_a133_display.c
++++ b/hw/display/pocketforge_a133_display.c
+@@ -11,6 +11,8 @@
+ #include "hw/display/pocketforge_a133_display.h"
+ #include "exec/address-spaces.h"
+ #include "hw/qdev-properties.h"
++#include "ui/console.h"
++#include "ui/surface.h"
+ 
+ #define PF_IOMMU_BASE      0x030f0000
+ #define PF_IOMMU_SIZE      0x10000
+@@ -33,6 +35,15 @@
+ #define PF_DSI_INST_ST     BIT(0)
+ #define PF_TCON_CPU_IF     0x60
+ #define PF_TCON_TRI_START  BIT(1)
++#define PF_MIXER_OFFSET    0x100000
++#define PF_MIXER_DBUFF     (PF_MIXER_OFFSET + 0x8)
++#define PF_MIXER_UI2       (PF_MIXER_OFFSET + 0x4000)
++#define PF_UI_ATTR         (PF_MIXER_UI2 + 0x0)
++#define PF_UI_SIZE         (PF_MIXER_UI2 + 0x4)
++#define PF_UI_PITCH        (PF_MIXER_UI2 + 0xc)
++#define PF_UI_LADDR        (PF_MIXER_UI2 + 0x10)
++#define PF_NATIVE_WIDTH    720
++#define PF_NATIVE_HEIGHT   1280
+ 
+ typedef enum PfDisplayBankKind {
+     PF_BANK_IOMMU,
+@@ -49,13 +60,18 @@ typedef struct PfDisplayBank {
+     uint32_t *regs;
+     uint32_t size;
+     PfDisplayBankKind kind;
++    struct PocketForgeA133DisplayState *display;
+ } PfDisplayBank;
+ 
+ struct PocketForgeA133DisplayState {
+     SysBusDevice parent_obj;
+     PfDisplayBank bank[PF_BANK_COUNT];
++    QemuConsole *console;
++    bool enabled;
+ };
+ 
++static void pf_display_scanout(PocketForgeA133DisplayState *s);
++
+ static uint64_t pf_display_read(void *opaque, hwaddr offset, unsigned size)
+ {
+     PfDisplayBank *bank = opaque;
+@@ -89,6 +105,12 @@ static void pf_display_write(void *opaque, hwaddr offset, uint64_t value,
+             bank->regs[offset / 4] = 0;
+         }
+         break;
++    case PF_BANK_DE2:
++        if (offset == PF_MIXER_DBUFF && (value & BIT(0))) {
++            pf_display_scanout(bank->display);
++            bank->regs[offset / 4] = 0;
++        }
++        break;
+     case PF_BANK_DSI:
+         if (offset == PF_DSI_BASIC_CTL0) {
+             bank->regs[offset / 4] &= ~PF_DSI_INST_ST;
+@@ -165,6 +187,58 @@ bool pocketforge_a133_display_iova_read(PocketForgeA133DisplayState *s,
+     return true;
+ }
+ 
++static void pf_display_scanout(PocketForgeA133DisplayState *s)
++{
++    PfDisplayBank *de2 = &s->bank[PF_BANK_DE2];
++    DisplaySurface *surface;
++    uint32_t attr, size, pitch, laddr;
++    unsigned int width, height, format, y;
++    uint8_t *destination;
++
++    if (!s->console) {
++        return;
++    }
++    attr = de2->regs[PF_UI_ATTR / 4];
++    size = de2->regs[PF_UI_SIZE / 4];
++    pitch = de2->regs[PF_UI_PITCH / 4];
++    laddr = de2->regs[PF_UI_LADDR / 4];
++    width = (size & 0xffff) + 1;
++    height = (size >> 16) + 1;
++    format = (attr >> 8) & 0x1f;
++
++    if (!(attr & BIT(0)) || width != PF_NATIVE_WIDTH ||
++        height != PF_NATIVE_HEIGHT || pitch < width * 4 ||
++        (format != 0 && format != 4)) {
++        return;
++    }
++
++    surface = qemu_console_surface(s->console);
++    destination = surface_data(surface);
++    for (y = 0; y < height; y++) {
++        if (!pocketforge_a133_display_iova_read(
++                s, laddr + y * pitch,
++                destination + y * surface_stride(surface), width * 4)) {
++            return;
++        }
++    }
++    dpy_gfx_update(s->console, 0, 0, width, height);
++}
++
++static void pf_display_invalidate(void *opaque)
++{
++    pf_display_scanout(opaque);
++}
++
++static void pf_display_gfx_update(void *opaque)
++{
++    pf_display_scanout(opaque);
++}
++
++static const GraphicHwOps pf_display_hw_ops = {
++    .invalidate = pf_display_invalidate,
++    .gfx_update = pf_display_gfx_update,
++};
++
+ static void pf_display_reset(DeviceState *dev)
+ {
+     PocketForgeA133DisplayState *s = POCKETFORGE_A133_DISPLAY(dev);
+@@ -197,12 +271,17 @@ static void pf_display_realize(DeviceState *dev, Error **errp)
+         PfDisplayBank *bank = &s->bank[i];
+ 
+         bank->kind = i;
++        bank->display = s;
+         bank->size = sizes[i];
+         bank->regs = g_new0(uint32_t, bank->size / sizeof(uint32_t));
+         memory_region_init_io(&bank->mr, OBJECT(s), &pf_display_ops, bank,
+                               names[i], bank->size);
+         sysbus_init_mmio(sbd, &bank->mr);
+     }
++    if (s->enabled) {
++        s->console = graphic_console_init(dev, 0, &pf_display_hw_ops, s);
++        qemu_console_resize(s->console, PF_NATIVE_WIDTH, PF_NATIVE_HEIGHT);
++    }
+ }
+ 
+ static void pf_display_unrealize(DeviceState *dev)
+@@ -216,6 +295,11 @@ static void pf_display_unrealize(DeviceState *dev)
+     }
+ }
+ 
++static Property pf_display_properties[] = {
++    DEFINE_PROP_BOOL("enabled", PocketForgeA133DisplayState, enabled, true),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
+ static void pf_display_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+@@ -224,6 +308,8 @@ static void pf_display_class_init(ObjectClass *klass, void *data)
+     dc->unrealize = pf_display_unrealize;
+     dc->reset = pf_display_reset;
+     dc->desc = "PocketForge A133 native display pipeline";
++    set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
++    device_class_set_props(dc, pf_display_properties);
+ }
+ 
+ static const TypeInfo pf_display_type_info = {
+@@ -240,7 +326,7 @@ static void pf_display_register_types(void)
+ 
+ type_init(pf_display_register_types)
+ 
+-PocketForgeA133DisplayState *pocketforge_a133_display_create(void)
++PocketForgeA133DisplayState *pocketforge_a133_display_create(bool enabled)
+ {
+     static const hwaddr bases[PF_BANK_COUNT] = {
+         PF_IOMMU_BASE, PF_DE2_BASE, PF_DSI_BASE, PF_DPHY_BASE,
+@@ -250,9 +336,16 @@ PocketForgeA133DisplayState *pocketforge_a133_display_create(void)
+     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+     unsigned int i;
+ 
++    qdev_prop_set_bit(dev, "enabled", enabled);
+     sysbus_realize_and_unref(sbd, &error_fatal);
+     for (i = 0; i < PF_BANK_COUNT; i++) {
+         sysbus_mmio_map(sbd, i, bases[i]);
+     }
+     return POCKETFORGE_A133_DISPLAY(dev);
+ }
++
++QemuConsole *pocketforge_a133_display_console(
++    PocketForgeA133DisplayState *s)
++{
++    return s ? s->console : NULL;
++}
+diff --git a/include/hw/display/pocketforge_a133_display.h b/include/hw/display/pocketforge_a133_display.h
+index 48b8e90..e5077f8 100644
+--- a/include/hw/display/pocketforge_a133_display.h
++++ b/include/hw/display/pocketforge_a133_display.h
+@@ -3,12 +3,15 @@
+ #define HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
+ 
+ #include "hw/sysbus.h"
++#include "ui/console.h"
+ 
+ #define TYPE_POCKETFORGE_A133_DISPLAY "pocketforge-a133-display"
+ OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133DisplayState,
+                            POCKETFORGE_A133_DISPLAY)
+ 
+-PocketForgeA133DisplayState *pocketforge_a133_display_create(void);
++PocketForgeA133DisplayState *pocketforge_a133_display_create(bool enabled);
++QemuConsole *pocketforge_a133_display_console(
++    PocketForgeA133DisplayState *s);
+ bool pocketforge_a133_display_iova_read(PocketForgeA133DisplayState *s,
+                                         uint32_t iova, void *buf,
+                                         size_t len);
+
