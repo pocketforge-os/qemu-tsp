@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -65,6 +66,45 @@ class EvidenceIntegrityTest(unittest.TestCase):
                     summary_path, summary, artifacts, "IOMMU_BOOT_LOOP result=PASS"
                 )
             self.assertTrue(summary_path.is_file())
+
+    def test_unbound_process_cannot_pass_with_readiness_allowance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            kernel = root / "kernel"
+            dtb = root / "dtb"
+            initrd = root / "initrd"
+            output = root / "output"
+            for artifact in (kernel, dtb, initrd):
+                artifact.write_bytes(artifact.name.encode())
+
+            command = [
+                sys.executable, str(SCRIPT),
+                "--qemu", "/bin/sleep",
+                "--qemu-evidence", "/bin/true",
+                "--kernel", str(kernel),
+                "--dtb", str(dtb),
+                "--initrd", str(initrd),
+                "--expect-qemu", BOOT_LOOP.sha256(Path("/bin/sleep")),
+                "--expect-qemu-evidence", BOOT_LOOP.sha256(Path("/bin/true")),
+                "--expect-kernel", BOOT_LOOP.sha256(kernel),
+                "--expect-dtb", BOOT_LOOP.sha256(dtb),
+                "--expect-initrd", BOOT_LOOP.sha256(initrd),
+                "--output", str(output),
+                "--boots", "1",
+                "--jobs", "1",
+                "--timeout", "1",
+                "--max-readiness-failures", "1",
+            ]
+            result = subprocess.run(
+                command, check=False, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertNotIn("IOMMU_BOOT_LOOP result=PASS", result.stdout)
+            summary = json.loads(
+                (output / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["integrity_failures"], 1)
 
 
 if __name__ == "__main__":
