@@ -36,6 +36,56 @@ def require_hash(name: str, path: Path, expected: str) -> str:
     return actual
 
 
+def require_process_payload(
+    process: subprocess.Popen[bytes], evidence: Path, deadline: float
+) -> str:
+    """Bind a launched process to the independently hashed QEMU payload."""
+    expected = evidence.resolve(strict=True)
+    proc = Path("/proc") / str(process.pid)
+    last = "process-not-inspectable"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"qemu-evidence-unbound:process-exited:{process.returncode}"
+            )
+        try:
+            executable = (proc / "exe").resolve(strict=True)
+            if executable.samefile(expected):
+                return str(executable)
+            argv = (proc / "cmdline").read_bytes().split(b"\0")
+            decoded = [value.decode("utf-8", "surrogateescape")
+                       for value in argv if value]
+            # Published bundles use their private dynamic loader explicitly:
+            # ld-linux --library-path DIR /bundle/bin/qemu-system-aarch64 ...
+            if "--library-path" in decoded:
+                option = decoded.index("--library-path")
+                payload = option + 2
+                if payload < len(decoded):
+                    candidate = Path(decoded[payload]).resolve(strict=True)
+                    if candidate.samefile(expected):
+                        return str(candidate)
+            last = f"exe={executable}"
+        except (FileNotFoundError, OSError) as error:
+            last = type(error).__name__
+        time.sleep(0.01)
+    raise RuntimeError(f"qemu-evidence-unbound:{last}")
+
+
+def publish_verified_summary(
+    summary_path: Path,
+    summary: dict[str, object],
+    artifacts: dict[str, tuple[Path, str]],
+    result_line: str,
+) -> None:
+    """Publish a verdict only after every input still matches its identity."""
+    for name, (path, expected) in artifacts.items():
+        require_hash(f"{name}-after", path, expected)
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(result_line, flush=True)
+
+
 def bounded_append(log: bytearray, chunk: bytes) -> None:
     log.extend(chunk)
     if len(log) > LOG_LIMIT:
@@ -88,6 +138,7 @@ def boot_once(index: int, args: argparse.Namespace) -> dict[str, object]:
     serial = bytearray()
     ready = False
     reason = "boot-timeout"
+    qemu_payload = "unbound"
     process: subprocess.Popen[bytes] | None = None
     with stderr_path.open("wb") as stderr:
         try:
@@ -99,6 +150,10 @@ def boot_once(index: int, args: argparse.Namespace) -> dict[str, object]:
                 start_new_session=True,
             )
             deadline = started + args.timeout
+            qemu_payload = require_process_payload(
+                process, args.qemu_evidence,
+                min(deadline, time.monotonic() + 1),
+            )
             client = connect_serial(socket_path, deadline)
             with client:
                 while time.monotonic() < deadline:
@@ -128,7 +183,7 @@ def boot_once(index: int, args: argparse.Namespace) -> dict[str, object]:
                                 break
                             bounded_append(serial, chunk)
                         break
-        except (OSError, TimeoutError) as error:
+        except (OSError, RuntimeError, TimeoutError) as error:
             reason = str(error).replace(" ", "_")
         finally:
             if process is not None:
@@ -142,6 +197,7 @@ def boot_once(index: int, args: argparse.Namespace) -> dict[str, object]:
         "reason": reason,
         "elapsed_ms": elapsed_ms,
         "ptw_timeouts": ptw_lines,
+        "qemu_payload": qemu_payload,
     }
     (boot_dir / "result.json").write_text(
         json.dumps(result, sort_keys=True) + "\n", encoding="utf-8"
@@ -189,14 +245,16 @@ def main() -> int:
     if args.output.exists() and any(args.output.iterdir()):
         raise RuntimeError(f"output-not-empty:{args.output}")
     args.output.mkdir(parents=True, exist_ok=True)
-    qemu_hash = require_hash("qemu", args.qemu, args.expect_qemu)
-    qemu_evidence_hash = require_hash(
-        "qemu-evidence", args.qemu_evidence, args.expect_qemu_evidence
-    )
-    source_hashes = {
-        "kernel": require_hash("kernel", args.kernel, args.expect_kernel),
-        "dtb": require_hash("dtb", args.dtb, args.expect_dtb),
-        "initrd": require_hash("initrd", args.initrd, args.expect_initrd),
+    artifacts = {
+        "qemu": (args.qemu, args.expect_qemu),
+        "qemu-evidence": (args.qemu_evidence, args.expect_qemu_evidence),
+        "kernel": (args.kernel, args.expect_kernel),
+        "dtb": (args.dtb, args.expect_dtb),
+        "initrd": (args.initrd, args.expect_initrd),
+    }
+    initial_hashes = {
+        name: require_hash(name, path, expected)
+        for name, (path, expected) in artifacts.items()
     }
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -216,30 +274,22 @@ def main() -> int:
         "ptw_timeouts": ptw_timeouts,
         "boots_with_ptw": boots_with_ptw,
         "wall_seconds": wall_seconds,
-        "qemu_sha256": qemu_hash,
-        "qemu_evidence_sha256": qemu_evidence_hash,
-        **{f"{name}_sha256": digest for name, digest in source_hashes.items()},
+        **{f"{name.replace('-', '_')}_sha256": digest
+           for name, digest in initial_hashes.items()},
         "results": results,
     }
-    (args.output / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
     result = "PASS" if (failures <= args.max_readiness_failures and
                          ptw_timeouts <= args.max_ptw_timeouts) else "FAIL"
-    print(
+    result_line = (
         f"IOMMU_BOOT_LOOP result={result} boots={args.boots} jobs={args.jobs} "
         f"ready={ready} readiness_failures={failures} "
         f"ptw_timeouts={ptw_timeouts} boots_with_ptw={boots_with_ptw} "
-        f"wall_seconds={wall_seconds} qemu_sha256={qemu_hash}",
-        flush=True,
+        f"wall_seconds={wall_seconds} "
+        f"qemu_sha256={initial_hashes['qemu']}"
     )
-    # Re-hash immutable inputs after the complete run.
-    require_hash("qemu-after", args.qemu, args.expect_qemu)
-    require_hash("qemu-evidence-after", args.qemu_evidence,
-                 args.expect_qemu_evidence)
-    require_hash("kernel-after", args.kernel, args.expect_kernel)
-    require_hash("dtb-after", args.dtb, args.expect_dtb)
-    require_hash("initrd-after", args.initrd, args.expect_initrd)
+    publish_verified_summary(
+        args.output / "summary.json", summary, artifacts, result_line
+    )
     return 0 if result == "PASS" else 1
 
 
