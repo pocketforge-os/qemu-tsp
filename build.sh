@@ -284,6 +284,11 @@ if ! grep -q 'Stateful R_PIO is intentionally covered' \
   git apply "$ROOT/pocketforge/0036-tests-classify-A133-R-PIO-as-stateful.patch"
 fi
 
+echo "== apply PocketForge patch: A133 soft-poweroff process-exit qtest =="
+if ! grep -q 'qtest_writel_no_rsp' tests/qtest/libqtest.h; then
+  git apply "$ROOT/pocketforge/0037-tests-prove-A133-soft-poweroff-process-exit.patch"
+fi
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
