@@ -11,7 +11,7 @@ diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketfor
 index 326846f..5568798 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
-@@ -5,46 +5,35 @@
+@@ -5,41 +5,30 @@
  #include <gio/gio.h>
  #include <gio/gunixfdlist.h>
  #include "libqtest.h"
@@ -40,12 +40,7 @@ index 326846f..5568798 100644
  #define PF_DSI_BASE   0x06504000
  #define PF_DPHY_BASE  0x06505000
  #define PF_TCON_BASE  0x06511000
- #define PF_IOMMU_TLB_FLUSH     0x080
- #define PF_IOMMU_TLB_IVLD_ADDR 0x090
- #define PF_IOMMU_TLB_IVLD_MASK 0x094
- #define PF_IOMMU_TLB_IVLD      0x098
- #define PF_IOMMU_PC_IVLD_ADDR  0x0a0
- #define PF_IOMMU_PC_IVLD       0x0a8
+ #define PF_IOMMU_TLB_FLUSH 0x080
  #define PF_DSI_BASIC_CTL0   0x010
  #define PF_TCON_CPU_IF      0x060
 -
