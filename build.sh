@@ -295,6 +295,10 @@ verify_patch_stack_tree
 
 mkdir -p "$OUT"
 
+echo "== test: release power-smoke provenance =="
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$ROOT/tests/pocketforge-a133-release-power-smoke-test.py"
+
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
   echo "== configure + build: aarch64-linux-user (static) =="
   prepare_owned_build_dir "$LINUX_USER_BUILD_DIR"
