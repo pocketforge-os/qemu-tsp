@@ -1,0 +1,12 @@
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index d347743f42..a7d27ce7fa 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -105,7 +105,6 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
+     { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
+     { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
+-    { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
+     { "pocketforge-a133.ir",               0x07040000, 0x400 },
+     { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },
+ };
