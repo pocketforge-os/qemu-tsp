@@ -109,7 +109,8 @@ def checked_out_head(source_root: Path) -> str:
     ).stdout.strip()
 
 
-def verify_qemu_provenance(qemu: Path, source_root: Path) -> None:
+def verify_qemu_provenance(qemu: Path, source_root: Path,
+                           expected_qemu: str) -> None:
     head = checked_out_head(source_root)
     for command in (
         ["git", "-C", str(source_root), "diff", "--quiet", "HEAD", "--"],
@@ -118,6 +119,7 @@ def verify_qemu_provenance(qemu: Path, source_root: Path) -> None:
     ):
         if subprocess.run(command, check=False).returncode != 0:
             raise RuntimeError("source-tree-not-clean")
+    require_hash("qemu", qemu, expected_qemu)
     version = subprocess.run(
         [str(qemu), "--version"], check=True, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True,
@@ -125,7 +127,7 @@ def verify_qemu_provenance(qemu: Path, source_root: Path) -> None:
     marker = f"{QEMU_STACK_VERSION_PREFIX}{head}"
     if marker not in version:
         raise RuntimeError(f"qemu-provenance:{marker}:{version}")
-    print(f"QEMU_PROVENANCE head={head} sha256={sha256(qemu)} status=ok",
+    print(f"QEMU_PROVENANCE head={head} sha256={expected_qemu} status=ok",
           flush=True)
 
 
@@ -383,6 +385,7 @@ def send_report(qmp: JsonLine, device: str, *events: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--qemu", type=Path, required=True)
+    parser.add_argument("--expect-qemu", required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--dtb", type=Path, required=True)
     parser.add_argument("--initrd", type=Path, required=True)
@@ -396,7 +399,7 @@ def main() -> int:
                         default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
 
-    verify_qemu_provenance(args.qemu, args.source_root)
+    verify_qemu_provenance(args.qemu, args.source_root, args.expect_qemu)
     args.work.mkdir(parents=True, exist_ok=True)
     artifacts = (
         ("image", args.image, args.expect_image),
