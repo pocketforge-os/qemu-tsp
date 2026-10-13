@@ -28,29 +28,31 @@ index 0637a14..67f65d0 100644
  #include "hw/misc/pocketforge_a133_ccu.h"
  #include "hw/misc/pocketforge_a133_mmio_stub.h"
  #include "hw/misc/pocketforge_a133_pio.h"
-@@ -183,6 +184,7 @@ struct PocketForgeA133MachineState {
+@@ -181,7 +182,8 @@ struct PocketForgeA133MachineState {
      PocketForgeA133Input *input_device;
      DWApbUartState *gamepad_uart[2];
      DeviceState *pmic;
 +    PfA100RPioState *r_pio;
      PfA133CcuState *ccu;
      PfA133PioState *pio;
+     PocketForgeA133DisplayState *native_display;
      MemoryRegion *uart0_mmio;
-@@ -563,7 +565,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
-     { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
+@@ -551,6 +553,5 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.g2d_clk",          0x06480000, 0x100 },
+     { "pocketforge-a133.g2d_rotate",       0x064a8000, 0x100 },
      { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
      { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
 -    { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
      { "pocketforge-a133.ir",               0x07040000, 0x400 },
- };
- 
-@@ -1163,6 +1164,8 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -1073,8 +1074,10 @@ static void pocketforge_a133_init(MachineState *machine)
      pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
  
      pocketforge_a133_create_sram(s, sysmem);
 +    s->r_pio = POCKETFORGE_A100_R_PIO(pocketforge_a100_r_pio_create(
 +        PF_A133_R_PIO_BASE, pic[111]));
      pocketforge_a133_create_mmio_stubs();
+     s->native_display = pocketforge_a133_display_create(
+         !strcmp(s->display, "hardware"), pic[68]);
      pocketforge_a133_create_r_i2c0(
          s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
 @@ -1291,7 +1294,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
