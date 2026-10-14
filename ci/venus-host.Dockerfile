@@ -144,6 +144,9 @@ RUN set -eux; \
 
 FROM mesa AS virglrenderer
 ARG VIRGLRENDERER_CACHE_BUST=lock
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libepoxy-dev \
+    && find /var/lib/apt/lists -mindepth 1 -delete
 COPY ci/venus-host.lock.json /venus-host.lock.json
 RUN set -eux; \
     test -n "$VIRGLRENDERER_CACHE_BUST"; \
