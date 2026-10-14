@@ -1,4 +1,4 @@
-From 519ab46d60fc5d5020107deb98223605f6fc7107 Mon Sep 17 00:00:00 2001
+From 2ba60a3296af5eca66efc552229dc78fc45a852f Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 19:44:53 -0400
@@ -993,7 +993,7 @@ index 9b50213..e05f219 100644
  
  #endif
 diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
-index d795096..520e067 100644
+index f742318..47db0ac 100644
 --- a/qapi/misc-arm.json
 +++ b/qapi/misc-arm.json
 @@ -121,11 +121,14 @@

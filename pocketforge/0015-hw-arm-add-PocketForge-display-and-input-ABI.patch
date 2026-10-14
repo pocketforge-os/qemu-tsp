@@ -1,4 +1,4 @@
-From 182f6156eceb7d44ce15371566a3fd76eaed47e3 Mon Sep 17 00:00:00 2001
+From a4d9417bd1205e6feb6c2726ce390bfd44c6e6e0 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 19:43:19 -0400
@@ -951,7 +951,7 @@ index 19a05ee..571ec81 100644
                                virtio_input_config *config);
  virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
 diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
-index 4dc66d0..d795096 100644
+index 4dc66d0..f742318 100644
 --- a/qapi/misc-arm.json
 +++ b/qapi/misc-arm.json
 @@ -89,3 +89,175 @@
@@ -1105,7 +1105,7 @@ index 4dc66d0..d795096 100644
 +# @native_width: native panel width in pixels
 +# @native_height: native panel height in pixels
 +# @plane_rotation: guest primary-plane rotation in degrees
-+# @presentation_rotation: clockwise host rotation for upright presentation
++# @presentation_rotation: clockwise rotation for upright presentation
 +# @preferred_fourcc: preferred scanout fourcc mnemonic
 +# @supported_fourcc: accepted scanout fourcc mnemonics
 +# @active_scanout: current host display surface, when present
