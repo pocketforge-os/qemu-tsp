@@ -350,7 +350,7 @@ index f7c7188..5195a1b 100644
 -                                 unsigned int index, size_t len)
 +static bool query_has_code(QDict *device, int type, int code)
  {
--    uint8_t zero[2 * sizeof(struct virtio_input_event)] = { 0 };
+-    uint8_t zero[2 * sizeof(struct virtio_input_event)] = {NULL};
 -
 -    g_assert_cmpuint(index, <, ARRAY_SIZE(buffers->addr));
 -    g_assert_cmpuint(len, >, 0);
@@ -378,7 +378,7 @@ index f7c7188..5195a1b 100644
  
 -static EventBuffers add_event_buffers(InputFixture *f)
 -{
--    EventBuffers buffers = { 0 };
+-    EventBuffers buffers = {NULL};
 -    int i;
 +        if (qdict_get_int(cap, "type") != type ||
 +            !(codes = qdict_get_qlist(cap, "codes"))) {
@@ -619,7 +619,7 @@ index f7c7188..5195a1b 100644
 -static void test_one_buffer_atomicity(void)
 -{
 -    InputFixture f;
--    EventBuffers buffers = { 0 };
+-    EventBuffers buffers = {NULL};
 -    QDict *response;
 -    QDict *error;
 -    char *trace;
@@ -673,7 +673,7 @@ index f7c7188..5195a1b 100644
 -static void test_undersized_buffer_atomicity(void)
 -{
 -    InputFixture f;
--    EventBuffers buffers = { 0 };
+-    EventBuffers buffers = {NULL};
 -    QDict *response;
 -    QDict *error;
 +    /* Negative and positive controls share one invocation. */

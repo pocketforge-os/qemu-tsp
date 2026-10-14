@@ -169,7 +169,7 @@ index 0000000..930afe8
 +    g_autoptr(GDBusConnection) connection = NULL;
 +    g_autoptr(QemuDBusDisplay1ConsoleProxy) console = NULL;
 +    g_autoptr(GUnixFDList) fd_list = NULL;
-+    ListenerState state = { 0 };
++    ListenerState state = {NULL};
 +    int pair[2];
 +    int index;
 +    int fd;

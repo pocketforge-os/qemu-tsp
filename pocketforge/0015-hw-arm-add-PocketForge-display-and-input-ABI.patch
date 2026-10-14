@@ -1285,7 +1285,7 @@ index 0000000..28dad13
 +
 +static void gpu_command(GpuFixture *f, const void *command, size_t size)
 +{
-+    struct virtio_gpu_ctrl_hdr response = { 0 };
++    struct virtio_gpu_ctrl_hdr response = {NULL};
 +    uint64_t command_addr = guest_alloc(&f->alloc, size);
 +    uint64_t response_addr = guest_alloc(&f->alloc, sizeof(response));
 +    uint32_t head;
@@ -1508,7 +1508,7 @@ index 0000000..28dad13
 +    QDict *response;
 +    QDict *info;
 +    QDict *scanout;
-+    DisplayTest test = { 0 };
++    DisplayTest test = {NULL};
 +    GpuFixture gpu;
 +    int dbus_pair[2];
 +    int listener_pair[2];
@@ -1663,8 +1663,8 @@ index a25a74e..f7c7188 100644
 +static void add_event_buffer_len(InputFixture *f, EventBuffers *buffers,
 +                                 unsigned int index, size_t len)
  {
--    struct virtio_input_event zero = { 0 };
-+    uint8_t zero[2 * sizeof(struct virtio_input_event)] = { 0 };
+-    struct virtio_input_event zero = {NULL};
++    uint8_t zero[2 * sizeof(struct virtio_input_event)] = {NULL};
  
      g_assert_cmpuint(index, <, ARRAY_SIZE(buffers->addr));
 -    buffers->addr[index] = guest_alloc(&f->alloc, sizeof(zero));
@@ -1689,11 +1689,11 @@ index a25a74e..f7c7188 100644
 +
  static EventBuffers add_event_buffers(InputFixture *f)
  {
-     EventBuffers buffers = { 0 };
+     EventBuffers buffers = {NULL};
 @@ -449,11 +480,19 @@ static void test_one_buffer_atomicity(void)
  {
      InputFixture f;
-     EventBuffers buffers = { 0 };
+     EventBuffers buffers = {NULL};
 +    QDict *response;
 +    QDict *error;
      char *trace;
@@ -1718,7 +1718,7 @@ index a25a74e..f7c7188 100644
 +static void test_undersized_buffer_atomicity(void)
 +{
 +    InputFixture f;
-+    EventBuffers buffers = { 0 };
++    EventBuffers buffers = {NULL};
 +    QDict *response;
 +    QDict *error;
 +

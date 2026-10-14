@@ -128,7 +128,7 @@ index 326846f..5568798 100644
 -
 -static void gpu_command(GpuFixture *f, const void *command, size_t size)
 -{
--    struct virtio_gpu_ctrl_hdr response = { 0 };
+-    struct virtio_gpu_ctrl_hdr response = {NULL};
 -    uint64_t command_addr = guest_alloc(&f->alloc, size);
 -    uint64_t response_addr = guest_alloc(&f->alloc, sizeof(response));
 -    uint32_t head;
@@ -196,8 +196,8 @@ index 326846f..5568798 100644
 -        },
 -        .resource_id = cpu_to_le32(resource_id),
 -    };
-+    uint32_t dte[1024] = { 0 };
-+    uint32_t pte[4][256] = { { 0 } };
++    uint32_t dte[1024] = {NULL};
++    uint32_t pte[4][256] = { {NULL} };
 +    unsigned int page;
  
      /* Magenta at native top-left; native bottom-right remains black. */
@@ -271,7 +271,7 @@ index 326846f..5568798 100644
 @@ -344,7 +198,6 @@ static void test_native_scanout(void)
      QDict *info;
      QDict *scanout;
-     DisplayTest test = { 0 };
+     DisplayTest test = {NULL};
 -    GpuFixture gpu;
      int dbus_pair[2];
      int listener_pair[2];

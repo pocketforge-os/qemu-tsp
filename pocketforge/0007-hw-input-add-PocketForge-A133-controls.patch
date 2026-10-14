@@ -799,7 +799,7 @@ index 0000000..424c022
 +static EventBuffers add_event_buffers(InputFixture *f)
 +{
 +    EventBuffers buffers;
-+    struct virtio_input_event zero = { 0 };
++    struct virtio_input_event zero = {NULL};
 +    int i;
 +
 +    for (i = 0; i < 2; i++) {
