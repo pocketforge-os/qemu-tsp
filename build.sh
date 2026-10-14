@@ -396,6 +396,15 @@ if ! grep -q 'PF_A133_RENDER_HOSTMEM_BASE' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0056-hw-arm-wire-A133-render-accelerator.patch"
 fi
 
+echo "== apply PocketForge patch: select A133 GL device only with virgl =="
+if grep -q '#ifdef CONFIG_OPENGL' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0057-hw-arm-gate-A133-GL-accelerator-on-virgl.patch"
+fi
+
+echo "== test A133 render build-configuration gating =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-render-config-test.py" .
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
