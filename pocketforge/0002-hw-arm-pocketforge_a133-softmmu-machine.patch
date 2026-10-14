@@ -632,7 +632,7 @@ index 0000000..d8b0b09
 +    DEFINE_PROP_END_OF_LIST(),
 +};
 +
-+static void dw_apb_uart_class_init(ObjectClass *oc, const void *data)
++static void dw_apb_uart_class_init(ObjectClass *oc, const const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +

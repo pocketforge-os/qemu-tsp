@@ -373,7 +373,7 @@ index 0000000..233ee5f
 +    s->mmio_name = NULL;
 +}
 +
-+static void pf_a133_mmio_stub_class_init(ObjectClass *oc, void *data)
++static void pf_a133_mmio_stub_class_init(ObjectClass *oc, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +

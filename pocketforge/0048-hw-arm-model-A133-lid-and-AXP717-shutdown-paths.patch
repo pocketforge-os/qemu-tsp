@@ -647,7 +647,7 @@ index 0000000..5a00088
 +    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
 +}
 +
-+static void pf_a100_r_pio_class_init(ObjectClass *klass, void *data)
++static void pf_a100_r_pio_class_init(ObjectClass *klass, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(klass);
 +

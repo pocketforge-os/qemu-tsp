@@ -365,7 +365,7 @@ index 0000000..22ebef0
 +    DEFINE_PROP_BOOL("preboot", PfA133CcuState, preboot, false),
 +};
 +
-+static void pf_a133_ccu_class_init(ObjectClass *oc, void *data)
++static void pf_a133_ccu_class_init(ObjectClass *oc, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +
@@ -551,7 +551,7 @@ index 0000000..fbde5b0
 +    DEFINE_PROP_BOOL("preboot", PfA133PioState, preboot, false),
 +};
 +
-+static void pf_a133_pio_class_init(ObjectClass *oc, void *data)
++static void pf_a133_pio_class_init(ObjectClass *oc, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +

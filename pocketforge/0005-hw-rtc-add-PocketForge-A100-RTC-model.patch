@@ -275,7 +275,7 @@ index 0000000..587a4f3
 +    sysbus_init_mmio(sbd, &s->iomem);
 +}
 +
-+static void pocketforge_a100_rtc_class_init(ObjectClass *oc, void *data)
++static void pocketforge_a100_rtc_class_init(ObjectClass *oc, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +

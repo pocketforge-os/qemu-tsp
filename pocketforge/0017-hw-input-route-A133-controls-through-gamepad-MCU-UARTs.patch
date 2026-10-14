@@ -911,7 +911,7 @@ index d259e4c..b6262ee 100644
                              pocketforge_a133_input_set_event);
      object_property_add_bool(obj, "ready", pocketforge_a133_input_ready, NULL);
 @@ -466,16 +505,15 @@ static void pocketforge_a133_input_init(Object *obj)
- static void pocketforge_a133_input_class_init(ObjectClass *klass, void *data)
+ static void pocketforge_a133_input_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
 -    VirtIOInputClass *vic = VIRTIO_INPUT_CLASS(klass);

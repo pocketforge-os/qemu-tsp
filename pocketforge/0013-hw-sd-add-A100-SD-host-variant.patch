@@ -116,7 +116,7 @@ index 87bb7df..1bcad3a 100644
  }
  
 +static void allwinner_sdhost_sun50i_a100_class_init(ObjectClass *klass,
-+                                                    void *data)
++                                                    const void *data)
 +{
 +    AwSdHostClass *sc = AW_SDHOST_CLASS(klass);
 +

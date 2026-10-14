@@ -185,10 +185,10 @@ index 6045915..fa94c2f 100644
 +    DEFINE_PROP_END_OF_LIST(),
 +};
 +
- static void pf_display_class_init(ObjectClass *klass, void *data)
+ static void pf_display_class_init(ObjectClass *oc, const const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
-@@ -224,6 +308,8 @@ static void pf_display_class_init(ObjectClass *klass, void *data)
+@@ -224,6 +308,8 @@ static void pf_display_class_init(ObjectClass *oc, const const void *data)
      dc->unrealize = pf_display_unrealize;
      dc->reset = pf_display_reset;
      dc->desc = "PocketForge A133 native display pipeline";

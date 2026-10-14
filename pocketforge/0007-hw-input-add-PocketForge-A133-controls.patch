@@ -130,7 +130,7 @@ index 1523f1e..1694550 100644
  }
  
 -DEFINE_MACHINE("pocketforge-a133", pocketforge_a133_machine_init)
-+static void pocketforge_a133_machine_class_init(ObjectClass *oc, void *data)
++static void pocketforge_a133_machine_class_init(ObjectClass *oc, const void *data)
 +{
 +    pocketforge_a133_machine_init(MACHINE_CLASS(oc));
 +}
@@ -473,7 +473,7 @@ index 0000000..41ff314
 +    object_property_add_bool(obj, "held", pocketforge_a133_input_held, NULL);
 +}
 +
-+static void pocketforge_a133_input_class_init(ObjectClass *klass, void *data)
++static void pocketforge_a133_input_class_init(ObjectClass *klass, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(klass);
 +    VirtIOInputClass *vic = VIRTIO_INPUT_CLASS(klass);

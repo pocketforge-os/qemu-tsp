@@ -299,7 +299,7 @@ index 0000000..6045915
 +    }
 +}
 +
-+static void pf_display_class_init(ObjectClass *klass, void *data)
++static void pf_display_class_init(ObjectClass *oc, const const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(klass);
 +

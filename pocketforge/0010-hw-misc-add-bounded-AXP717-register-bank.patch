@@ -163,7 +163,7 @@ index 46d1771..0ef46aa 100644
      .class_init = axp221_class_init,
  };
  
-+static void axp717_class_init(ObjectClass *oc, void *data)
++static void axp717_class_init(ObjectClass *oc, const void *data)
 +{
 +    AXP2xxClass *sc = AXP2XX_CLASS(oc);
 +
