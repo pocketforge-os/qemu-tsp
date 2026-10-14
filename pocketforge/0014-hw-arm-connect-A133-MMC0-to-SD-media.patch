@@ -67,7 +67,7 @@ index 3b03d48..d2f67a3 100644
  #include "hw/rtc/pocketforge_a100_rtc.h"
 +#include "hw/sd/allwinner-sdhost.h"
 +#include "hw/sd/sd.h"
- #include "hw/sysbus.h"
+ #include "hw/core/sysbus.h"
  #include "hw/virtio/virtio-mmio.h"
  #include "exec/address-spaces.h"
  #include "sysemu/device_tree.h"

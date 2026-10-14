@@ -435,7 +435,7 @@ index 0000000..fb83035
 +#ifndef HW_POCKETFORGE_A133_MMIO_STUB_H
 +#define HW_POCKETFORGE_A133_MMIO_STUB_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +#include "qom/object.h"
 +
 +#define TYPE_POCKETFORGE_A133_MMIO_STUB "pocketforge-a133-mmio-stub"

@@ -349,7 +349,7 @@ index 0000000..48b8e90
 +#ifndef HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
 +#define HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +
 +#define TYPE_POCKETFORGE_A133_DISPLAY "pocketforge-a133-display"
 +OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133DisplayState,

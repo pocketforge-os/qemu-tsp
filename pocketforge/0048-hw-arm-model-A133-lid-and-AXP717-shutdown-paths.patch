@@ -695,7 +695,7 @@ index 0000000..369766c
 +#ifndef HW_MISC_POCKETFORGE_A100_R_PIO_H
 +#define HW_MISC_POCKETFORGE_A100_R_PIO_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +#include "qom/object.h"
 +
 +#define TYPE_POCKETFORGE_A100_R_PIO "pocketforge-a100-r-pio"

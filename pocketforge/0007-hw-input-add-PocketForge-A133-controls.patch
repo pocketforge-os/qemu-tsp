@@ -69,7 +69,7 @@ index 1523f1e..1694550 100644
  #include "hw/intc/arm_gic_common.h"
  #include "hw/qdev-properties.h"
  #include "hw/rtc/pocketforge_a100_rtc.h"
- #include "hw/sysbus.h"
+ #include "hw/core/sysbus.h"
 +#include "hw/virtio/virtio-mmio.h"
  #include "exec/address-spaces.h"
  #include "sysemu/device_tree.h"
