@@ -471,6 +471,7 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-ccu-test \
   tests/qtest/virtio-gpu-venus-only-test \
   tests/qtest/virtio-mmio-shm-test
+QTEST_QEMU_ARGS="-global virtio-gpu-gl-device.virgl=off" \
 "$SYSTEM_BUILD_DIR/pyvenv/bin/meson" test -C "$SYSTEM_BUILD_DIR" \
   --print-errorlogs \
   qemu:qtest-aarch64/pocketforge-a100-rtc-test \
