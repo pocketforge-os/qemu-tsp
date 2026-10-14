@@ -379,7 +379,7 @@ index 0000000..233ee5f
 +
 +    dc->realize = pf_a133_mmio_stub_realize;
 +    dc->unrealize = pf_a133_mmio_stub_unrealize;
-+    dc->reset = pf_a133_mmio_stub_reset;
++    device_class_set_legacy_reset(dc, pf_a133_mmio_stub_reset);
 +    /* Internal wiring only (machine-instantiated); no user-creatable bus. */
 +    dc->user_creatable = false;
 +}

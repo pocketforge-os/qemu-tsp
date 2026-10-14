@@ -651,7 +651,7 @@ index 0000000..5a00088
 +{
 +    DeviceClass *dc = DEVICE_CLASS(klass);
 +
-+    dc->reset = pf_a100_r_pio_reset;
++    device_class_set_legacy_reset(dc, pf_a100_r_pio_reset);
 +    dc->vmsd = &vmstate_pf_a100_r_pio;
 +}
 +

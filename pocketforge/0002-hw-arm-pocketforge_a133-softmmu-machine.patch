@@ -637,7 +637,7 @@ index 0000000..d8b0b09
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +
 +    dc->realize = dw_apb_uart_realize;
-+    dc->reset = dw_apb_uart_reset;
++    device_class_set_legacy_reset(dc, dw_apb_uart_reset);
 +    dc->vmsd = &vmstate_dw_apb_uart;
 +    device_class_set_props(dc, dw_apb_uart_properties);
 +}

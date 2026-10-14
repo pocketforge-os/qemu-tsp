@@ -305,7 +305,7 @@ index 0000000..6045915
 +
 +    dc->realize = pf_display_realize;
 +    dc->unrealize = pf_display_unrealize;
-+    dc->reset = pf_display_reset;
++    device_class_set_legacy_reset(dc, pf_display_reset);
 +    dc->desc = "PocketForge A133 native display pipeline";
 +}
 +

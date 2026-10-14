@@ -370,7 +370,7 @@ index 0000000..22ebef0
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +
 +    dc->realize = pf_a133_ccu_realize;
-+    dc->reset = pf_a133_ccu_reset;
++    device_class_set_legacy_reset(dc, pf_a133_ccu_reset);
 +    dc->vmsd = &vmstate_pocketforge_a133_ccu;
 +    device_class_set_props(dc, pf_a133_ccu_properties);
 +    /* Internal wiring only (machine-instantiated); no user-creatable bus. */
@@ -556,7 +556,7 @@ index 0000000..fbde5b0
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +
 +    dc->realize = pf_a133_pio_realize;
-+    dc->reset = pf_a133_pio_reset;
++    device_class_set_legacy_reset(dc, pf_a133_pio_reset);
 +    dc->vmsd = &vmstate_pocketforge_a133_pio;
 +    device_class_set_props(dc, pf_a133_pio_properties);
 +    /* Internal wiring only (machine-instantiated); no user-creatable bus. */

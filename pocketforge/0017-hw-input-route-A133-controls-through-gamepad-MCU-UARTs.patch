@@ -918,7 +918,7 @@ index d259e4c..b6262ee 100644
  
 -    dc->desc = "PocketForge A133 deterministic controls";
 +    dc->desc = "PocketForge A133 gamepad MCU source";
-+    dc->reset = pocketforge_a133_input_reset;
++    device_class_set_legacy_reset(dc, pocketforge_a133_input_reset);
      dc->vmsd = &vmstate_pocketforge_a133_input;
 -    vic->change_active = pocketforge_a133_input_change_active;
  }
