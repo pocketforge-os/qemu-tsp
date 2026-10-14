@@ -178,7 +178,7 @@ if [ ! -f tests/qtest/pocketforge-a133-mmc-test.c ]; then
 fi
 
 echo "== apply PocketForge patch: display and versioned input ABI =="
-if ! grep -q 'query-pocketforge-display' qapi/misc-target.json; then
+if ! grep -q 'query-pocketforge-display' qapi/misc-arm.json; then
   git apply "$ROOT/pocketforge/0015-hw-arm-add-PocketForge-display-and-input-ABI.patch"
 fi
 

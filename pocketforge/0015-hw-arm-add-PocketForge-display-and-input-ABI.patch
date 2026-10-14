@@ -1130,7 +1130,6 @@ index 4dc66d0..459e9f1 100644
 +{ 'command': 'query-pocketforge-display',
 +  'returns': 'PocketForgeDisplayInfo',
 +  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
-+
 diff --git a/qapi/pragma.json b/qapi/pragma.json
 index 24aebbe..5f866ac 100644
 --- a/qapi/pragma.json
