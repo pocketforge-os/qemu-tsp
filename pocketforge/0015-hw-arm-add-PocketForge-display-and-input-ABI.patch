@@ -1,4 +1,4 @@
-From 453ab3d7fc3ea32f4a22239719e8f414413d1f03 Mon Sep 17 00:00:00 2001
+From 182f6156eceb7d44ce15371566a3fd76eaed47e3 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 19:43:19 -0400
@@ -22,12 +22,12 @@ Assisted-by: LLM
  include/hw/arm/pocketforge_a133.h           |  19 +
  include/hw/input/pocketforge_a133_input.h   |  29 ++
  include/hw/virtio/virtio-input.h            |   3 +
- qapi/misc-arm.json                          | 173 ++++++++
+ qapi/misc-arm.json                          | 172 ++++++++
  qapi/pragma.json                            |   2 +
  tests/qtest/meson.build                     |   3 +
  tests/qtest/pocketforge-a133-display-test.c | 443 ++++++++++++++++++++
  tests/qtest/pocketforge-a133-input-test.c   | 340 ++++++++++++++-
- 13 files changed, 1614 insertions(+), 32 deletions(-)
+ 13 files changed, 1613 insertions(+), 32 deletions(-)
  create mode 100644 hw/arm/pocketforge_a133_qmp.c
  create mode 100644 include/hw/arm/pocketforge_a133.h
  create mode 100644 tests/qtest/pocketforge-a133-display-test.c
@@ -951,10 +951,10 @@ index 19a05ee..571ec81 100644
                                virtio_input_config *config);
  virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
 diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
-index 4dc66d0..459e9f1 100644
+index 4dc66d0..d795096 100644
 --- a/qapi/misc-arm.json
 +++ b/qapi/misc-arm.json
-@@ -89,3 +89,176 @@
+@@ -89,3 +89,175 @@
  ##
  { 'enum': 'OasMode',
    'data': [ 'auto', '32', '36', '40', '42', '44', '48', '52', '56' ] }
