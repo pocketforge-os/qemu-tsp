@@ -43,8 +43,12 @@ RUN apt-get update \
     && find /var/lib/apt/lists -mindepth 1 -delete
 
 FROM build-base AS llvm
+ARG LLVM_PARALLEL_COMPILE_JOBS=16
 COPY ci/venus-host.lock.json /venus-host.lock.json
 RUN set -eux; \
+    case "$LLVM_PARALLEL_COMPILE_JOBS" in ''|*[!0-9]*) exit 1 ;; esac; \
+    test "$LLVM_PARALLEL_COMPILE_JOBS" -ge 1; \
+    test "$LLVM_PARALLEL_COMPILE_JOBS" -le 16; \
     commit=$(python3 -c 'import json; print(json.load(open("/venus-host.lock.json"))["llvm"]["commit"])'); \
     git init -q /src/llvm-project; \
     git -C /src/llvm-project remote add origin https://github.com/llvm/llvm-project.git; \
@@ -67,7 +71,7 @@ RUN set -eux; \
       -DLLVM_INCLUDE_TESTS=OFF \
       -DLLVM_INCLUDE_UTILS=OFF \
       '-DLLVM_DISTRIBUTION_COMPONENTS=LLVM;llvm-config;llvm-headers'; \
-    ninja -C /src/llvm-build -j4 install-distribution; \
+    ninja -C /src/llvm-build -j"$LLVM_PARALLEL_COMPILE_JOBS" install-distribution; \
     test -x /opt/venus/bin/llvm-config; \
     test -e /opt/venus/lib/libLLVM.so; \
     test -f /opt/venus/include/llvm/Config/llvm-config.h
