@@ -1,4 +1,4 @@
-From c2d0da721667bbbeaa3d1581b497ee4348a50372 Mon Sep 17 00:00:00 2001
+From ab09ad94854c66015450f41c5179b622907f5d79 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 19:56:34 -0400
@@ -11,7 +11,7 @@ Subject: [PATCH] tests-add-A133-Display1-frame-listener
  create mode 100644 tests/qtest/pocketforge-a133-dbus-listener.c
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index a3e91f1..acb9636 100644
+index a3e91f1..5db96e8 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
 @@ -447,6 +447,10 @@ if vnc.found()
@@ -20,7 +20,7 @@ index a3e91f1..acb9636 100644
  if dbus_display
 +  executable('pocketforge-a133-dbus-listener',
 +             'pocketforge-a133-dbus-listener.c',
-+             dependencies: [dbus_display1, gio],
++             dependencies: [dbus_display1_h, gio],
 +             build_by_default: false)
    qtests += {'dbus-display-test': [dbus_display1, gio]}
    qtests += {'pocketforge-a133-display-test': [dbus_display1, gio]}
