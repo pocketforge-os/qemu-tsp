@@ -109,7 +109,7 @@ index 0000000..aa1d63c
 +#include "hw/intc/arm_gic.h"
 +#include "hw/intc/arm_gic_common.h"
 +#include "hw/qdev-properties.h"
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +#include "exec/address-spaces.h"
 +#include "sysemu/sysemu.h"
 +#include "qemu/module.h"
@@ -704,7 +704,7 @@ index 0000000..0d91852
 +#ifndef HW_DW_APB_UART_H
 +#define HW_DW_APB_UART_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +#include "chardev/char-fe.h"
 +#include "qom/object.h"
 +
