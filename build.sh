@@ -385,6 +385,17 @@ if [ ! -f tests/qtest/virtio-mmio-shm-test.c ]; then
   git apply "$ROOT/pocketforge/0054-virtio-mmio-implement-shared-memory-regions.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 render-accelerator topology =="
+if ! grep -q 'render-accelerator-contract' \
+    tests/qtest/pocketforge-a133-mmio-map-test.c; then
+  git apply "$ROOT/pocketforge/0055-tests-require-A133-render-accelerator-topology.patch"
+fi
+
+echo "== apply PocketForge patch: A133 render-accelerator wiring =="
+if ! grep -q 'PF_A133_RENDER_HOSTMEM_BASE' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0056-hw-arm-wire-A133-render-accelerator.patch"
+fi
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
