@@ -1,7 +1,8 @@
-From 1333ff17de2a03332e3b49080d1eb6e26c587031 Mon Sep 17 00:00:00 2001
-From: PocketForge Worker <worker@pocketforge.invalid>
-Date: Sat, 10 Oct 2026 05:00:17 -0400
-Subject: [PATCH 2/2] hw/input: model A133 MCU sticks and triggers
+From c6d4ddde07f89b4eee168663c48732ed201c36b2 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:45:11 -0400
+Subject: [PATCH] patch 0024
 
 Assisted-by: LLM
 ---
@@ -210,6 +211,3 @@ index b6262ee..bc49632 100644
      object_property_add_str(obj, "event", NULL,
                              pocketforge_a133_input_set_event);
      object_property_add_bool(obj, "ready", pocketforge_a133_input_ready, NULL);
--- 
-2.43.0
-

@@ -1,8 +1,19 @@
+From 2ec29cc38a586dba54b4e050ddf07fdd142094cd Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:29:13 -0400
+Subject: [PATCH] linux-user: evdev/uinput ioctl pass-through
+
+Assisted-by: LLM
+---
+ linux-user/syscall.c | 86 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index e384e14..c05fec5 100644
+index 9f45450..05b6e1d 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
-@@ -5571,6 +5571,84 @@ IOCTLEntry ioctl_entries[] = {
+@@ -5695,6 +5695,84 @@ IOCTLEntry ioctl_entries[] = {
  
  /* ??? Implement proper locking for ioctls.  */
  /* do_ioctl() Must return target values and target errnos. */
@@ -87,7 +98,7 @@ index e384e14..c05fec5 100644
  static abi_long do_ioctl(int fd, int cmd, abi_long arg)
  {
      const IOCTLEntry *ie;
-@@ -5583,6 +5661,14 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+@@ -5707,6 +5785,14 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
      ie = ioctl_entries;
      for(;;) {
          if (ie->target_cmd == 0) {

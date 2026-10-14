@@ -1,8 +1,16 @@
-From 0d757274a882001680a1a9d6ff509616979f647f Mon Sep 17 00:00:00 2001
+From 453ab3d7fc3ea32f4a22239719e8f414413d1f03 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Fri, 9 Oct 2026 23:13:12 -0400
-Subject: [PATCH 15/15] hw/arm: add PocketForge display and input ABI
+Date: Tue, 13 Oct 2026 19:43:19 -0400
+Subject: [PATCH] hw/arm: add PocketForge display and input ABI
+
+PocketForge display QMP ABI for 720x1280 D-Bus display and versioned input
+device enumeration/send commands with qtest coverage.
+
+Manual resolution:
+- qapi/misc-target.json: port to qapi/misc-arm.json (target QAPI restructured in v11.1.2)
+- hw/arm/meson.build: add pocketforge_a133_qmp.c as arm_common_ss source (arm_ss->arm_common_ss rename)
+- tests/qtest/meson.build: add display-test to rebased A133 test list, add dbus-display test entry
 
 Assisted-by: LLM
 ---
@@ -14,27 +22,27 @@ Assisted-by: LLM
  include/hw/arm/pocketforge_a133.h           |  19 +
  include/hw/input/pocketforge_a133_input.h   |  29 ++
  include/hw/virtio/virtio-input.h            |   3 +
- qapi/misc-target.json                       | 172 ++++++++
+ qapi/misc-arm.json                          | 173 ++++++++
  qapi/pragma.json                            |   2 +
  tests/qtest/meson.build                     |   3 +
  tests/qtest/pocketforge-a133-display-test.c | 443 ++++++++++++++++++++
  tests/qtest/pocketforge-a133-input-test.c   | 340 ++++++++++++++-
- 13 files changed, 1613 insertions(+), 32 deletions(-)
+ 13 files changed, 1614 insertions(+), 32 deletions(-)
  create mode 100644 hw/arm/pocketforge_a133_qmp.c
  create mode 100644 include/hw/arm/pocketforge_a133.h
  create mode 100644 tests/qtest/pocketforge-a133-display-test.c
 
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 7a6ce2b..2e2b6e7 100644
+index 2a90948..a85b686 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
-@@ -1,5 +1,6 @@
- arm_ss = ss.source_set()
- arm_ss.add(files('boot.c'), fdt)
-+arm_ss.add(files('pocketforge_a133_qmp.c'))
- arm_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
- arm_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
- arm_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))
+@@ -112,5 +112,6 @@ arm_common_ss.add(when: 'CONFIG_VERSATILE', if_true: files('versatilepb.c'))
+ arm_common_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
+ 
+ arm_common_ss.add(files('boot.c'))
++arm_common_ss.add(files('pocketforge_a133_qmp.c'))
+ 
+ hw_common_arch += {'arm': arm_common_ss}
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index d2f67a3..115255c 100644
 --- a/hw/arm/pocketforge_a133.c
@@ -796,7 +804,7 @@ index 41ff314..d259e4c 100644
          VMSTATE_INT8(hat_y, PocketForgeA133Input),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/input/virtio-input.c b/hw/input/virtio-input.c
-index 7fef399..ab9f638 100644
+index de822c1..80e30cf 100644
 --- a/hw/input/virtio-input.c
 +++ b/hw/input/virtio-input.c
 @@ -80,6 +80,63 @@ bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
@@ -929,10 +937,10 @@ index e1b7e29..9b50213 100644
 +
  #endif
 diff --git a/include/hw/virtio/virtio-input.h b/include/hw/virtio/virtio-input.h
-index 9cf981d..2a2f921 100644
+index 19a05ee..571ec81 100644
 --- a/include/hw/virtio/virtio-input.h
 +++ b/include/hw/virtio/virtio-input.h
-@@ -103,6 +103,9 @@ struct VHostUserInput {
+@@ -102,6 +102,9 @@ struct VHostUserInput {
  };
  
  bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event);
@@ -942,14 +950,15 @@ index 9cf981d..2a2f921 100644
  void virtio_input_init_config(VirtIOInput *vinput,
                                virtio_input_config *config);
  virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
-diff --git a/qapi/misc-target.json b/qapi/misc-target.json
-index 8829145..0913fdd 100644
---- a/qapi/misc-target.json
-+++ b/qapi/misc-target.json
-@@ -295,6 +295,178 @@
- { 'command': 'query-gic-capabilities', 'returns': ['GICCapability'],
-   'if': 'TARGET_ARM' }
- 
+diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
+index 4dc66d0..459e9f1 100644
+--- a/qapi/misc-arm.json
++++ b/qapi/misc-arm.json
+@@ -89,3 +89,176 @@
+ ##
+ { 'enum': 'OasMode',
+   'data': [ 'auto', '32', '36', '40', '42', '44', '48', '52', '56' ] }
++
 +##
 +# @PocketForgeAbiVersion:
 +#
@@ -1122,14 +1131,11 @@ index 8829145..0913fdd 100644
 +  'returns': 'PocketForgeDisplayInfo',
 +  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
 +
- ##
- # @SGXEPCSection:
- #
 diff --git a/qapi/pragma.json b/qapi/pragma.json
-index 0aa4eed..f6337fb 100644
+index 24aebbe..5f866ac 100644
 --- a/qapi/pragma.json
 +++ b/qapi/pragma.json
-@@ -57,6 +57,8 @@
+@@ -105,6 +105,8 @@
          'PciBusInfo',               # query-pci
          'PciDeviceInfo',            # query-pci
          'PciMemoryRegion',          # query-pci
@@ -1139,23 +1145,23 @@ index 0aa4eed..f6337fb 100644
          'QapiErrorClass',           # QMP error replies
          'SshHostKeyCheckMode',      # blockdev-add, -blockdev
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 6ac525f..4aeaef8 100644
+index 93d391e..df92a3c 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -225,6 +225,8 @@ qtests_aarch64 = \
+@@ -275,6 +275,8 @@ qtests_aarch64 = \
      ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
       'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
       'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) +         \
 +  (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?        \
 +    ['pocketforge-a133-display-test'] : []) +                                      \
-   ['arm-cpu-features',
-    'numa-test',
-    'boot-serial-test',
-@@ -338,6 +340,7 @@ endif
+   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+    config_all_devices.has_key('CONFIG_ARM_VIRT') ?
+    ['iommu-smmuv3-test'] : []) + \
+@@ -441,6 +443,7 @@ endif
  
  if dbus_display
-   qtests += {'dbus-display-test': [dbus_display1_dep, gio]}
-+  qtests += {'pocketforge-a133-display-test': [dbus_display1_dep, gio]}
+   qtests += {'dbus-display-test': [dbus_display1, gio]}
++  qtests += {'pocketforge-a133-display-test': [dbus_display1, gio]}
  endif
  
  qtest_executables = {}

@@ -1,14 +1,26 @@
-From: PocketForge CI <ci@pocketforge.local>
-Date: Sat, 10 Oct 2026 00:00:00 +0000
-Subject: [PATCH 26/26] hw: model A133 AXP717 power key interrupt path
+From 8482a30b0586803e840f37781a7857e0228f2469 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:46:05 -0400
+Subject: [PATCH] hw: model A133 AXP717 power key
 
-Route AXP717 PEK edges through the real A100 NMI register block and expose
-the separate build-6 axp20x-pek device through input ABI 2.2.
+AXP717 PEK interrupt path with press/release timing and migration state.
+
+Manual resolution:
+- hw/misc/axp2xx.c: port vmstate_axp2xx version change and post_load (VMStateField->const VMStateField in v11.1.2)
 
 Assisted-by: LLM
 ---
+ hw/arm/pocketforge_a133.c                    | 247 +++++++++++++++++--
+ hw/misc/axp2xx.c                             |  86 ++++++-
+ include/hw/misc/axp2xx.h                     |  15 ++
+ tests/qtest/pocketforge-a133-input-test.c    |   3 +-
+ tests/qtest/pocketforge-a133-mmio-map-test.c |   1 -
+ 5 files changed, 321 insertions(+), 31 deletions(-)
+ create mode 100644 include/hw/misc/axp2xx.h
+
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 5026871..b0976f2 100644
+index 5026871..6896910 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -61,9 +61,10 @@
@@ -346,7 +358,7 @@ index 5026871..b0976f2 100644
      }
      for (item = events; item; item = item->next) {
 diff --git a/hw/misc/axp2xx.c b/hw/misc/axp2xx.c
-index d0fd6d5..356bb6b 100644
+index 0ef46aa..fbea78e 100644
 --- a/hw/misc/axp2xx.c
 +++ b/hw/misc/axp2xx.c
 @@ -33,7 +33,10 @@
@@ -474,7 +486,7 @@ index d0fd6d5..356bb6b 100644
 +    .version_id = 2,
 +    .minimum_version_id = 1,
 +    .post_load = axp2xx_post_load,
-     .fields = (VMStateField[]) {
+     .fields = (const VMStateField[]) {
          VMSTATE_UINT8_ARRAY(regs, AXP2xxI2CState, NR_REGS),
          VMSTATE_UINT8(ptr, AXP2xxI2CState),
          VMSTATE_UINT8(count, AXP2xxI2CState),
@@ -483,7 +495,7 @@ index d0fd6d5..356bb6b 100644
          VMSTATE_END_OF_LIST()
      }
  };
-@@ -286,10 +356,18 @@ static void axp2xx_class_init(ObjectClass *oc, void *data)
+@@ -286,10 +356,18 @@ static void axp2xx_class_init(ObjectClass *oc, const void *data)
      isc->send = axp2xx_tx;
  }
  

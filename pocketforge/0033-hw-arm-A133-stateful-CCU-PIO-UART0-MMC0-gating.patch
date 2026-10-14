@@ -1,28 +1,9 @@
-From 5896a60c1f976a68308787618de884bc0d08e4ca Mon Sep 17 00:00:00 2001
-From: PocketForge CI <ci@pocketforge.local>
-Date: Sun, 11 Oct 2026 11:35:00 +0000
-Subject: [PATCH 33/33] hw: arm: A133 stateful CCU and PIO gating of UART0 and
- MMC0
+From 69de9e11c735e9c281e0b97971b58e4280bf1ed5 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:48:21 -0400
+Subject: [PATCH] patch 0033
 
-Replace the permissive RAM-backed stub apertures at CCU 0x03001000 and
-PIO 0x0300b000 with stateful devices modeling exactly the early-boot
-register behavior the pinned A133 SPL relies on: retained whole-window
-storage with byte/half/word access, PLL LOCK synthesis at the twelve PLL
-control words once ENABLE is set, and gate/reset-release state at UART
-+0x90c and MMC0 +0x84c.  The PIO device tracks the legacy-stride function
-cells 0x028 (PB9/PB10) and 0x0b4 (PF0..PF5).  The machine enables the
-DW-APB UART0 and the reused allwinner-sdhost-sun50i-a100 MMIO windows
-only while the CCU gate/reset word (bits 0 and 16) and the matching PIO
-function-2 nibbles are all programmed; disabled windows read 0 and drop
-writes, matching an unclocked/unmuxed bus.  Both devices carry vmstate
-and pulse the gate recompute on writes, reset, and post-load.
-
-Direct-kernel boots (-kernel) model the firmware-left state via a
-machine-set preboot property: reset restores open gates and muxed pins
-so the build-6 kernel console and SD path are untouched.  BootROM and
-qtest boots start closed and must run the SPL sequence.
-
-Bead: tsp-mc9m.41.984.54.11.2
 Assisted-by: LLM
 ---
  hw/arm/Kconfig                         |   2 +
@@ -40,10 +21,10 @@ Assisted-by: LLM
  create mode 100644 include/hw/misc/pocketforge_a133_pio.h
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index b0e1e8e..de98b11 100644
+index d7715b4..b8b11a1 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -281,7 +281,9 @@ config POCKETFORGE_A133
+@@ -203,7 +203,9 @@ config POCKETFORGE_A133
      select DW_APB_UART
      select POCKETFORGE_A100_RTC
      select POCKETFORGE_A133_INPUT
@@ -173,10 +154,10 @@ index 9bf3610..0637a14 100644
      pocketforge_a133_create_virtio_mmio(machine, pic);
  
 diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
-index 6c36ac7..19ee24d 100644
+index b36fea4..48f1489 100644
 --- a/hw/misc/Kconfig
 +++ b/hw/misc/Kconfig
-@@ -202,5 +202,11 @@ config XLNX_VERSAL_TRNG
+@@ -259,5 +259,11 @@ config XLNX_ZYNQ_DDRC
  
  source macio/Kconfig
  
@@ -189,10 +170,10 @@ index 6c36ac7..19ee24d 100644
  config POCKETFORGE_A133_MMIO_STUB
      bool
 diff --git a/hw/misc/meson.build b/hw/misc/meson.build
-index 842b8c7..a97dd8e 100644
+index f9c5990..6cbe9ed 100644
 --- a/hw/misc/meson.build
 +++ b/hw/misc/meson.build
-@@ -155,4 +155,6 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
+@@ -169,4 +169,6 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
  # HPPA devices
  system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
  
@@ -201,7 +182,7 @@ index 842b8c7..a97dd8e 100644
  system_ss.add(when: 'CONFIG_POCKETFORGE_A133_MMIO_STUB', if_true: files('pocketforge_a133_mmio_stub.c'))
 diff --git a/hw/misc/pocketforge_a133_ccu.c b/hw/misc/pocketforge_a133_ccu.c
 new file mode 100644
-index 0000000..96c8d7f
+index 0000000..22ebef0
 --- /dev/null
 +++ b/hw/misc/pocketforge_a133_ccu.c
 @@ -0,0 +1,216 @@
@@ -423,7 +404,7 @@ index 0000000..96c8d7f
 +type_init(pf_a133_ccu_register_types)
 diff --git a/hw/misc/pocketforge_a133_pio.c b/hw/misc/pocketforge_a133_pio.c
 new file mode 100644
-index 0000000..722efc9
+index 0000000..fbde5b0
 --- /dev/null
 +++ b/hw/misc/pocketforge_a133_pio.c
 @@ -0,0 +1,180 @@
@@ -715,5 +696,3 @@ index 0000000..214e5f3
 +bool pf_a133_pio_mmc0_pins(PfA133PioState *s);
 +
 +#endif
--- 
-2.43.0

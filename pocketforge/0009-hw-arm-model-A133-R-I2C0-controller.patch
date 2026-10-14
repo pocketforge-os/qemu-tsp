@@ -1,9 +1,13 @@
-From 57470cca36d5a1c9bcc7a60ffcc0fe175e175dbc Mon Sep 17 00:00:00 2001
-From: PocketForge Worker <worker@pocketforge.invalid>
-Date: Fri, 9 Oct 2026 18:42:32 -0400
+From 1de352172c3e6b54c26637548ba04ee7ab14fc24 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:37:30 -0400
 Subject: [PATCH] hw/arm: model A133 R-I2C0 controller
 
-Replace the register-file stub with the upstream sun6i Allwinner I2C controller at the board DT address and SPI 113. Preserve the full DT aperture as a parent container and cover reset/status semantics in qtest.
+A133 R-I2C0 controller with register bank and qtest coverage.
+
+Manual resolution:
+- tests/qtest/meson.build: add r-i2c-test to rebased A133 test list
 
 Assisted-by: LLM
 ---
@@ -16,10 +20,10 @@ Assisted-by: LLM
  create mode 100644 tests/qtest/pocketforge-a133-r-i2c-test.c
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 78c500f..3d7c408 100644
+index 142d1bc..efdc96b 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -274,6 +274,7 @@ config POCKETFORGE_A133
+@@ -196,6 +196,7 @@ config POCKETFORGE_A133
      bool
      default y
      depends on TCG && AARCH64
@@ -97,18 +101,18 @@ index 1694550..d656230 100644
      pocketforge_a133_create_virtio_mmio(machine, pic);
  
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 55fda35..df1c372 100644
+index 40df9b0..0b96351 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -223,7 +223,7 @@ qtests_aarch64 = \
-    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test'] : []) + \
+@@ -273,7 +273,7 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_NPCM8XX') ? qtests_npcm8xx : []) + \
    (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
      ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
 -     'pocketforge-a133-mmio-map-test'] : []) +                                    \
-+     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test'] : []) +      \
-   ['arm-cpu-features',
-    'numa-test',
-    'boot-serial-test',
++     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test'] : []) +    \
+   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+    config_all_devices.has_key('CONFIG_ARM_VIRT') ?
+    ['iommu-smmuv3-test'] : []) + \
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
 index e939756..c6720e5 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
@@ -177,6 +181,3 @@ index 0000000..282152e
 +
 +    return ret;
 +}
--- 
-2.43.0
-

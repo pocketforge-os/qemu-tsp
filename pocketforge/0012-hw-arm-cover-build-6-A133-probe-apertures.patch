@@ -1,7 +1,10 @@
-From dc1ac8acd9788adc912f18bf0284493f6c39e22a Mon Sep 17 00:00:00 2001
-From: PocketForge Worker <worker@pocketforge.invalid>
-Date: Fri, 9 Oct 2026 19:44:12 -0400
-Subject: [PATCH 12/14] hw/arm: cover build-6 A133 probe apertures
+From b3b85a3a0b4ff6dd7125b3a8e43a3d857a7f94a4 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:38:35 -0400
+Subject: [PATCH] hw/arm: cover build-6 A133 probe apertures
+
+Build-6 A133 probe apertures (G2D clock, etc.) with MMIO map coverage updates.
 
 Assisted-by: LLM
 ---
@@ -120,6 +123,3 @@ index 7de0cc0..ca85b91 100644
      g_assert_null(strstr(map, "pocketforge-a133.de2_clk"));
      g_assert_null(strstr(map, "pocketforge-a133.mixer0"));
  
--- 
-2.43.0
-

@@ -1,10 +1,14 @@
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:14:00 +0000
-Subject: [PATCH] hw/arm: expose only the release A133 display topology
+From b0a4f6f211b087acfac1982662f513f1f884f21c Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:34 -0400
+Subject: [PATCH] hw-arm-expose-only-release-A133-display-topology
 
-Remove the synthetic virtio-gpu transport and its DT augmentation now that
-the release kernel drives the native DE2/TCON/DSI model. The input and PMIC
-paths remain unchanged and the guest DT is no longer display-modified.
+---
+ hw/arm/pocketforge_a133.c                    | 92 +-------------------
+ hw/display/pocketforge_a133_display.c        | 12 +--
+ tests/qtest/pocketforge-a133-mmio-map-test.c |  1 -
+ 3 files changed, 8 insertions(+), 97 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index 8e98617..3e95241 100644
@@ -184,4 +188,3 @@ index 105de00..16e44e3 100644
  };
  
  static const ExpectedRegion stub_regions[] = {
-

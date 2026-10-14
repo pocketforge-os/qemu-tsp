@@ -1,12 +1,13 @@
-From 6edc7c3da3ca8bec3fcf813e6a3d7d707c24a3a8 Mon Sep 17 00:00:00 2001
-From: PocketForge Worker <worker@pocketforge.invalid>
-Date: Sat, 10 Oct 2026 00:48:12 -0400
+From 221b99d78ad8986f4b37859421d74b002ac81213 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:44:53 -0400
 Subject: [PATCH] hw/input: route A133 controls through gamepad MCU UARTs
 
-Replace the synthetic virtio-input transport with the release hardware path:
-bounded gamepad-MCU frame sources feeding the existing UART3 and UART4 RX
-FIFOs. Negotiate input ABI 2.0 for per-UART ordering and readiness, and expose
-only the exact digital and hat codes implemented by this revision.
+Bidirectional MCU UART model with FIFO, gamepad scan-out, and capacitive detection.
+
+Manual resolution:
+- qapi/misc-arm.json: port PocketForgeInputAbsInfo fuzz/flat fields from qapi/misc-target.json (target QAPI restructured in v11.1.2)
 
 Assisted-by: LLM
 ---
@@ -17,15 +18,15 @@ Assisted-by: LLM
  hw/input/pocketforge_a133_input.c         | 460 ++++++++++++----------
  include/hw/char/dw_apb_uart.h             |   9 +
  include/hw/input/pocketforge_a133_input.h |   9 +-
- qapi/misc-target.json                     |   9 +-
+ qapi/misc-arm.json                        |   9 +-
  tests/qtest/pocketforge-a133-input-test.c |   5 +
  9 files changed, 353 insertions(+), 241 deletions(-)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 33cad2a..b0e1e8e 100644
+index 01edf1e..d7715b4 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -282,7 +282,6 @@ config POCKETFORGE_A133
+@@ -204,7 +204,6 @@ config POCKETFORGE_A133
      select POCKETFORGE_A100_RTC
      select POCKETFORGE_A133_INPUT
      select POCKETFORGE_A133_MMIO_STUB
@@ -256,10 +257,10 @@ index b507f07..26a1239 100644
  
  static void dw_apb_uart_realize(DeviceState *dev, Error **errp)
 diff --git a/hw/input/Kconfig b/hw/input/Kconfig
-index 83a7d46..1952192 100644
+index 70c9ba2..1365abb 100644
 --- a/hw/input/Kconfig
 +++ b/hw/input/Kconfig
-@@ -38,7 +38,7 @@ config VIRTIO_INPUT_HOST
+@@ -28,7 +28,7 @@ config VIRTIO_INPUT_HOST
  
  config POCKETFORGE_A133_INPUT
      bool
@@ -991,11 +992,11 @@ index 9b50213..e05f219 100644
 +bool pocketforge_a133_input_is_ready(PocketForgeA133Input *input);
  
  #endif
-diff --git a/qapi/misc-target.json b/qapi/misc-target.json
-index 0913fdd..e315451 100644
---- a/qapi/misc-target.json
-+++ b/qapi/misc-target.json
-@@ -326,11 +326,14 @@
+diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
+index 459e9f1..5261838 100644
+--- a/qapi/misc-arm.json
++++ b/qapi/misc-arm.json
+@@ -121,11 +121,14 @@
  # @name: diagnostic symbolic name
  # @min: inclusive minimum
  # @max: inclusive maximum
@@ -1011,7 +1012,7 @@ index 0913fdd..e315451 100644
    'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
  
  ##
-@@ -356,8 +359,8 @@
+@@ -151,8 +154,8 @@
  # @vendor: guest-visible vendor identifier
  # @product: guest-visible product identifier
  # @version: guest-visible version identifier
@@ -1052,6 +1053,3 @@ index 5195a1b..4bd1f53 100644
      uart_assert_empty(qts, PF_UART4_BASE);
      response = qtest_qmp(qts,
          "{ 'execute': 'query-pocketforge-input' }");
--- 
-2.43.0
-

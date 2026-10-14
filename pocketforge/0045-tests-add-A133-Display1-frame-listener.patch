@@ -1,7 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:23:31 +0000
-Subject: [PATCH] tests: add A133 Display1 frame listener
+From 4ea1e2eca4bdf3dd35b8b9200f6aecb2b1285635 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:34 -0400
+Subject: [PATCH] tests-add-A133-Display1-frame-listener
 
 ---
  tests/qtest/meson.build                      |   4 +
@@ -10,20 +11,20 @@ Subject: [PATCH] tests: add A133 Display1 frame listener
  create mode 100644 tests/qtest/pocketforge-a133-dbus-listener.c
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 887f670..a3428b9 100644
+index a3e91f1..c27f4e3 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -346,6 +346,10 @@ endif
+@@ -447,6 +447,10 @@ if vnc.found()
+ endif
+ 
  if dbus_display
-   qtests += {'dbus-display-test': [dbus_display1_dep, gio]}
-   qtests += {'pocketforge-a133-display-test': [dbus_display1_dep, gio]}
 +  executable('pocketforge-a133-dbus-listener',
 +             'pocketforge-a133-dbus-listener.c',
 +             dependencies: [dbus_display1_dep, gio],
 +             build_by_default: false)
+   qtests += {'dbus-display-test': [dbus_display1, gio]}
+   qtests += {'pocketforge-a133-display-test': [dbus_display1, gio]}
  endif
- 
- qtest_executables = {}
 diff --git a/tests/qtest/pocketforge-a133-dbus-listener.c b/tests/qtest/pocketforge-a133-dbus-listener.c
 new file mode 100644
 index 0000000..930afe8

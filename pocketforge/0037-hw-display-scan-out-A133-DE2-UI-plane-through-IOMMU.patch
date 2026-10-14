@@ -1,10 +1,14 @@
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:22:00 +0000
-Subject: [PATCH] hw/display: scan out A133 DE2 UI plane through IOMMU
+From 0703a993b2688e763b797534ee0f3f63597548d3 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:34 -0400
+Subject: [PATCH] hw-display-scan-out-A133-DE2-UI-plane-through-IOMMU
 
-Create the native 720x1280 QemuConsole, decode the A100 primary UI channel
-on mixer double-buffer commits, translate its IOVA page by page, and copy
-the XR24 frame into the standard QEMU display surface used by D-Bus.
+---
+ hw/arm/pocketforge_a133.c                     |  8 +-
+ hw/display/pocketforge_a133_display.c         | 95 ++++++++++++++++++-
+ include/hw/display/pocketforge_a133_display.h |  5 +-
+ 3 files changed, 103 insertions(+), 5 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index d69d751..84d3718 100644
@@ -240,4 +244,3 @@ index 48b8e90..e5077f8 100644
  bool pocketforge_a133_display_iova_read(PocketForgeA133DisplayState *s,
                                          uint32_t iova, void *buf,
                                          size_t len);
-

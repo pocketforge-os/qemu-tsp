@@ -1,11 +1,4 @@
 # Pinned upstream qemu for qemu-tsp (reproducibility anchor).
 repo   = https://gitlab.com/qemu-project/qemu.git
-tag    = v8.2.2
-commit = 11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea
-# Chosen to match the qemu-aarch64-static (8.2.2) on the PocketForge sim/CI hosts.
-#
-# Topology: this repository stores a numbered, source-owned patch stack; it is
-# not a Git branch whose history descends from the upstream commit above.
-# build.sh clones this exact upstream commit and applies pocketforge/*.patch in
-# numeric order.  The qemu-tsp Git repository has its own historical PR merge
-# commits, which are not part of the exported upstream QEMU patch series.
+tag    = v11.1.2
+commit = 4fc49f46dc95d4a27de2509e7fceb2931e91faeb

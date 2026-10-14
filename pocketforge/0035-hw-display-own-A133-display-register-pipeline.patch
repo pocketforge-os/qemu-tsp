@@ -1,10 +1,17 @@
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:02:00 +0000
-Subject: [PATCH] hw/display: own A133 display register pipeline
+From ef5300cd9fa66f422059f4f79e885d7f7efdeeaf Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:34 -0400
+Subject: [PATCH] hw-display-own-A133-display-register-pipeline
 
-Replace the display and IOMMU RAM stubs with a clean-room device that
-owns the real apertures. Complete the hardware-owned probe and transfer
-bits and implement the sun50i two-level IOVA walk required by DE2 scanout.
+---
+ hw/arm/pocketforge_a133.c                     |   9 +-
+ hw/display/meson.build                        |   1 +
+ hw/display/pocketforge_a133_display.c         | 258 ++++++++++++++++++
+ include/hw/display/pocketforge_a133_display.h |  16 ++
+ 4 files changed, 278 insertions(+), 6 deletions(-)
+ create mode 100644 hw/display/pocketforge_a133_display.c
+ create mode 100644 include/hw/display/pocketforge_a133_display.h
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index 0637a14..d69d751 100644
@@ -57,18 +64,17 @@ index 0637a14..d69d751 100644
          s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
      qemu_register_reset(pocketforge_a133_power_reset, s);
 diff --git a/hw/display/meson.build b/hw/display/meson.build
-index 344dfe3..5ad55f7 100644
+index ffecedb..dea8f48 100644
 --- a/hw/display/meson.build
 +++ b/hw/display/meson.build
-@@ -5,6 +5,7 @@ system_ss.add(when: 'CONFIG_EDID', if_true: files('edid-generate.c', 'edid-regio
+@@ -4,6 +4,7 @@ system_ss.add(when: 'CONFIG_DDC', if_true: files('i2c-ddc.c'))
+ system_ss.add(when: 'CONFIG_EDID', if_true: files('edid-generate.c', 'edid-region.c'))
  
  system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb.c'))
- system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb-standalone.c'))
 +system_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133_display.c'))
+ stub_ss.add(files('ramfb-stubs.c'))
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb-standalone.c'))
  
- system_ss.add(when: 'CONFIG_VGA_CIRRUS', if_true: files('cirrus_vga.c'))
- system_ss.add(when: ['CONFIG_VGA_CIRRUS', 'CONFIG_VGA_ISA'], if_true: files('cirrus_vga_isa.c'))
-
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
 new file mode 100644
 index 0000000..6045915

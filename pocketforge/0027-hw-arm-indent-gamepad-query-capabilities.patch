@@ -1,14 +1,13 @@
-From: PocketForge CI <ci@pocketforge.invalid>
-Date: Sat, 10 Oct 2026 09:00:00 +0000
-Subject: [PATCH 27/27] hw/arm: indent gamepad query capabilities
-
-Keep the existing gamepad capability construction inside its device-present
-guard after the power-key query extension wrapped that path.
+From d0d30d9f995bf8b965b9cc249edd870e0af8bb34 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:46:38 -0400
+Subject: [PATCH] patch 0027
 
 Assisted-by: LLM
 ---
- hw/arm/pocketforge_a133.c | 70 +++++++++++++++++++--------------------
- 1 file changed, 35 insertions(+), 35 deletions(-)
+ hw/arm/pocketforge_a133.c | 74 +++++++++++++++++++--------------------
+ 1 file changed, 37 insertions(+), 37 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index 6896910..bb46cb3 100644
@@ -97,5 +96,3 @@ index 6896910..bb46cb3 100644
          QAPI_LIST_APPEND(caps_tail, cap);
          QAPI_LIST_APPEND(device_tail, device);
      }
--- 
-2.43.0

@@ -1,10 +1,8 @@
-From 14dae977d1ad45678ab5f59ef0987d0fd416dc00 Mon Sep 17 00:00:00 2001
+From 33b58ae4991c501afd142ae2bac9b27f97c00a98 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Sat, 10 Oct 2026 04:07:12 -0400
-Subject: [PATCH 21/22] tests: cover DW UART release termios contract
-
-Pin the component-parameter register and the release decoder final LCR before implementing support.
+Date: Tue, 13 Oct 2026 19:45:11 -0400
+Subject: [PATCH] patch 0021
 
 Assisted-by: LLM
 ---
@@ -103,6 +101,3 @@ index 4bd1f53..4d5bbbb 100644
      qtest_add_func("/aarch64/pocketforge-a133-input/mcu-frames-negative",
                     test_mcu_frames_and_negative_control);
      qtest_add_func("/aarch64/pocketforge-a133-input/batch-capacity",
--- 
-2.43.0
-

@@ -1,8 +1,8 @@
-From 627538500503ca3c20496d98378e47c18f74bfca Mon Sep 17 00:00:00 2001
+From 4c09edcf75c741a2c77c42880523fd82ecc2bf31 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Sat, 10 Oct 2026 01:32:35 -0400
-Subject: [PATCH] tests: require A100 CCU PLL lock status
+Date: Tue, 13 Oct 2026 19:43:35 -0400
+Subject: [PATCH] patch 0018
 
 Assisted-by: LLM
 ---
@@ -48,6 +48,3 @@ index de7685d..b929ad5 100644
  
      return g_test_run();
  }
--- 
-2.43.0
-

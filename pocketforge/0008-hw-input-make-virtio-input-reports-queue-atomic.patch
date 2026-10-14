@@ -1,15 +1,10 @@
-From cffd3b6475d1d6e6ef6f60245927431dd62d07bb Mon Sep 17 00:00:00 2001
+From d0a00446eff6061057f9800fa1265632fd1c404c Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Sat, 3 Oct 2026 15:29:48 -0400
-Subject: [PATCH] hw/input: make virtio input reports queue-atomic
+Date: Tue, 13 Oct 2026 19:36:56 -0400
+Subject: [PATCH] hw/input: make virtio-input reports queue-atomic
 
-Check the complete report fits before claiming guest buffers. This keeps
-a rejected input-plus-SYN report from transiently draining a one-buffer
-queue.
-
-Free elements on the defensive rollback path, and cover repeated
-one-buffer rejection followed by successful press and release reports.
+Atomic virtio-input event queuing so the guest never sees a partial multi-event report.
 
 Assisted-by: LLM
 ---
@@ -18,7 +13,7 @@ Assisted-by: LLM
  2 files changed, 143 insertions(+), 12 deletions(-)
 
 diff --git a/hw/input/virtio-input.c b/hw/input/virtio-input.c
-index 0478b21..7fef399 100644
+index 3ebfc6c..de822c1 100644
 --- a/hw/input/virtio-input.c
 +++ b/hw/input/virtio-input.c
 @@ -43,12 +43,22 @@ bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
@@ -256,6 +251,3 @@ index 424c022..a25a74e 100644
      qtest_add_func("/aarch64/pocketforge-a133-input/no-device",
                     test_no_device);
  
--- 
-2.43.0
-

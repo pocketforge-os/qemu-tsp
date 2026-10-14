@@ -1,3 +1,17 @@
+From 07eeb592b4c7b8ed1f2a7a2dc5f79e250d8b316c Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:33:14 -0400
+Subject: [PATCH] hw/arm: pocketforge_a133 Phase C stubs and virtio-gpu graft
+
+Phase C stubs (DE, TCON, DSI, IOMMU) and virtio-mmio transport aperture at 0x0a000000.
+
+Assisted-by: LLM
+---
+ docs/pocketforge-a133-peripheral-stubs.md |  58 ++--
+ hw/arm/pocketforge_a133.c                 | 396 +++++++++++++++++++++-
+ 2 files changed, 421 insertions(+), 33 deletions(-)
+
 diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
 index 3c907e0..9aace6c 100644
 --- a/docs/pocketforge-a133-peripheral-stubs.md

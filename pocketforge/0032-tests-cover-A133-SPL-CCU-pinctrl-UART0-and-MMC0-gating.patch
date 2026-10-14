@@ -1,25 +1,13 @@
-From 41542acecba745653ddb6f9bfab94a7ed298b4f0 Mon Sep 17 00:00:00 2001
-From: PocketForge CI <ci@pocketforge.local>
-Date: Sun, 11 Oct 2026 11:05:00 +0000
-Subject: [PATCH 32/32] tests: cover A133 SPL CCU pinctrl UART0 and MMC0 gating
+From 405624e16973557ca479d7a662880522426f9f8f Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:47:48 -0400
+Subject: [PATCH] tests: cover A133 SPL CCU pinctrl UART0 and MMC0 gating
 
-Add the pocketforge-a133-ccu qtest for the early CCU/PIO behavior the
-pinned A133 SPL relies on: one hermetic invocation carries the full
-positive sequence (PLL lock polling at +0x000/+0x020/+0x028, bus factor
-words at +0x500/+0x510/+0x51c/+0x520/+0x524/+0x540, UART gate/reset at
-+0x90c, MMC clock/gate/reset with +0x84c readback at +0x830/+0x84c, and
-the exact legacy-stride PB/PF pinmux RMW cells 0x28/0x40/0xb4/0xc8/0xd0)
-plus negative controls that each omit one required gate/reset or pinmux
-transition and assert the gated peripheral stays inaccessible: UART0
-passes banner bytes to its chardev only after CCU gate/reset AND PB9/PB10
-function 2, and the reused A100 SD host receives commands only after CCU
-gate/reset AND PF0..PF5 function 2.  Register-level assertions, never a
-bare timeout, decide every negative.
+CCU and pinctrl gating qtests for A133 SPL early-boot path.
 
-The mmio-map test programs the same SPL gate sequence before the flat
-view and UART contract probes, and the mmc test performs the SPL MMC0
-clock/gate/pinmux sequence before driving the controller, matching the
-wiring the model change introduces.
+Manual resolution:
+- tests/qtest/meson.build: add ccu-test to rebased A133 test list
 
 Assisted-by: LLM
 ---
@@ -31,10 +19,10 @@ Assisted-by: LLM
  create mode 100644 tests/qtest/pocketforge-a133-ccu-test.c
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 020d204..887f670 100644
+index c78596d..a3e91f1 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -225,7 +225,7 @@ qtests_aarch64 = \
+@@ -275,7 +275,7 @@ qtests_aarch64 = \
      ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
       'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
       'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',                 \
@@ -42,10 +30,10 @@ index 020d204..887f670 100644
 +     'pocketforge-a133-bootrom-test', 'pocketforge-a133-ccu-test'] : []) +                                      \
    (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?        \
      ['pocketforge-a133-display-test'] : []) +                                      \
-   ['arm-cpu-features',
+   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
 diff --git a/tests/qtest/pocketforge-a133-ccu-test.c b/tests/qtest/pocketforge-a133-ccu-test.c
 new file mode 100644
-index 0000000..2a10ed9
+index 0000000..a2c9744
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-ccu-test.c
 @@ -0,0 +1,578 @@
@@ -731,5 +719,3 @@ index 49779be..105de00 100644
      for (i = 0; i < ARRAY_SIZE(uart_bases); i++) {
          /* USR: TX FIFO not full and empty; controller is not busy. */
          g_assert_cmphex(qtest_readl(qts, uart_bases[i] + 0x7c), ==, 0x6);
--- 
-2.43.0

@@ -1,7 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:18:22 +0000
-Subject: [PATCH] hw/display: complete A133 DCS command state
+From a50824c8fdf7b738a087c2e732cf33421bc95451 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:34 -0400
+Subject: [PATCH] hw-display-complete-A133-DCS-command-state
 
 ---
  hw/display/pocketforge_a133_display.c       | 19 ++++++++++++++++++-

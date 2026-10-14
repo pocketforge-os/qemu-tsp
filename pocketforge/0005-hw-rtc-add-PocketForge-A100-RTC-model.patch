@@ -1,8 +1,14 @@
-From 2de8b0aa7065353be53a281538d22391f13776ae Mon Sep 17 00:00:00 2001
+From 5f729361a79e91ff29136c3c32449ebc63febfca Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Sun, 27 Sep 2026 10:39:49 -0400
+Date: Tue, 13 Oct 2026 19:34:32 -0400
 Subject: [PATCH] hw/rtc: add PocketForge A100 RTC model
+
+Exact A100 RTC clock-control model with register bank and qtest coverage.
+
+Manual resolution:
+- hw/rtc/Kconfig: insert POCKETFORGE_A100_RTC after LS7A_RTC (context changed in v11.1.2)
+- tests/qtest/meson.build: add pocketforge-a100-rtc-test to expanded qtests_aarch64 list (11.1.2 restructured test entries)
 
 Assisted-by: LLM
 ---
@@ -67,13 +73,17 @@ index 0000000..af0680b
 +the keyed mux contract, masks, RAZ/WI behavior, and non-aliasing accesses just
 +outside the exact extent.
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 92fae69..054f591 100644
+index 96b7248..02b7c38 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -278,2 +278,3 @@ config POCKETFORGE_A133
+@@ -198,6 +198,7 @@ config POCKETFORGE_A133
+     depends on TCG && AARCH64
+     select ARM_GIC
      select DW_APB_UART
 +    select POCKETFORGE_A100_RTC
      select POCKETFORGE_A133_MMIO_STUB
+ 
+ config SABRELITE
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index 3d24bf3..23e1826 100644
 --- a/hw/arm/pocketforge_a133.c
@@ -86,40 +96,51 @@ index 3d24bf3..23e1826 100644
  #include "hw/sysbus.h"
  #include "exec/address-spaces.h"
  #include "sysemu/device_tree.h"
-@@ -118,3 +119,6 @@
+@@ -115,6 +116,9 @@
+ #define PF_A133_UART0_BASE      0x05000000
+ #define PF_A133_UART0_IRQ       0 /* GIC_SPI 0 */
+ 
 +/* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
 +#define PF_A133_RTC_BASE        0x07000000
 +
  /*
   * Phase B (tsp-mc9m.41.925.2.2) RAM-backed register-file stubs -- addresses
   * and sizes taken verbatim from sun50i-a100.dtsi's "ccu", "watchdog", "pio",
-@@ -546,3 +550,5 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -543,6 +547,8 @@ static void pocketforge_a133_init(MachineState *machine)
+     dw_apb_uart_create(PF_A133_UART0_BASE, pic[PF_A133_UART0_IRQ],
+                        serial_hd(0));
+ 
 +    pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
 +
      /*
       * Phase B RAM-backed peripheral stubs -- see the file header comment
       * for the per-driver register audit that justifies plain RAM
 diff --git a/hw/rtc/Kconfig b/hw/rtc/Kconfig
-index d0d8dda..3af1aaf 100644
+index 315b0e4..641f44d 100644
 --- a/hw/rtc/Kconfig
 +++ b/hw/rtc/Kconfig
-@@ -31,2 +31,5 @@ config GOLDFISH_RTC
+@@ -27,6 +27,9 @@ config GOLDFISH_RTC
  config LS7A_RTC
      bool
-+
+ 
 +config POCKETFORGE_A100_RTC
 +    bool
++
+ config RS5C372_RTC
+     bool
+     depends on I2C
 diff --git a/hw/rtc/meson.build b/hw/rtc/meson.build
-index 3ea2aff..b217ae8 100644
+index 6c87864..5f90c70 100644
 --- a/hw/rtc/meson.build
 +++ b/hw/rtc/meson.build
-@@ -12,5 +12,6 @@ system_ss.add(when: 'CONFIG_SUN4V_RTC', if_true: files('sun4v-rtc.c'))
+@@ -11,6 +11,7 @@ system_ss.add(when: 'CONFIG_SUN4V_RTC', if_true: files('sun4v-rtc.c'))
  system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_rtc.c'))
  system_ss.add(when: 'CONFIG_GOLDFISH_RTC', if_true: files('goldfish_rtc.c'))
  system_ss.add(when: 'CONFIG_LS7A_RTC', if_true: files('ls7a_rtc.c'))
 +system_ss.add(when: 'CONFIG_POCKETFORGE_A100_RTC', if_true: files('pocketforge_a100_rtc.c'))
  system_ss.add(when: 'CONFIG_ALLWINNER_H3', if_true: files('allwinner-rtc.c'))
  system_ss.add(when: 'CONFIG_MC146818RTC', if_true: files('mc146818rtc.c'))
+ system_ss.add(when: 'CONFIG_RS5C372_RTC', if_true: files('rs5c372.c'))
 diff --git a/hw/rtc/pocketforge_a100_rtc.c b/hw/rtc/pocketforge_a100_rtc.c
 new file mode 100644
 index 0000000..587a4f3
@@ -314,18 +335,18 @@ index 0000000..aa80f9b
 +
 +#endif /* HW_RTC_POCKETFORGE_A100_RTC_H */
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index f096cf3..bc59f14 100644
+index 78b3010..5446fc4 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -221,6 +221,8 @@ qtests_aarch64 = \
-   (config_all_devices.has_key('CONFIG_RASPI') ? ['bcm2835-dma-test'] : []) +  \
-   (config_all.has_key('CONFIG_TCG') and                                            \
-    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test'] : []) + \
+@@ -271,6 +271,8 @@ qtests_aarch64 = \
+    config_all_devices.has_key('CONFIG_TPM_TIS_I2C') ? ['tpm-tis-i2c-test', 'tpm-tis-i2c-swtpm-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_ASPEED_SOC') ? qtests_aspeed64 : []) + \
+   (config_all_devices.has_key('CONFIG_NPCM8XX') ? qtests_npcm8xx : []) + \
 +  (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
 +    ['pocketforge-a100-rtc-test'] : []) +                                          \
-   ['arm-cpu-features',
-    'numa-test',
-    'boot-serial-test',
+   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+    config_all_devices.has_key('CONFIG_ARM_VIRT') ?
+    ['iommu-smmuv3-test'] : []) + \
 diff --git a/tests/qtest/pocketforge-a100-rtc-test.c b/tests/qtest/pocketforge-a100-rtc-test.c
 new file mode 100644
 index 0000000..6e22c95

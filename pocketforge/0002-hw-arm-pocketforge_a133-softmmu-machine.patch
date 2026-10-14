@@ -1,10 +1,37 @@
+From f8e1fb1f540f755ec0fc40221de73b669014dd37 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:32:20 -0400
+Subject: [PATCH] hw/arm: pocketforge_a133 softmmu machine
+
+Add the -M pocketforge-a133 system machine with an owned DW APB UART variant.
+
+Manual resolution:
+- hw/arm/Kconfig: insert POCKETFORGE_A133 after IDE_DEV in the expanded SBSA_REF block (v11.1.2 added IDE_BUS/IDE_DEV selects)
+- hw/arm/meson.build: port arm_ss.add to arm_common_ss.add (meson restructured between 8.2.2 and 11.1.2)
+- hw/char/meson.build: insert DW_APB_UART after CMSDK_APB_UART (ETRAXFS line removed upstream)
+
+Assisted-by: LLM
+---
+ hw/arm/Kconfig                |   7 +
+ hw/arm/meson.build            |   1 +
+ hw/arm/pocketforge_a133.c     | 196 +++++++++++++++++
+ hw/char/Kconfig               |   3 +
+ hw/char/dw_apb_uart.c         | 382 ++++++++++++++++++++++++++++++++++
+ hw/char/meson.build           |   1 +
+ include/hw/char/dw_apb_uart.h |  69 ++++++
+ 7 files changed, 659 insertions(+)
+ create mode 100644 hw/arm/pocketforge_a133.c
+ create mode 100644 hw/char/dw_apb_uart.c
+ create mode 100644 include/hw/char/dw_apb_uart.h
+
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 3ada335..7b549dc 100644
+index 6f5b2ad..d80d212 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -270,6 +270,13 @@ config SBSA_REF
-     select WDT_SBSA
-     select BOCHS_DISPLAY
+@@ -192,6 +192,13 @@ config SBSA_REF
+     select IDE_BUS
+     select IDE_DEV
  
 +config POCKETFORGE_A133
 +    bool
@@ -17,17 +44,17 @@ index 3ada335..7b549dc 100644
      bool
      default y
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 68245d3..7a6ce2b 100644
+index 4233a80..2a90948 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
-@@ -20,6 +20,7 @@ arm_ss.add(when: 'CONFIG_GUMSTIX', if_true: files('gumstix.c'))
- arm_ss.add(when: 'CONFIG_SPITZ', if_true: files('spitz.c'))
- arm_ss.add(when: 'CONFIG_Z2', if_true: files('z2.c'))
- arm_ss.add(when: 'CONFIG_REALVIEW', if_true: files('realview.c'))
-+arm_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133.c'))
- arm_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa-ref.c'))
- arm_ss.add(when: 'CONFIG_STELLARIS', if_true: files('stellaris.c'))
- arm_ss.add(when: 'CONFIG_STM32VLDISCOVERY', if_true: files('stm32vldiscovery.c'))
+@@ -12,6 +12,7 @@ arm_common_ss.add(when: 'CONFIG_OLIMEX_STM32_H405', if_true: files('olimex-stm32
+ arm_common_ss.add(when: 'CONFIG_NPCM7XX', if_true: files('npcm7xx.c', 'npcm7xx_boards.c'))
+ arm_common_ss.add(when: 'CONFIG_NPCM8XX', if_true: files('npcm8xx.c', 'npcm8xx_boards.c'))
+ arm_common_ss.add(when: 'CONFIG_REALVIEW', if_true: files('realview.c'))
++arm_common_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133.c'))
+ arm_common_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa-ref.c'))
+ arm_common_ss.add(when: 'CONFIG_STELLARIS', if_true: files('stellaris.c'))
+ arm_common_ss.add(when: 'CONFIG_STM32VLDISCOVERY', if_true: files('stm32vldiscovery.c'))
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 new file mode 100644
 index 0000000..aa1d63c
@@ -231,7 +258,7 @@ index 0000000..aa1d63c
 +
 +DEFINE_MACHINE("pocketforge-a133", pocketforge_a133_machine_init)
 diff --git a/hw/char/Kconfig b/hw/char/Kconfig
-index 6b6cf2f..d607382 100644
+index 020c0a8..0b6f19f 100644
 --- a/hw/char/Kconfig
 +++ b/hw/char/Kconfig
 @@ -1,3 +1,6 @@
@@ -630,7 +657,7 @@ index 0000000..d8b0b09
 +
 +type_init(dw_apb_uart_register_types)
 diff --git a/hw/char/meson.build b/hw/char/meson.build
-index 006d20f..761428b 100644
+index fc3d7ee..016f480 100644
 --- a/hw/char/meson.build
 +++ b/hw/char/meson.build
 @@ -1,5 +1,6 @@
@@ -638,8 +665,8 @@ index 006d20f..761428b 100644
  system_ss.add(when: 'CONFIG_CMSDK_APB_UART', if_true: files('cmsdk-apb-uart.c'))
 +system_ss.add(when: 'CONFIG_DW_APB_UART', if_true: files('dw_apb_uart.c'))
  system_ss.add(when: 'CONFIG_ESCC', if_true: files('escc.c'))
- system_ss.add(when: 'CONFIG_ETRAXFS', if_true: files('etraxfs_ser.c'))
  system_ss.add(when: 'CONFIG_GRLIB', if_true: files('grlib_apbuart.c'))
+ system_ss.add(when: 'CONFIG_IBEX', if_true: files('ibex_uart.c'))
 diff --git a/include/hw/char/dw_apb_uart.h b/include/hw/char/dw_apb_uart.h
 new file mode 100644
 index 0000000..0d91852

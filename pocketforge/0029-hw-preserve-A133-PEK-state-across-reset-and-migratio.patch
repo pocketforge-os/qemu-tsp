@@ -1,7 +1,8 @@
-From ca18baae7cbccb5157bc7b915e58b1f107ad80e0 Mon Sep 17 00:00:00 2001
-From: PocketForge CI <ci@pocketforge.local>
-Date: Sat, 10 Oct 2026 07:38:45 -0400
-Subject: [PATCH 29/29] hw: preserve A133 PEK state across reset and migration
+From c4dbec7f793d81d927e25aceb1d9df3478000d0e Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:46:38 -0400
+Subject: [PATCH] patch 0029
 
 Assisted-by: LLM
 ---
@@ -98,5 +99,3 @@ index bb46cb3..983e4f1 100644
  }
  
  static const TypeInfo pocketforge_a133_machine_info = {
--- 
-2.43.0

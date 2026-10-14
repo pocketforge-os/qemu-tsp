@@ -1,7 +1,13 @@
-From f5d7ace53408a41a01bfbe2f1b5c07068ed72396 Mon Sep 17 00:00:00 2001
-From: PocketForge Worker <worker@pocketforge.invalid>
-Date: Fri, 9 Oct 2026 19:09:58 -0400
-Subject: [PATCH 14/14] hw/arm: connect A133 MMC0 to SD media
+From 629f574afcfe0165547d1d10dd7f8706c50a5637 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:40:31 -0400
+Subject: [PATCH] hw/arm: connect A133 MMC0 to SD media
+
+Wire the A100 SD host variant to MMC0 with a writable SD card backed by -drive if=sd.
+
+Manual resolution:
+- tests/qtest/meson.build: add mmc-test to rebased A133 test list
 
 Assisted-by: LLM
 ---
@@ -141,18 +147,18 @@ index 3b03d48..d2f67a3 100644
      mc->no_floppy = true;
      mc->no_parallel = true;
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 3e64a49..6ac525f 100644
+index f238fea..93d391e 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -224,7 +224,7 @@ qtests_aarch64 = \
+@@ -274,7 +274,7 @@ qtests_aarch64 = \
    (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
      ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
       'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
 -     'pocketforge-a133-axp717-test'] : []) +                                      \
 +     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) +         \
-   ['arm-cpu-features',
-    'numa-test',
-    'boot-serial-test',
+   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+    config_all_devices.has_key('CONFIG_ARM_VIRT') ?
+    ['iommu-smmuv3-test'] : []) + \
 diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a133-mmc-test.c
 new file mode 100644
 index 0000000..8411e74
@@ -351,6 +357,3 @@ index ca85b91..de7685d 100644
      { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
      { "pocketforge-a133.ledc",             0x05018000, 0x400 },
      { "pocketforge-a133.ths",              0x05070400, 0x100 },
--- 
-2.43.0
-

@@ -1,7 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:19:32 +0000
-Subject: [PATCH] hw/display: refresh A133 scanout on vblank
+From 0198a0fa6d81b68a8112ca8a45625525b55d42a1 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:34 -0400
+Subject: [PATCH] hw-display-refresh-A133-scanout-on-vblank
 
 ---
  hw/display/pocketforge_a133_display.c       | 5 +++++

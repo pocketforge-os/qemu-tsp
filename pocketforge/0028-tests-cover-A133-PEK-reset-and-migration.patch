@@ -1,7 +1,8 @@
-From 4cbd96a5425e0e142e3bb1bb3256a7bc5a683228 Mon Sep 17 00:00:00 2001
-From: PocketForge CI <ci@pocketforge.local>
-Date: Sat, 10 Oct 2026 07:38:45 -0400
-Subject: [PATCH 28/29] tests: cover A133 PEK reset and migration
+From d82c94034d2aee587b0c176a69e2332c75efad88 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:45:28 -0400
+Subject: [PATCH] patch 0028
 
 Assisted-by: LLM
 ---
@@ -10,10 +11,10 @@ Assisted-by: LLM
  2 files changed, 135 insertions(+), 6 deletions(-)
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 4aeaef8..2805823 100644
+index df92a3c..2cd470a 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -330,6 +330,10 @@ qtests = {
+@@ -424,6 +424,10 @@ qtests = {
    'netdev-socket': files('netdev-socket.c', '../unit/socket-helpers.c'),
  }
  
@@ -200,5 +201,3 @@ index 9876854..5c2b2e7 100644
      ret = g_test_run();
      qtest_end();
  
--- 
-2.43.0

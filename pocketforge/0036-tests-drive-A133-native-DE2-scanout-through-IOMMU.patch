@@ -1,11 +1,13 @@
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:12:00 +0000
-Subject: [PATCH] tests: drive A133 native DE2 scanout through IOMMU
+From 0545957269a69ef7f657c2b2a6d0cdf6fd2a5ed4 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:46:38 -0400
+Subject: [PATCH] patch 0036
 
-Replace the virtio-gpu proxy path in the display export test with the
-release driver's native contract: populate sun50i IOMMU tables, program
-DE2 UI channel 2, and commit via the mixer double-buffer register. Require
-finite DSI and TCON command completion rather than write-discard stubs.
+Assisted-by: LLM
+---
+ tests/qtest/pocketforge-a133-display-test.c | 248 ++++----------------
+ 1 file changed, 43 insertions(+), 205 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
 index 326846f..5568798 100644

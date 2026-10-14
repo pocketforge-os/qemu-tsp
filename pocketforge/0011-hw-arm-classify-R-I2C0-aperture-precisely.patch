@@ -1,9 +1,10 @@
-From ce8e70c674dead76850eeae4fe9861e583dc9f17 Mon Sep 17 00:00:00 2001
-From: PocketForge Worker <worker@pocketforge.invalid>
-Date: Fri, 9 Oct 2026 18:50:27 -0400
+From b602a9112960b14de368489d8e19a5664cc0ba38 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:38:27 -0400
 Subject: [PATCH] hw/arm: classify R-I2C0 aperture precisely
 
-Expose the sun6i register bank as the live model and retain only the register-free tail of the DT reservation as an inert residual stub. Update the machine description and MMIO qtest to keep the distinction explicit.
+Precise R-I2C0 coverage classification separating reserved from active register windows.
 
 Assisted-by: LLM
 ---
@@ -140,6 +141,3 @@ index c6720e5..7de0cc0 100644
  };
  
  static QTestState *mmio_start(void)
--- 
-2.43.0
-

@@ -1,8 +1,18 @@
+From 238deee4b0ef9936aa25af7946c7ad54ab930041 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:35 -0400
+Subject: [PATCH] tests-classify-A133-R-PIO-as-stateful
+
+---
+ tests/qtest/pocketforge-a133-mmio-map-test.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index d347743f42..b9091b74c1 100644
+index 16e44e3..4bf76e1 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
-@@ -75,6 +75,7 @@ static const ExpectedRegion expected_regions[] = {
+@@ -67,6 +67,7 @@ static const ExpectedRegion expected_regions[] = {
  };
  
  static const ExpectedRegion stub_regions[] = {
@@ -10,7 +20,7 @@ index d347743f42..b9091b74c1 100644
      { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
      { "pocketforge-a133.crypto",           0x01904000, 0x800 },
      { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
-@@ -105,7 +106,6 @@ static const ExpectedRegion stub_regions[] = {
+@@ -101,7 +102,6 @@ static const ExpectedRegion stub_regions[] = {
      { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
      { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
      { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },

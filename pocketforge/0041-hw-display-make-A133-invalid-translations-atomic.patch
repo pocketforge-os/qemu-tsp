@@ -1,7 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: PocketForge Maintainers <maintainers@pocketforge.invalid>
-Date: Tue, 13 Oct 2026 19:13:48 +0000
-Subject: [PATCH] hw/display: make A133 invalid translations atomic
+From 8bccab7c65a1190d50d3838715c2c226ec006e63 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:56:34 -0400
+Subject: [PATCH] hw-display-make-A133-invalid-translations-atomic
 
 ---
  hw/display/pocketforge_a133_display.c       | 11 +++++-
@@ -58,7 +59,7 @@ index d20b3bd..e6ba122 100644
          g_free(s->bank[i].regs);
          s->bank[i].regs = NULL;
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 5568798..77dfc9d 100644
+index 135a354..584b297 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -11,10 +11,13 @@
@@ -75,7 +76,7 @@ index 5568798..77dfc9d 100644
  #define PF_IOMMU_TLB_FLUSH 0x080
  #define PF_DSI_BASIC_CTL0   0x010
  #define PF_TCON_CPU_IF      0x060
-@@ -280,9 +283,42 @@ static void test_native_register_contract(void)
+@@ -327,9 +330,42 @@ static void test_native_register_contract(void)
      QTestState *qts;
      const uint32_t flush_request = BIT(17) | BIT(16) | 0x3f;
      const uint32_t dphy_marker = 0x5a691234;
@@ -118,7 +119,7 @@ index 5568798..77dfc9d 100644
      /* Positive control: ordinary D-PHY state is stable and readable. */
      qtest_writel(qts, PF_DPHY_BASE + 0x10, dphy_marker);
      g_assert_cmphex(qtest_readl(qts, PF_DPHY_BASE + 0x10), ==,
-@@ -315,6 +351,14 @@ static void test_native_register_contract(void)
+@@ -362,6 +398,14 @@ static void test_native_register_contract(void)
      g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
                      ==, 0);
  

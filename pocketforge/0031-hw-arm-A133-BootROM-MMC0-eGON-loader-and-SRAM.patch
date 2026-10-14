@@ -1,35 +1,14 @@
-From e42900ee7fd022c89b4397d0d3393767ee15a9b1 Mon Sep 17 00:00:00 2001
-From: PocketForge CI <ci@pocketforge.local>
-Date: Sun, 11 Oct 2026 10:05:00 +0000
-Subject: [PATCH 31/31] hw: arm: A133 BootROM MMC0 eGON loader and SRAM reset
- path
-
-Promote SRAM A1/C/A2 to RAM-backed executable memory at their pinned
-sun50i-a100 DTS addresses and sizes, and add the pre-CPU BootROM eGON
-loader that runs on every machine reset: it searches MMC0 at the 8 KiB
-low and 128 KiB high locations, validates the eGON.BT0 header (magic,
-word-aligned length covering the header and bounded by the A1+C load
-window, additive checksum with the checksum word replaced by the
-0x5f0a6c39 stamp), copies exactly the declared length to SRAM 0x20000,
-stamps the boot media word (MMC0 / MMC0_HIGH), and hands CPU0 to
-0x20000 in AArch32 EL1 SVC with secondaries held off
-(start-powered-off when booting without a direct kernel). Read errors,
-truncated media, stale checksums, bad magic and out-of-bounds or
-unaligned lengths are rejected without any copy or execution. The
-handler is registered after arm_load_kernel so it runs after the
-per-CPU do_cpu_reset handlers.
-
-The mmio-map test asserts the three SRAM regions as ram lines with
-storage that survives machine reset; the bootrom test fixture uses
-correct mrc/tst encodings, -accel tcg so the SPL really executes, the
-QEMU MPIDR reset value including the MP-extensions bit, and
-power-of-two SD media sizes.
+From 73fdb822b2bed99d0858141ece6cb5d11f625209 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 19:47:23 -0400
+Subject: [PATCH] patch 0031
 
 Assisted-by: LLM
 ---
- hw/arm/pocketforge_a133.c                    | 214 ++++++++++++++++++++++++++-
- tests/qtest/pocketforge-a133-bootrom-test.c  |  41 +++--
- tests/qtest/pocketforge-a133-mmio-map-test.c |  65 +++++++-
+ hw/arm/pocketforge_a133.c                    | 214 ++++++++++++++++++-
+ tests/qtest/pocketforge-a133-bootrom-test.c  |  41 ++--
+ tests/qtest/pocketforge-a133-mmio-map-test.c |  65 +++++-
  3 files changed, 294 insertions(+), 26 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
@@ -570,6 +549,3 @@ index 52052cb..49779be 100644
      qtest_add_func("/pocketforge-a133-mmio/uart-model-contract",
                     test_uart_model_contract);
      qtest_add_func("/pocketforge-a133-mmio/ccu-pll-lock-contract",
--- 
-2.43.0
-
