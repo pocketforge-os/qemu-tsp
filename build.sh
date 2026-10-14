@@ -370,12 +370,13 @@ if ! grep -q 'PF_IOMMU_PC_IVLD_ADDR' \
 fi
 
 echo "== apply PocketForge patch: validate virtio shared-memory descriptors =="
-if ! grep -q 'virtio_validate_shmem_regions' hw/virtio/virtio.c; then
+if ! grep -Fq 'duplicate shared memory region ID' hw/virtio/virtio.c; then
   git apply "$ROOT/pocketforge/0052-virtio-validate-shared-memory-descriptors.patch"
 fi
 
 echo "== apply PocketForge patch: transport-neutral virtio-gpu hostmem =="
-if ! grep -q 'virtio_gpu_hostmem_init' hw/display/virtio-gpu.c; then
+if ! grep -Fq 'g->hostmem = &hostmem->mr;' \
+    hw/display/virtio-gpu-base.c; then
   git apply "$ROOT/pocketforge/0053-virtio-gpu-create-hostmem-transport-neutrally.patch"
 fi
 
@@ -391,6 +392,11 @@ echo "== test PocketForge QAPI build-configuration gating =="
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
+
+if [ "${QEMU_TSP_VERIFY_ONLY:-0}" = "1" ]; then
+  echo "== verified retained patched source; skipping build =="
+  exit 0
+fi
 
 mkdir -p "$OUT"
 
@@ -447,3 +453,6 @@ cp "$SYSTEM_BUILD_DIR/tests/qtest/pocketforge-a133-dbus-listener" \
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1
 "$OUT/qemu-system-aarch64" -M help | grep pocketforge-a133
+
+echo "== test retained patched source idempotence =="
+QEMU_TSP_VERIFY_ONLY=1 QEMU_TSP_SRC="$SRC" "$ROOT/build.sh"
