@@ -1,0 +1,214 @@
+From e32550ff23f0e54d069b85c1b3ced57fb98d7fdd Mon Sep 17 00:00:00 2001
+From: qlid <qlid@invalid>
+Date: Tue, 13 Oct 2026 19:51:20 -0400
+Subject: [PATCH 53/54] virtio-gpu: create hostmem transport-neutrally
+
+Create the host-visible shared-memory descriptor in the common GPU realization path. Keep PCI BAR4 registration unchanged while allowing non-PCI transports to publish the same region.
+
+Assisted-by: LLM
+---
+ hw/display/virtio-gpu-base.c     | 12 ++++++++++++
+ hw/display/virtio-gpu-gl.c       | 18 +++++++++++++++++-
+ hw/display/virtio-gpu-pci.c      | 17 +++++++++--------
+ hw/display/virtio-gpu-rutabaga.c |  4 ++--
+ hw/display/virtio-gpu-virgl.c    |  4 ++--
+ hw/display/virtio-vga.c          | 19 ++++++++++---------
+ include/hw/virtio/virtio-gpu.h   |  2 +-
+ 7 files changed, 53 insertions(+), 23 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index 270fbaae10..ec27051f35 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -188,6 +188,7 @@ virtio_gpu_base_device_realize(DeviceState *qdev,
+     VirtIOGPUOutputList *node;
+     VirtIODevice *vdev = VIRTIO_DEVICE(qdev);
+     VirtIOGPUBase *g = VIRTIO_GPU_BASE(qdev);
++    VirtioSharedMemory *hostmem;
+     int i;
+ 
+     if (g->conf.max_outputs > VIRTIO_GPU_MAX_SCANOUTS) {
+@@ -236,6 +237,17 @@ virtio_gpu_base_device_realize(DeviceState *qdev,
+     virtio_init(VIRTIO_DEVICE(g), VIRTIO_ID_GPU,
+                 sizeof(struct virtio_gpu_config));
+ 
++    if (virtio_gpu_hostmem_enabled(g->conf)) {
++        hostmem = virtio_new_shmem_region(vdev,
++                                         VIRTIO_GPU_SHM_ID_HOST_VISIBLE,
++                                         g->conf.hostmem, errp);
++        if (!hostmem) {
++            virtio_cleanup(vdev);
++            return false;
++        }
++        g->hostmem = &hostmem->mr;
++    }
++
+     if (virtio_gpu_virgl_enabled(g->conf)) {
+         /* use larger control queue in 3d mode */
+         virtio_add_queue(vdev, 256, ctrl_cb);
+diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
+index 2b7a41c466..090995764e 100644
+--- a/hw/display/virtio-gpu-gl.c
++++ b/hw/display/virtio-gpu-gl.c
+@@ -156,11 +156,27 @@ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
+         memory_region_init_ram_ptr(&gl->hostmem_background, NULL,
+                                    "hostmem-background", b->conf.hostmem,
+                                    gl->hostmem_mmap);
+-        memory_region_add_subregion(&b->hostmem, 0, &gl->hostmem_background);
+     }
+ #endif
+ 
+     virtio_gpu_device_realize(qdev, errp);
++    if (*errp) {
++#if !defined(CONFIG_WIN32)
++        if (gl->hostmem_mmap) {
++            object_unparent(OBJECT(&gl->hostmem_background));
++            qemu_ram_munmap(-1, gl->hostmem_mmap, b->conf.hostmem);
++            gl->hostmem_mmap = NULL;
++        }
++#endif
++        return;
++    }
++
++#if !defined(CONFIG_WIN32)
++    if (gl->hostmem_mmap) {
++        memory_region_add_subregion(b->hostmem, 0,
++                                    &gl->hostmem_background);
++    }
++#endif
+ }
+ 
+ static const Property virtio_gpu_gl_properties[] = {
+diff --git a/hw/display/virtio-gpu-pci.c b/hw/display/virtio-gpu-pci.c
+index 22659ca196..97ea6cf1e7 100644
+--- a/hw/display/virtio-gpu-pci.c
++++ b/hw/display/virtio-gpu-pci.c
+@@ -35,22 +35,23 @@ static void virtio_gpu_pci_base_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
+     if (virtio_gpu_hostmem_enabled(g->conf)) {
+         vpci_dev->msix_bar_idx = 1;
+         vpci_dev->modern_mem_bar_idx = 2;
+-        memory_region_init(&g->hostmem, OBJECT(g), "virtio-gpu-hostmem",
+-                           g->conf.hostmem);
++    }
++
++    virtio_pci_force_virtio_1(vpci_dev);
++    if (!qdev_realize(vdev, BUS(&vpci_dev->bus), errp)) {
++        return;
++    }
++
++    if (virtio_gpu_hostmem_enabled(g->conf)) {
+         pci_register_bar(&vpci_dev->pci_dev, 4,
+                          PCI_BASE_ADDRESS_SPACE_MEMORY |
+                          PCI_BASE_ADDRESS_MEM_PREFETCH |
+                          PCI_BASE_ADDRESS_MEM_TYPE_64,
+-                         &g->hostmem);
++                         g->hostmem);
+         virtio_pci_add_shm_cap(vpci_dev, 4, 0, g->conf.hostmem,
+                                VIRTIO_GPU_SHM_ID_HOST_VISIBLE);
+     }
+ 
+-    virtio_pci_force_virtio_1(vpci_dev);
+-    if (!qdev_realize(vdev, BUS(&vpci_dev->bus), errp)) {
+-        return;
+-    }
+-
+     for (i = 0; i < g->conf.max_outputs; i++) {
+         object_property_set_link(OBJECT(g->scanout[i].con), "device",
+                                  OBJECT(vpci_dev), &error_abort);
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 041216a10d..b48bb8bf59 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -721,7 +721,7 @@ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
+         MemoryRegion *mr = &(vr->memory_regions[slot].mr);
+         memory_region_init_ram_ptr(mr, OBJECT(vr), "blob", mapping.size,
+                                    mapping.ptr);
+-        memory_region_add_subregion(&vb->hostmem, mblob.offset, mr);
++        memory_region_add_subregion(vb->hostmem, mblob.offset, mr);
+         vr->memory_regions[slot].resource_id = mblob.resource_id;
+         vr->memory_regions[slot].used = 1;
+         break;
+@@ -763,7 +763,7 @@ rutabaga_cmd_resource_unmap_blob(VirtIOGPU *g,
+         }
+ 
+         MemoryRegion *mr = &(vr->memory_regions[slot].mr);
+-        memory_region_del_subregion(&vb->hostmem, mr);
++        memory_region_del_subregion(vb->hostmem, mr);
+ 
+         vr->memory_regions[slot].resource_id = 0;
+         vr->memory_regions[slot].used = 0;
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index 9bda572426..f16a790e42 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -223,7 +223,7 @@ virtio_gpu_virgl_map_resource_blob(VirtIOGPU *g,
+ 
+     mr = &vmr->mr;
+     memory_region_init_ram_ptr(mr, OBJECT(vmr), "mr", size, data);
+-    memory_region_add_subregion_overlap(&b->hostmem, offset, mr, 1);
++    memory_region_add_subregion_overlap(b->hostmem, offset, mr, 1);
+ 
+     res->mr = mr;
+ 
+@@ -296,7 +296,7 @@ virtio_gpu_virgl_unmap_resource_blob(VirtIOGPU *g,
+         vmr->mapping_state = VIRTIO_GPU_MR_UNMAP_STARTED;
+ 
+         /* memory region owns self res->mr object and frees it by itself */
+-        memory_region_del_subregion(&b->hostmem, mr);
++        memory_region_del_subregion(b->hostmem, mr);
+         object_unparent(OBJECT(vmr));
+ 
+         /* Fallthrough */
+diff --git a/hw/display/virtio-vga.c b/hw/display/virtio-vga.c
+index 2ae649c91a..e880736cd5 100644
+--- a/hw/display/virtio-vga.c
++++ b/hw/display/virtio-vga.c
+@@ -130,15 +130,6 @@ static void virtio_vga_base_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
+     } else {
+         vpci_dev->msix_bar_idx = 1;
+         vpci_dev->modern_mem_bar_idx = 2;
+-        memory_region_init(&g->hostmem, OBJECT(g), "virtio-gpu-hostmem",
+-                           g->conf.hostmem);
+-        pci_register_bar(&vpci_dev->pci_dev, 4,
+-                         PCI_BASE_ADDRESS_SPACE_MEMORY |
+-                         PCI_BASE_ADDRESS_MEM_PREFETCH |
+-                         PCI_BASE_ADDRESS_MEM_TYPE_64,
+-                         &g->hostmem);
+-        virtio_pci_add_shm_cap(vpci_dev, 4, 0, g->conf.hostmem,
+-                               VIRTIO_GPU_SHM_ID_HOST_VISIBLE);
+     }
+ 
+     if (!(vpci_dev->flags & VIRTIO_PCI_FLAG_PAGE_PER_VQ)) {
+@@ -167,6 +158,16 @@ static void virtio_vga_base_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
+         return;
+     }
+ 
++    if (virtio_gpu_hostmem_enabled(g->conf)) {
++        pci_register_bar(&vpci_dev->pci_dev, 4,
++                         PCI_BASE_ADDRESS_SPACE_MEMORY |
++                         PCI_BASE_ADDRESS_MEM_PREFETCH |
++                         PCI_BASE_ADDRESS_MEM_TYPE_64,
++                         g->hostmem);
++        virtio_pci_add_shm_cap(vpci_dev, 4, 0, g->conf.hostmem,
++                               VIRTIO_GPU_SHM_ID_HOST_VISIBLE);
++    }
++
+     /* add stdvga mmio regions */
+     pci_std_vga_mmio_region_init(vga, OBJECT(vvga), &vpci_dev->modern_bar,
+                                  vvga->vga_mrs, true, false);
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 220231ec9d..35a18534a1 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -156,7 +156,7 @@ struct VirtIOGPUBase {
+     int renderer_blocked;
+     int enable;
+ 
+-    MemoryRegion hostmem;
++    MemoryRegion *hostmem;
+ 
+     struct virtio_gpu_scanout scanout[VIRTIO_GPU_MAX_SCANOUTS];
+ 
+-- 
+2.43.0
+

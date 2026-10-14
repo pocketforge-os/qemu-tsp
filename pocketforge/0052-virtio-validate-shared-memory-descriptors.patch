@@ -1,0 +1,81 @@
+From f3a53c0322b51686b18a9312ad879dc779b19cf2 Mon Sep 17 00:00:00 2001
+From: qlid <qlid@invalid>
+Date: Tue, 13 Oct 2026 19:51:20 -0400
+Subject: [PATCH 52/54] virtio: validate shared memory descriptors
+
+Make shared-memory descriptor construction report zero sizes and duplicate IDs. This keeps the existing vhost-user SHMEM vocabulary while making it safe for transports to consume the descriptors.
+
+Assisted-by: LLM
+---
+ hw/virtio/vhost-user-base.c |  4 +++-
+ hw/virtio/virtio.c          | 12 +++++++++++-
+ include/hw/virtio/virtio.h  |  4 +++-
+ 3 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/hw/virtio/vhost-user-base.c b/hw/virtio/vhost-user-base.c
+index 478ec68f09..0c9b4f44da 100644
+--- a/hw/virtio/vhost-user-base.c
++++ b/hw/virtio/vhost-user-base.c
+@@ -380,7 +380,9 @@ static void vub_device_realize(DeviceState *dev, Error **errp)
+                 goto err_vhost_dev;
+             }
+ 
+-            virtio_new_shmem_region(vdev, i, memory_sizes[i]);
++            if (!virtio_new_shmem_region(vdev, i, memory_sizes[i], errp)) {
++                goto err_vhost_dev;
++            }
+         }
+     }
+ 
+diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
+index daa5607338..ad637b5d3f 100644
+--- a/hw/virtio/virtio.c
++++ b/hw/virtio/virtio.c
+@@ -3131,11 +3131,21 @@ int virtio_save(VirtIODevice *vdev, QEMUFile *f)
+     return ret;
+ }
+ 
+-VirtioSharedMemory *virtio_new_shmem_region(VirtIODevice *vdev, uint8_t shmid, uint64_t size)
++VirtioSharedMemory *virtio_new_shmem_region(VirtIODevice *vdev, uint8_t shmid,
++                                            uint64_t size, Error **errp)
+ {
+     VirtioSharedMemory *elem;
+     g_autofree char *name = NULL;
+ 
++    if (!size) {
++        error_setg(errp, "shared memory region %u has zero size", shmid);
++        return NULL;
++    }
++    if (virtio_find_shmem_region(vdev, shmid)) {
++        error_setg(errp, "duplicate shared memory region ID %u", shmid);
++        return NULL;
++    }
++
+     elem = g_new0(VirtioSharedMemory, 1);
+     elem->shmid = shmid;
+ 
+diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
+index c99cb19d88..f30ceb689d 100644
+--- a/include/hw/virtio/virtio.h
++++ b/include/hw/virtio/virtio.h
+@@ -345,6 +345,7 @@ int virtio_save(VirtIODevice *vdev, QEMUFile *f);
+  * @vdev: VirtIODevice
+  * @shmid: Shared memory ID
+  * @size: Size of the shared memory region
++ * @errp: Error details
+  *
+  * Creates a new VirtioSharedMemory region for the given device and ID.
+  * The returned VirtioSharedMemory is owned by the VirtIODevice and will
+@@ -353,7 +354,8 @@ int virtio_save(VirtIODevice *vdev, QEMUFile *f);
+  *
+  * Returns: Pointer to the new VirtioSharedMemory region, or NULL on failure
+  */
+-VirtioSharedMemory *virtio_new_shmem_region(VirtIODevice *vdev, uint8_t shmid, uint64_t size);
++VirtioSharedMemory *virtio_new_shmem_region(VirtIODevice *vdev, uint8_t shmid,
++                                            uint64_t size, Error **errp);
+ 
+ /**
+  * virtio_find_shmem_region() - Find an existing shared memory region
+-- 
+2.43.0
+

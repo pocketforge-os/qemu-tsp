@@ -369,6 +369,22 @@ if ! grep -q 'PF_IOMMU_PC_IVLD_ADDR' \
   git apply "$ROOT/pocketforge/0051-tests-cover-A133-IOMMU-invalidation-completion.patch"
 fi
 
+echo "== apply PocketForge patch: validate virtio shared-memory descriptors =="
+if ! grep -Fq 'duplicate shared memory region ID' hw/virtio/virtio.c; then
+  git apply "$ROOT/pocketforge/0052-virtio-validate-shared-memory-descriptors.patch"
+fi
+
+echo "== apply PocketForge patch: transport-neutral virtio-gpu hostmem =="
+if ! grep -Fq 'g->hostmem = &hostmem->mr;' \
+    hw/display/virtio-gpu-base.c; then
+  git apply "$ROOT/pocketforge/0053-virtio-gpu-create-hostmem-transport-neutrally.patch"
+fi
+
+echo "== apply PocketForge patch: virtio-mmio shared-memory regions =="
+if [ ! -f tests/qtest/virtio-mmio-shm-test.c ]; then
+  git apply "$ROOT/pocketforge/0054-virtio-mmio-implement-shared-memory-regions.patch"
+fi
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
@@ -376,6 +392,11 @@ echo "== test PocketForge QAPI build-configuration gating =="
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
+
+if [ "${QEMU_TSP_VERIFY_ONLY:-0}" = "1" ]; then
+  echo "== verified retained patched source; skipping build =="
+  exit 0
+fi
 
 mkdir -p "$OUT"
 
@@ -412,7 +433,8 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-axp717-test \
   tests/qtest/pocketforge-a133-mmc-test \
   tests/qtest/pocketforge-a133-bootrom-test \
-  tests/qtest/pocketforge-a133-ccu-test
+  tests/qtest/pocketforge-a133-ccu-test \
+  tests/qtest/virtio-mmio-shm-test
 "$SYSTEM_BUILD_DIR/pyvenv/bin/meson" test -C "$SYSTEM_BUILD_DIR" \
   --print-errorlogs \
   qemu:qtest-aarch64/pocketforge-a100-rtc-test \
@@ -423,10 +445,14 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   qemu:qtest-aarch64/pocketforge-a133-axp717-test \
   qemu:qtest-aarch64/pocketforge-a133-mmc-test \
   qemu:qtest-aarch64/pocketforge-a133-bootrom-test \
-  qemu:qtest-aarch64/pocketforge-a133-ccu-test
+  qemu:qtest-aarch64/pocketforge-a133-ccu-test \
+  qemu:qtest-aarch64/virtio-mmio-shm-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 cp "$SYSTEM_BUILD_DIR/tests/qtest/pocketforge-a133-dbus-listener" \
   "$OUT/pocketforge-a133-dbus-listener"
 echo "== done: $OUT/qemu-system-aarch64 =="
 "$OUT/qemu-system-aarch64" --version | head -1
 "$OUT/qemu-system-aarch64" -M help | grep pocketforge-a133
+
+echo "== test retained patched source idempotence =="
+QEMU_TSP_VERIFY_ONLY=1 QEMU_TSP_SRC="$SRC" "$ROOT/build.sh"

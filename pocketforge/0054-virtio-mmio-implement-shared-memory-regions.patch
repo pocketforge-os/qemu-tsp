@@ -1,0 +1,766 @@
+From 7da740884256544fcabc372ead205cb85c10b454 Mon Sep 17 00:00:00 2001
+From: qlid <qlid@invalid>
+Date: Tue, 13 Oct 2026 19:51:20 -0400
+Subject: [PATCH 54/54] virtio-mmio: implement shared memory regions
+
+Implement the Virtio 1.2 shared-memory selector, length, and base registers for MMIO transports. Map static descriptors at a machine-provided base, migrate and reset the selector, and reject invalid or overlapping windows.
+
+Add qtests for register semantics, reset, migration, guest mappings, failure paths, GPU hostmem, and the unchanged PCI BAR4 contract.
+
+Assisted-by: LLM
+---
+ MAINTAINERS                          |   1 +
+ hw/virtio/Kconfig                    |   5 +
+ hw/virtio/meson.build                |   2 +
+ hw/virtio/virtio-mmio.c              | 164 ++++++++++++++-
+ hw/virtio/virtio-shmem-test-device.c | 105 +++++++++
+ include/hw/virtio/virtio-mmio.h      |   3 +
+ tests/qtest/meson.build              |   3 +
+ tests/qtest/virtio-mmio-shm-test.c   | 304 +++++++++++++++++++++++++++
+ 8 files changed, 578 insertions(+), 9 deletions(-)
+ create mode 100644 hw/virtio/virtio-shmem-test-device.c
+ create mode 100644 tests/qtest/virtio-mmio-shm-test.c
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 902db77218..244f420e4e 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -2488,6 +2488,7 @@ F: include/hw/virtio/
+ F: docs/devel/virtio*
+ F: docs/devel/migration/virtio.rst
+ F: tests/functional/x86_64/test_virtio_version.py
++F: tests/qtest/virtio-mmio-shm-test.c
+ 
+ virtio-balloon
+ M: Michael S. Tsirkin <mst@redhat.com>
+diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
+index 91cf833407..0d86186e8e 100644
+--- a/hw/virtio/Kconfig
++++ b/hw/virtio/Kconfig
+@@ -26,6 +26,11 @@ config VIRTIO_MMIO
+     bool
+     select VIRTIO
+ 
++config VIRTIO_SHMEM_TEST
++    bool
++    default y if TEST_DEVICES
++    depends on VIRTIO
++
+ config VIRTIO_CCW
+     bool
+     select VIRTIO
+diff --git a/hw/virtio/meson.build b/hw/virtio/meson.build
+index 0e02323516..6b32073898 100644
+--- a/hw/virtio/meson.build
++++ b/hw/virtio/meson.build
+@@ -4,6 +4,8 @@ system_virtio_ss.add(files('iothread-vq-mapping.c'))
+ system_virtio_ss.add(files('virtio-config-io.c'))
+ system_virtio_ss.add(when: 'CONFIG_VIRTIO_PCI', if_true: files('virtio-pci.c'))
+ system_virtio_ss.add(when: 'CONFIG_VIRTIO_MMIO', if_true: files('virtio-mmio.c'))
++system_virtio_ss.add(when: 'CONFIG_VIRTIO_SHMEM_TEST',
++                     if_true: files('virtio-shmem-test-device.c'))
+ system_virtio_ss.add(when: 'CONFIG_VIRTIO_CRYPTO', if_true: files('virtio-crypto.c'))
+ system_virtio_ss.add(when: 'CONFIG_VHOST_VSOCK_COMMON', if_true: files('vhost-vsock-common.c'))
+ system_virtio_ss.add(when: 'CONFIG_VIRTIO_IOMMU', if_true: files('virtio-iommu.c'))
+diff --git a/hw/virtio/virtio-mmio.c b/hw/virtio/virtio-mmio.c
+index 55ceaeef5f..c787b9b900 100644
+--- a/hw/virtio/virtio-mmio.c
++++ b/hw/virtio/virtio-mmio.c
+@@ -29,6 +29,7 @@
+ #include "qemu/host-utils.h"
+ #include "qemu/module.h"
+ #include "system/kvm.h"
++#include "system/address-spaces.h"
+ #include "system/replay.h"
+ #include "hw/virtio/virtio-mmio.h"
+ #include "qemu/error-report.h"
+@@ -43,6 +44,26 @@ static bool virtio_mmio_ioeventfd_enabled(DeviceState *d)
+     return (proxy->flags & VIRTIO_IOMMIO_FLAG_USE_IOEVENTFD) != 0;
+ }
+ 
++static bool virtio_mmio_shmem_info(VirtIOMMIOProxy *proxy,
++                                   VirtIODevice *vdev, uint8_t shmid,
++                                   hwaddr *base, uint64_t *len)
++{
++    VirtioSharedMemory *shmem;
++    hwaddr addr = proxy->shm_base;
++
++    QSIMPLEQ_FOREACH(shmem, &vdev->shmem_list, entry) {
++        uint64_t size = memory_region_size(&shmem->mr);
++
++        if (shmem->shmid == shmid) {
++            *base = addr;
++            *len = size;
++            return true;
++        }
++        addr += size;
++    }
++    return false;
++}
++
+ static int virtio_mmio_ioeventfd_assign(DeviceState *d,
+                                         EventNotifier *notifier,
+                                         int n, bool assign)
+@@ -74,6 +95,7 @@ static void virtio_mmio_soft_reset(VirtIOMMIOProxy *proxy)
+     int i;
+ 
+     virtio_bus_reset(&proxy->bus);
++    proxy->shm_sel = 0;
+ 
+     if (!proxy->legacy) {
+         for (i = 0; i < VIRTIO_QUEUE_MAX; i++) {
+@@ -205,14 +227,28 @@ static uint64_t virtio_mmio_read(void *opaque, hwaddr offset, unsigned size)
+             return 0;
+         }
+         return vdev->generation;
+-   case VIRTIO_MMIO_SHM_LEN_LOW:
+-   case VIRTIO_MMIO_SHM_LEN_HIGH:
+-        /*
+-         * VIRTIO_MMIO_SHM_SEL is unimplemented
+-         * according to the linux driver, if region length is -1
+-         * the shared memory doesn't exist
+-         */
+-        return -1;
++    case VIRTIO_MMIO_SHM_LEN_LOW:
++    case VIRTIO_MMIO_SHM_LEN_HIGH:
++    case VIRTIO_MMIO_SHM_BASE_LOW:
++    case VIRTIO_MMIO_SHM_BASE_HIGH: {
++        hwaddr base;
++        uint64_t len;
++
++        if (!virtio_mmio_shmem_info(proxy, vdev, proxy->shm_sel,
++                                    &base, &len)) {
++            return -1;
++        }
++        switch (offset) {
++        case VIRTIO_MMIO_SHM_LEN_LOW:
++            return len;
++        case VIRTIO_MMIO_SHM_LEN_HIGH:
++            return len >> 32;
++        case VIRTIO_MMIO_SHM_BASE_LOW:
++            return base;
++        default:
++            return base >> 32;
++        }
++    }
+     case VIRTIO_MMIO_DEVICE_FEATURES_SEL:
+     case VIRTIO_MMIO_DRIVER_FEATURES:
+     case VIRTIO_MMIO_DRIVER_FEATURES_SEL:
+@@ -306,6 +342,9 @@ static void virtio_mmio_write(void *opaque, hwaddr offset, uint64_t value,
+             proxy->host_features_sel = 0;
+         }
+         break;
++    case VIRTIO_MMIO_SHM_SEL:
++        proxy->shm_sel = value;
++        break;
+     case VIRTIO_MMIO_DRIVER_FEATURES:
+         if (proxy->legacy) {
+             if (proxy->guest_features_sel) {
+@@ -582,13 +621,14 @@ static const VMStateDescription vmstate_virtio_mmio_queue_state = {
+ 
+ static const VMStateDescription vmstate_virtio_mmio_state_sub = {
+     .name = "virtio_mmio/state",
+-    .version_id = 1,
++    .version_id = 2,
+     .minimum_version_id = 1,
+     .fields = (const VMStateField[]) {
+         VMSTATE_UINT32_ARRAY(guest_features, VirtIOMMIOProxy, 2),
+         VMSTATE_STRUCT_ARRAY(vqs, VirtIOMMIOProxy, VIRTIO_QUEUE_MAX, 0,
+                              vmstate_virtio_mmio_queue_state,
+                              VirtIOMMIOQueue),
++        VMSTATE_UINT32_V(shm_sel, VirtIOMMIOProxy, 2),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+@@ -648,6 +688,7 @@ static void virtio_mmio_reset(DeviceState *d)
+     proxy->host_features_sel = 0;
+     proxy->guest_features_sel = 0;
+     proxy->guest_page_shift = 0;
++    proxy->shm_sel = 0;
+ 
+     if (!proxy->legacy) {
+         proxy->guest_features[0] = proxy->guest_features[1] = 0;
+@@ -737,6 +778,7 @@ static const Property virtio_mmio_properties[] = {
+                     VIRTIO_IOMMIO_FLAG_USE_IOEVENTFD_BIT, true),
+     DEFINE_PROP_UINT16(VIRTIO_QUEUE_SIZE_OVERRIDE, VirtIOMMIOProxy,
+                        override_queue_size, 0),
++    DEFINE_PROP_UINT64("shm-base", VirtIOMMIOProxy, shm_base, UINT64_MAX),
+ };
+ 
+ static void virtio_mmio_realizefn(DeviceState *d, Error **errp)
+@@ -822,6 +864,108 @@ static void virtio_mmio_vmstate_change(DeviceState *d, bool running)
+     }
+ }
+ 
++static bool virtio_mmio_shmem_range_free(hwaddr base, uint64_t len,
++                                         Error **errp)
++{
++    MemoryRegion *sysmem = get_system_memory();
++
++    while (len) {
++        MemoryRegionSection section = memory_region_find(sysmem, base, len);
++        uint64_t size;
++
++        if (!section.mr) {
++            return true;
++        }
++        size = int128_get64(section.size);
++        if (memory_region_is_mapped(section.mr)) {
++            error_setg(errp, "virtio-mmio shared memory overlaps %s at "
++                       "0x%" HWADDR_PRIx,
++                       memory_region_name(section.mr), base);
++            memory_region_unref(section.mr);
++            return false;
++        }
++        memory_region_unref(section.mr);
++        if (!size) {
++            error_setg(errp, "cannot inspect virtio-mmio shared memory "
++                       "range at 0x%" HWADDR_PRIx, base);
++            return false;
++        }
++        base += size;
++        len -= size;
++    }
++    return true;
++}
++
++static void virtio_mmio_device_plugged(DeviceState *d, Error **errp)
++{
++    VirtIOMMIOProxy *proxy = VIRTIO_MMIO(d);
++    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
++    VirtioSharedMemory *shmem;
++    hwaddr addr = proxy->shm_base;
++    uint64_t total = 0;
++
++    if (QSIMPLEQ_EMPTY(&vdev->shmem_list)) {
++        return;
++    }
++    if (proxy->legacy) {
++        error_setg(errp, "virtio-mmio shared memory requires a modern device");
++        return;
++    }
++    if (addr == UINT64_MAX) {
++        error_setg(errp, "virtio-mmio shared memory requires shm-base");
++        return;
++    }
++    if (addr % qemu_real_host_page_size()) {
++        error_setg(errp, "virtio-mmio shm-base 0x%" HWADDR_PRIx
++                   " is not host-page aligned", addr);
++        return;
++    }
++
++    QSIMPLEQ_FOREACH(shmem, &vdev->shmem_list, entry) {
++        uint64_t size = memory_region_size(&shmem->mr);
++
++        if (size % qemu_real_host_page_size()) {
++            error_setg(errp, "virtio-mmio shared memory region %u size "
++                       "0x%" PRIx64 " is not host-page aligned",
++                       shmem->shmid, size);
++            return;
++        }
++        if (UINT64_MAX - total < size || UINT64_MAX - addr < total + size) {
++            error_setg(errp, "virtio-mmio shared memory range overflows");
++            return;
++        }
++        total += size;
++    }
++    if (!virtio_mmio_shmem_range_free(addr, total, errp)) {
++        return;
++    }
++
++    memory_region_transaction_begin();
++    QSIMPLEQ_FOREACH(shmem, &vdev->shmem_list, entry) {
++        memory_region_add_subregion(get_system_memory(), addr, &shmem->mr);
++        addr += memory_region_size(&shmem->mr);
++    }
++    memory_region_transaction_commit();
++    proxy->shm_mapped = true;
++}
++
++static void virtio_mmio_device_unplugged(DeviceState *d)
++{
++    VirtIOMMIOProxy *proxy = VIRTIO_MMIO(d);
++    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
++    VirtioSharedMemory *shmem;
++
++    if (!proxy->shm_mapped || !vdev) {
++        return;
++    }
++    memory_region_transaction_begin();
++    QSIMPLEQ_FOREACH(shmem, &vdev->shmem_list, entry) {
++        memory_region_del_subregion(get_system_memory(), &shmem->mr);
++    }
++    memory_region_transaction_commit();
++    proxy->shm_mapped = false;
++}
++
+ static void virtio_mmio_bus_class_init(ObjectClass *klass, const void *data)
+ {
+     BusClass *bus_class = BUS_CLASS(klass);
+@@ -837,6 +981,8 @@ static void virtio_mmio_bus_class_init(ObjectClass *klass, const void *data)
+     k->ioeventfd_enabled = virtio_mmio_ioeventfd_enabled;
+     k->ioeventfd_assign = virtio_mmio_ioeventfd_assign;
+     k->pre_plugged = virtio_mmio_pre_plugged;
++    k->device_plugged = virtio_mmio_device_plugged;
++    k->device_unplugged = virtio_mmio_device_unplugged;
+     k->vmstate_change = virtio_mmio_vmstate_change;
+     k->has_variable_vring_alignment = true;
+     bus_class->max_dev = 1;
+diff --git a/hw/virtio/virtio-shmem-test-device.c b/hw/virtio/virtio-shmem-test-device.c
+new file mode 100644
+index 0000000000..8000923c99
+--- /dev/null
++++ b/hw/virtio/virtio-shmem-test-device.c
+@@ -0,0 +1,105 @@
++/*
++ * Test device for transport-neutral virtio shared-memory regions
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/virtio/virtio.h"
++#include "standard-headers/linux/virtio_ids.h"
++
++#define TYPE_VIRTIO_SHMEM_TEST "virtio-shmem-test-device"
++OBJECT_DECLARE_SIMPLE_TYPE(VirtioShmemTest, VIRTIO_SHMEM_TEST)
++
++struct VirtioShmemTest {
++    VirtIODevice parent_obj;
++    uint64_t region_size;
++    uint8_t region_id;
++    bool duplicate_id;
++    MemoryRegion ram;
++    MemoryRegion *shmem;
++};
++
++static uint64_t virtio_shmem_test_get_features(VirtIODevice *vdev,
++                                                uint64_t features,
++                                                Error **errp)
++{
++    return features;
++}
++
++static void virtio_shmem_test_realize(DeviceState *dev, Error **errp)
++{
++    ERRP_GUARD();
++    VirtioShmemTest *s = VIRTIO_SHMEM_TEST(dev);
++    VirtIODevice *vdev = VIRTIO_DEVICE(dev);
++    VirtioSharedMemory *shmem;
++
++    /* Reuse a defined ID: the fixture only exercises transport state. */
++    virtio_init(vdev, VIRTIO_ID_RNG, 0);
++    shmem = virtio_new_shmem_region(vdev, s->region_id,
++                                    s->region_size, errp);
++    if (!shmem) {
++        virtio_cleanup(vdev);
++        return;
++    }
++    if (s->duplicate_id &&
++        !virtio_new_shmem_region(vdev, s->region_id,
++                                 s->region_size, errp)) {
++        virtio_cleanup(vdev);
++        return;
++    }
++
++    memory_region_init_ram(&s->ram, OBJECT(s), "virtio-shmem-test-ram",
++                           s->region_size, errp);
++    if (*errp) {
++        virtio_cleanup(vdev);
++        return;
++    }
++    memory_region_add_subregion(&shmem->mr, 0, &s->ram);
++    s->shmem = &shmem->mr;
++}
++
++static void virtio_shmem_test_unrealize(DeviceState *dev)
++{
++    VirtioShmemTest *s = VIRTIO_SHMEM_TEST(dev);
++
++    if (s->shmem) {
++        memory_region_del_subregion(s->shmem, &s->ram);
++        s->shmem = NULL;
++    }
++    virtio_cleanup(VIRTIO_DEVICE(dev));
++}
++
++static const Property virtio_shmem_test_properties[] = {
++    DEFINE_PROP_UINT64("region-size", VirtioShmemTest, region_size, 4096),
++    DEFINE_PROP_UINT8("region-id", VirtioShmemTest, region_id, 1),
++    DEFINE_PROP_BOOL("duplicate-id", VirtioShmemTest, duplicate_id, false),
++};
++
++static void virtio_shmem_test_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
++
++    device_class_set_props(dc, virtio_shmem_test_properties);
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++    vdc->realize = virtio_shmem_test_realize;
++    vdc->unrealize = virtio_shmem_test_unrealize;
++    vdc->get_features = virtio_shmem_test_get_features;
++}
++
++static const TypeInfo virtio_shmem_test_info = {
++    .name = TYPE_VIRTIO_SHMEM_TEST,
++    .parent = TYPE_VIRTIO_DEVICE,
++    .instance_size = sizeof(VirtioShmemTest),
++    .class_init = virtio_shmem_test_class_init,
++};
++
++static void virtio_shmem_test_register_types(void)
++{
++    type_register_static(&virtio_shmem_test_info);
++}
++
++type_init(virtio_shmem_test_register_types)
+diff --git a/include/hw/virtio/virtio-mmio.h b/include/hw/virtio/virtio-mmio.h
+index 0a9069868c..1a2f108442 100644
+--- a/include/hw/virtio/virtio-mmio.h
++++ b/include/hw/virtio/virtio-mmio.h
+@@ -64,12 +64,15 @@ struct VirtIOMMIOProxy {
+     uint32_t host_features_sel;
+     uint32_t guest_features_sel;
+     uint32_t guest_page_shift;
++    uint32_t shm_sel;
+     /* virtio-bus */
+     VirtioBusState bus;
+     /* Fields only used for non-legacy (v2) devices */
+     uint32_t guest_features[2];
+     VirtIOMMIOQueue vqs[VIRTIO_QUEUE_MAX];
+     uint16_t override_queue_size;
++    uint64_t shm_base;
++    bool shm_mapped;
+ };
+ 
+ #endif
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index b1078c12c4..b161c2f082 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -281,6 +281,9 @@ qtests_aarch64 = \
+      'pocketforge-a133-bootrom-test', 'pocketforge-a133-ccu-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?
+     ['pocketforge-a133-display-test'] : []) + \
++  (config_all_devices.has_key('CONFIG_VIRTIO_GPU') and
++   config_all_devices.has_key('CONFIG_VIRTIO_SHMEM_TEST') ?
++    ['virtio-mmio-shm-test'] : []) + \
+   qtests_cxl +                                                                                  \
+   ['arm-cpu-features',
+    'numa-test',
+diff --git a/tests/qtest/virtio-mmio-shm-test.c b/tests/qtest/virtio-mmio-shm-test.c
+new file mode 100644
+index 0000000000..42c0f18faf
+--- /dev/null
++++ b/tests/qtest/virtio-mmio-shm-test.c
+@@ -0,0 +1,304 @@
++/*
++ * virtio-mmio shared-memory register tests
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include <glib/gstdio.h>
++#include "libqtest-single.h"
++#include "hw/pci/pci_regs.h"
++#include "qobject/qdict.h"
++#include "standard-headers/linux/virtio_ids.h"
++#include "standard-headers/linux/virtio_mmio.h"
++
++#define VIRT_MMIO_BASE 0x0a003e00
++#define GPU_HOSTMEM_SIZE (16 * 1024 * 1024)
++#define GPU_HOSTMEM_BASE 0x0e000000
++#define VIRT_PCIE_ECAM 0x4010000000ULL
++#define VIRT_GPU_PCI_CONFIG (VIRT_PCIE_ECAM + (1ULL << 15))
++
++#define GPU_ARGS "-M virt -cpu max -nodefaults -display none " \
++                 "-global virtio-mmio.force-legacy=false " \
++                 "-global virtio-mmio.shm-base=0x0e000000 " \
++                 "-device virtio-gpu-device,hostmem=16M"
++
++static void test_gpu_hostmem_registers(void)
++{
++    QTestState *qts;
++    g_autofree char *mtree = NULL;
++
++    qts = qtest_init(GPU_ARGS);
++
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_DEVICE_ID), ==,
++                    VIRTIO_ID_GPU);
++
++    qtest_writel(qts, VIRT_MMIO_BASE + VIRTIO_MMIO_SHM_SEL, 1);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_LOW), ==,
++                    GPU_HOSTMEM_SIZE);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_HIGH), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_BASE_LOW), ==,
++                    GPU_HOSTMEM_BASE);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_BASE_HIGH), ==, 0);
++    mtree = qtest_hmp(qts, "info mtree");
++    g_assert_nonnull(strstr(mtree,
++        "000000000e000000-000000000effffff (prio 0, i/o): "
++        "virtio-shmem-1"));
++
++    qtest_writel(qts, VIRT_MMIO_BASE + VIRTIO_MMIO_SHM_SEL, 2);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_LOW), ==,
++                    UINT32_MAX);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_HIGH), ==,
++                    UINT32_MAX);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_BASE_LOW), ==,
++                    UINT32_MAX);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_BASE_HIGH), ==,
++                    UINT32_MAX);
++
++    qtest_writel(qts, VIRT_MMIO_BASE + VIRTIO_MMIO_STATUS, 0);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_LOW), ==,
++                    UINT32_MAX);
++    qtest_writel(qts, VIRT_MMIO_BASE + VIRTIO_MMIO_SHM_SEL, 1);
++    g_assert_cmphex(qtest_readl(qts, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_LOW), ==,
++                    GPU_HOSTMEM_SIZE);
++
++    qtest_quit(qts);
++}
++
++static void test_shm_selector_migration(void)
++{
++    g_autoptr(GError) error = NULL;
++    g_autofree char *tmpdir = NULL;
++    g_autofree char *sock = NULL;
++    g_autofree char *uri = NULL;
++    QTestState *src;
++    QTestState *dst;
++    unsigned int i;
++
++    tmpdir = g_dir_make_tmp("virtio-mmio-shm.XXXXXX", &error);
++    g_assert_no_error(error);
++    sock = g_build_filename(tmpdir, "migration.sock", NULL);
++    uri = g_strdup_printf("unix:%s", sock);
++
++    src = qtest_init(GPU_ARGS);
++    dst = qtest_init(GPU_ARGS " -incoming defer");
++
++    g_assert_cmphex(qtest_readl(dst, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_LOW), ==,
++                    UINT32_MAX);
++    qtest_writel(src, VIRT_MMIO_BASE + VIRTIO_MMIO_SHM_SEL, 1);
++
++    qtest_qmp_assert_success(dst,
++        "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
++        uri);
++    qtest_qmp_assert_success(src,
++        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
++
++    for (i = 0; i < 500; i++) {
++        QDict *ret = qtest_qmp_assert_success_ref(
++            src, "{ 'execute': 'query-migrate' }");
++        const char *status = qdict_get_str(ret, "status");
++        bool completed = !strcmp(status, "completed");
++
++        g_assert_cmpstr(status, !=, "failed");
++        qobject_unref(ret);
++        if (completed) {
++            break;
++        }
++        g_usleep(10000);
++    }
++    g_assert_cmpuint(i, <, 500);
++    g_assert_cmphex(qtest_readl(dst, VIRT_MMIO_BASE +
++                                VIRTIO_MMIO_SHM_LEN_LOW), ==,
++                    GPU_HOSTMEM_SIZE);
++
++    qtest_quit(dst);
++    qtest_quit(src);
++    if (g_file_test(sock, G_FILE_TEST_EXISTS)) {
++        g_assert_cmpint(g_remove(sock), ==, 0);
++    }
++    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
++}
++
++static void test_missing_base_rejected(void)
++{
++    if (g_test_subprocess()) {
++        QTestState *qts = qtest_init(
++            "-M virt -cpu max -nodefaults -display none "
++            "-global virtio-mmio.force-legacy=false "
++            "-device virtio-shmem-test-device");
++        qtest_quit(qts);
++        return;
++    }
++
++    g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*requires shm-base*");
++}
++
++static void test_unaligned_region_rejected(void)
++{
++    if (g_test_subprocess()) {
++        QTestState *qts = qtest_init(
++            "-M virt -cpu max -nodefaults -display none "
++            "-global virtio-mmio.force-legacy=false "
++            "-global virtio-mmio.shm-base=0x0e000000 "
++            "-device virtio-shmem-test-device,region-size=1");
++        qtest_quit(qts);
++        return;
++    }
++
++    g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*is not host-page aligned*");
++}
++
++static void test_overlap_rejected(void)
++{
++    if (g_test_subprocess()) {
++        QTestState *qts = qtest_init(
++            "-M virt -cpu max -nodefaults -display none "
++            "-global virtio-mmio.force-legacy=false "
++            "-global virtio-mmio.shm-base=0x10000000 "
++            "-device virtio-shmem-test-device");
++        qtest_quit(qts);
++        return;
++    }
++
++    g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*overlaps gpex_mmio_window*");
++}
++
++static void test_guest_mapping(void)
++{
++    QTestState *qts = qtest_init(
++        "-M virt -cpu max -nodefaults -display none "
++        "-global virtio-mmio.force-legacy=false "
++        "-global virtio-mmio.shm-base=0x0e000000 "
++        "-device virtio-shmem-test-device");
++
++    qtest_writel(qts, GPU_HOSTMEM_BASE, 0x12345678);
++    g_assert_cmphex(qtest_readl(qts, GPU_HOSTMEM_BASE), ==, 0x12345678);
++    qtest_quit(qts);
++}
++
++static void test_zero_region_rejected(void)
++{
++    if (g_test_subprocess()) {
++        QTestState *qts = qtest_init(
++            "-M virt -cpu max -nodefaults -display none "
++            "-global virtio-mmio.force-legacy=false "
++            "-global virtio-mmio.shm-base=0x0e000000 "
++            "-device virtio-shmem-test-device,region-size=0");
++        qtest_quit(qts);
++        return;
++    }
++
++    g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*has zero size*");
++}
++
++static void test_duplicate_region_rejected(void)
++{
++    if (g_test_subprocess()) {
++        QTestState *qts = qtest_init(
++            "-M virt -cpu max -nodefaults -display none "
++            "-global virtio-mmio.force-legacy=false "
++            "-global virtio-mmio.shm-base=0x0e000000 "
++            "-device virtio-shmem-test-device,duplicate-id=on");
++        qtest_quit(qts);
++        return;
++    }
++
++    g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*duplicate shared memory region ID 1*");
++}
++
++static void test_overflow_rejected(void)
++{
++    if (g_test_subprocess()) {
++        QTestState *qts = qtest_init(
++            "-M virt -cpu max -nodefaults -display none "
++            "-global virtio-mmio.force-legacy=false "
++            "-global virtio-mmio.shm-base=0xfffffffffffff000 "
++            "-device virtio-shmem-test-device,region-size=8192");
++        qtest_quit(qts);
++        return;
++    }
++
++    g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*shared memory range overflows*");
++}
++
++static void test_gpu_pci_bar_unchanged(void)
++{
++    QTestState *qts;
++    uint32_t old_low;
++    uint32_t old_high;
++    uint32_t mask_low;
++    uint32_t mask_high;
++    uint64_t mask;
++    uint64_t size;
++
++    qts = qtest_init("-M virt -cpu max -nodefaults -display none "
++                     "-device virtio-gpu-pci,hostmem=16M");
++    old_low = qtest_readl(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_4);
++    old_high = qtest_readl(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_5);
++    qtest_writel(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_4, UINT32_MAX);
++    qtest_writel(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_5, UINT32_MAX);
++    mask_low = qtest_readl(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_4);
++    mask_high = qtest_readl(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_5);
++    qtest_writel(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_4, old_low);
++    qtest_writel(qts, VIRT_GPU_PCI_CONFIG + PCI_BASE_ADDRESS_5, old_high);
++
++    g_assert_cmphex(mask_low & PCI_BASE_ADDRESS_MEM_TYPE_MASK, ==,
++                    PCI_BASE_ADDRESS_MEM_TYPE_64);
++    g_assert_cmphex(mask_low & PCI_BASE_ADDRESS_MEM_PREFETCH, ==,
++                    PCI_BASE_ADDRESS_MEM_PREFETCH);
++    mask = ((uint64_t)mask_high << 32) |
++           (mask_low & PCI_BASE_ADDRESS_MEM_MASK);
++    size = ~mask + 1;
++    g_assert_cmphex(size, ==, GPU_HOSTMEM_SIZE);
++    qtest_quit(qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/virtio-mmio/shm/gpu-hostmem-registers",
++                   test_gpu_hostmem_registers);
++    qtest_add_func("/virtio-mmio/shm/selector-migration",
++                   test_shm_selector_migration);
++    qtest_add_func("/virtio-mmio/shm/reject-missing-base",
++                   test_missing_base_rejected);
++    qtest_add_func("/virtio-mmio/shm/reject-unaligned-region",
++                   test_unaligned_region_rejected);
++    qtest_add_func("/virtio-mmio/shm/reject-overlap",
++                   test_overlap_rejected);
++    qtest_add_func("/virtio-mmio/shm/guest-mapping", test_guest_mapping);
++    qtest_add_func("/virtio-mmio/shm/reject-zero-region",
++                   test_zero_region_rejected);
++    qtest_add_func("/virtio-mmio/shm/reject-duplicate-region",
++                   test_duplicate_region_rejected);
++    qtest_add_func("/virtio-mmio/shm/reject-overflow",
++                   test_overflow_rejected);
++    qtest_add_func("/virtio-mmio/shm/gpu-pci-bar-unchanged",
++                   test_gpu_pci_bar_unchanged);
++
++    return g_test_run();
++}
+-- 
+2.43.0
+
