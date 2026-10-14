@@ -495,7 +495,7 @@ index 0ef46aa..fbea78e 100644
          VMSTATE_END_OF_LIST()
      }
  };
-@@ -286,10 +356,18 @@ static void axp2xx_class_init(ObjectClass *oc, const const void *data)
+@@ -286,10 +356,18 @@ static void axp2xx_class_init(ObjectClass *oc, const void *data)
      isc->send = axp2xx_tx;
  }
  
