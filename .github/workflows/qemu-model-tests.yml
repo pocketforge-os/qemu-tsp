@@ -43,4 +43,4 @@ jobs:
             --volume "$PWD:/work" \
             --workdir /work \
             "qemu-tsp-test:${GITHUB_SHA}" \
-            bash -lc 'QEMU_TSP_SKIP_LINUX_USER=1 ./build.sh'
+            bash -lc 'tests/test_uinput_domain_c.sh && python3 tests/uinput_inventory.py --self-test && QEMU_TSP_SKIP_LINUX_USER=1 ./build.sh'
