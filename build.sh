@@ -401,6 +401,11 @@ if grep -q '#ifdef CONFIG_OPENGL' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0057-hw-arm-gate-A133-GL-accelerator-on-virgl.patch"
 fi
 
+echo "== apply PocketForge patch: expose virglrenderer build availability =="
+if ! grep -Fq "config_host_data.set('CONFIG_VIRGL', virgl.found())" meson.build; then
+  git apply "$ROOT/pocketforge/0060-build-expose-virglrenderer-availability-to-machine-c.patch"
+fi
+
 echo "== test A133 render build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-render-config-test.py" .
@@ -413,11 +418,6 @@ fi
 echo "== apply PocketForge patch: Venus-only render-server mode =="
 if ! grep -Fq 'DEFINE_PROP_BOOL("virgl"' hw/display/virtio-gpu-gl.c; then
   git apply "$ROOT/pocketforge/0059-virtio-gpu-add-Venus-only-render-server-mode.patch"
-fi
-
-echo "== apply PocketForge patch: expose virglrenderer build availability =="
-if ! grep -Fq "config_host_data.set('CONFIG_VIRGL', virgl.found())" meson.build; then
-  git apply "$ROOT/pocketforge/0060-build-expose-virglrenderer-availability-to-machine-c.patch"
 fi
 
 echo "== apply PocketForge patch: Venus-only virtio-gpu queue contract =="
