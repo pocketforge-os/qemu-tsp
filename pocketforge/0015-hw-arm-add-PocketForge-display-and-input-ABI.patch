@@ -969,7 +969,7 @@ index 4dc66d0..f742318 100644
 +##
 +{ 'struct': 'PocketForgeAbiVersion',
 +  'data': { 'major': 'uint16', 'minor': 'uint16' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeInputCode:
@@ -981,7 +981,7 @@ index 4dc66d0..f742318 100644
 +##
 +{ 'struct': 'PocketForgeInputCode',
 +  'data': { 'code': 'uint16', 'name': 'str' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeInputAbsInfo:
@@ -995,7 +995,7 @@ index 4dc66d0..f742318 100644
 +##
 +{ 'struct': 'PocketForgeInputAbsInfo',
 +  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeInputCaps:
@@ -1009,7 +1009,7 @@ index 4dc66d0..f742318 100644
 +{ 'struct': 'PocketForgeInputCaps',
 +  'data': { 'type': 'uint16', '*codes': ['PocketForgeInputCode'],
 +            '*abs': ['PocketForgeInputAbsInfo'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeInputDeviceInfo:
@@ -1029,7 +1029,7 @@ index 4dc66d0..f742318 100644
 +  'data': { 'id': 'str', 'name': 'str', 'bustype': 'uint16',
 +            'vendor': 'uint16', 'product': 'uint16', 'version': 'uint16',
 +            'ready': 'bool', 'caps': ['PocketForgeInputCaps'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeInputInfo:
@@ -1044,7 +1044,7 @@ index 4dc66d0..f742318 100644
 +  'data': { 'abi_version': 'PocketForgeAbiVersion',
 +            'max_batch_events': 'uint16',
 +            'devices': ['PocketForgeInputDeviceInfo'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeInputEvent:
@@ -1057,7 +1057,7 @@ index 4dc66d0..f742318 100644
 +##
 +{ 'struct': 'PocketForgeInputEvent',
 +  'data': { 'type': 'int', 'code': 'int', 'value': 'int' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @query-pocketforge-input:
@@ -1068,7 +1068,7 @@ index 4dc66d0..f742318 100644
 +##
 +{ 'command': 'query-pocketforge-input',
 +  'returns': 'PocketForgeInputInfo',
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @pocketforge-input-send:
@@ -1080,7 +1080,7 @@ index 4dc66d0..f742318 100644
 +##
 +{ 'command': 'pocketforge-input-send',
 +  'data': { 'device': 'str', 'events': ['PocketForgeInputEvent'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeDisplayScanout:
@@ -1095,7 +1095,7 @@ index 4dc66d0..f742318 100644
 +{ 'struct': 'PocketForgeDisplayScanout',
 +  'data': { 'width': 'uint32', 'height': 'uint32', 'stride': 'uint32',
 +            'fourcc': 'str' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @PocketForgeDisplayInfo:
@@ -1118,7 +1118,7 @@ index 4dc66d0..f742318 100644
 +            'plane_rotation': 'uint16', 'presentation_rotation': 'uint16',
 +            'preferred_fourcc': 'str', 'supported_fourcc': ['str'],
 +            '*active_scanout': 'PocketForgeDisplayScanout' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 +
 +##
 +# @query-pocketforge-display:
@@ -1129,7 +1129,7 @@ index 4dc66d0..f742318 100644
 +##
 +{ 'command': 'query-pocketforge-display',
 +  'returns': 'PocketForgeDisplayInfo',
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'if': 'CONFIG_TCG' }
 diff --git a/qapi/pragma.json b/qapi/pragma.json
 index 24aebbe..5f866ac 100644
 --- a/qapi/pragma.json
