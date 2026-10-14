@@ -1,45 +1,40 @@
-From 0d757274a882001680a1a9d6ff509616979f647f Mon Sep 17 00:00:00 2001
+From a47a8b67751642c51cceab46a70df4e707d1b505 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 23:13:12 -0400
-Subject: [PATCH 15/15] hw/arm: add PocketForge display and input ABI
+Subject: [PATCH 15/50] hw/arm: add PocketForge display and input ABI
+
+Rebase resolutions:
+- QAPI: move the target schema additions from removed misc-target.json into v11 misc-arm.json and use the generated misc-arm headers.
+- QAPI dispatch: keep the commands unconditional because common generated sources poison device configuration, and provide target-specific DeviceNotFound fallbacks when the A133 model is absent.
+- ARM Meson: restore an arm_ss source set for the dispatcher so it receives the per-target CONFIG_DEVICES header.
+- Qobject: use the v11 qobject/ QDict and QList header locations in qtests.
+- Qtest Meson: wire the display test and generated D-Bus sources through the v11 test maps.
 
 Assisted-by: LLM
----
- hw/arm/meson.build                          |   1 +
- hw/arm/pocketforge_a133.c                   | 277 ++++++++++++
- hw/arm/pocketforge_a133_qmp.c               |  54 +++
- hw/input/pocketforge_a133_input.c           | 245 +++++++++--
- hw/input/virtio-input.c                     |  57 +++
- include/hw/arm/pocketforge_a133.h           |  19 +
- include/hw/input/pocketforge_a133_input.h   |  29 ++
- include/hw/virtio/virtio-input.h            |   3 +
- qapi/misc-target.json                       | 172 ++++++++
- qapi/pragma.json                            |   2 +
- tests/qtest/meson.build                     |   3 +
- tests/qtest/pocketforge-a133-display-test.c | 443 ++++++++++++++++++++
- tests/qtest/pocketforge-a133-input-test.c   | 340 ++++++++++++++-
- 13 files changed, 1613 insertions(+), 32 deletions(-)
- create mode 100644 hw/arm/pocketforge_a133_qmp.c
- create mode 100644 include/hw/arm/pocketforge_a133.h
- create mode 100644 tests/qtest/pocketforge-a133-display-test.c
 
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 7a6ce2b..2e2b6e7 100644
+index 2a90948db3..2150057e00 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
-@@ -1,5 +1,6 @@
- arm_ss = ss.source_set()
- arm_ss.add(files('boot.c'), fdt)
+@@ -1,3 +1,6 @@
++arm_ss = ss.source_set()
 +arm_ss.add(files('pocketforge_a133_qmp.c'))
- arm_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
- arm_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
- arm_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))
++
+ arm_common_ss = ss.source_set()
+ arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
+ arm_common_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
+@@ -113,4 +116,5 @@ arm_common_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
+ 
+ arm_common_ss.add(files('boot.c'))
+ 
++hw_arch += {'arm': arm_ss}
+ hw_common_arch += {'arm': arm_common_ss}
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index d2f67a3..115255c 100644
+index 24732bb343..ad9c04dcce 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -86,12 +86,17 @@
+@@ -86,13 +86,18 @@
   */
  
  #include "qemu/osdep.h"
@@ -48,25 +43,26 @@ index d2f67a3..115255c 100644
  #include "qemu/error-report.h"
 +#include "qemu/option.h"
  #include "qapi/error.h"
-+#include "qapi/qapi-commands-misc-target.h"
-+#include "qapi/qapi-types-misc-target.h"
++#include "qapi/qapi-commands-misc-arm.h"
++#include "qapi/qapi-types-misc-arm.h"
  #include "cpu.h"
  #include "hw/arm/boot.h"
+ #include "hw/arm/machines-qom.h"
  #include "hw/arm/bsa.h"
 +#include "hw/arm/pocketforge_a133.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
  #include "hw/i2c/allwinner-i2c.h"
-@@ -106,6 +111,7 @@
+@@ -108,6 +113,7 @@
  #include "hw/sd/sd.h"
- #include "hw/sysbus.h"
+ #include "hw/core/sysbus.h"
  #include "hw/virtio/virtio-mmio.h"
 +#include "hw/virtio/virtio-gpu.h"
- #include "exec/address-spaces.h"
- #include "sysemu/device_tree.h"
- #include "sysemu/blockdev.h"
-@@ -113,6 +119,9 @@
- #include "sysemu/sysemu.h"
+ #include "system/address-spaces.h"
+ #include "system/system.h"
+ #include "system/device_tree.h"
+@@ -115,6 +121,9 @@
+ #include "hw/arm/fdt.h"
  #include "qemu/module.h"
  #include "chardev/char.h"
 +#include "ui/qemu-pixman.h"
@@ -75,7 +71,7 @@ index d2f67a3..115255c 100644
  
  #define TYPE_POCKETFORGE_A133_MACHINE MACHINE_TYPE_NAME("pocketforge-a133")
  OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133MachineState,
-@@ -122,8 +131,29 @@ struct PocketForgeA133MachineState {
+@@ -124,8 +133,29 @@ struct PocketForgeA133MachineState {
      MachineState parent_obj;
      I2CBus *r_i2c0_bus;
      bool input;
@@ -105,7 +101,7 @@ index d2f67a3..115255c 100644
  /*
   * Addresses/IRQ taken verbatim from the real device tree
   * (arch/arm64/boot/dts/allwinner/sun50i-a100.dtsi, kernel-sunxi-6.x
-@@ -635,12 +665,32 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+@@ -637,12 +667,32 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
          sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
          sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, pic[irq]);
  
@@ -138,7 +134,7 @@ index d2f67a3..115255c 100644
              object_unref(OBJECT(input));
          }
      }
-@@ -687,6 +737,14 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -689,6 +739,14 @@ static void pocketforge_a133_init(MachineState *machine)
      int n;
      unsigned int i;
  
@@ -153,7 +149,17 @@ index d2f67a3..115255c 100644
      for (n = 0; n < PF_A133_NUM_CPUS; n++) {
          Object *cpuobj = object_new(machine->cpu_type);
  
-@@ -774,16 +832,234 @@ static void pocketforge_a133_set_input(Object *obj, bool value, Error **errp)
+@@ -761,7 +819,8 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+     mc->no_parallel = true;
+ }
+ 
+-static void pocketforge_a133_machine_class_init(ObjectClass *oc, void *data)
++static void pocketforge_a133_machine_class_init(ObjectClass *oc,
++                                                const void *data)
+ {
+     pocketforge_a133_machine_init(MACHINE_CLASS(oc));
+ }
+@@ -776,16 +835,234 @@ static void pocketforge_a133_set_input(Object *obj, bool value, Error **errp)
      POCKETFORGE_A133_MACHINE(obj)->input = value;
  }
  
@@ -388,20 +394,20 @@ index d2f67a3..115255c 100644
  }
  
  static const TypeInfo pocketforge_a133_machine_info = {
-@@ -791,6 +1067,7 @@ static const TypeInfo pocketforge_a133_machine_info = {
+@@ -793,6 +1070,7 @@ static const TypeInfo pocketforge_a133_machine_info = {
      .parent = TYPE_MACHINE,
      .instance_size = sizeof(PocketForgeA133MachineState),
      .instance_init = pocketforge_a133_instance_init,
 +    .instance_finalize = pocketforge_a133_instance_finalize,
      .class_init = pocketforge_a133_machine_class_init,
+     .interfaces = aarch64_machine_interfaces,
  };
- 
 diff --git a/hw/arm/pocketforge_a133_qmp.c b/hw/arm/pocketforge_a133_qmp.c
 new file mode 100644
-index 0000000..d7e48b3
+index 0000000000..14b01dfae6
 --- /dev/null
 +++ b/hw/arm/pocketforge_a133_qmp.c
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,50 @@
 +/*
 + * PocketForge A133 QMP command dispatch
 + *
@@ -411,11 +417,9 @@ index 0000000..d7e48b3
 +#include "qemu/osdep.h"
 +#include CONFIG_DEVICES
 +
-+#if defined(TARGET_AARCH64) && defined(CONFIG_TCG)
-+
 +#include "qapi/error.h"
-+#include "qapi/qapi-commands-misc-target.h"
-+#include "qapi/qapi-types-misc-target.h"
++#include "qapi/qapi-commands-misc-arm.h"
++#include "qapi/qapi-types-misc-arm.h"
 +
 +#ifdef CONFIG_POCKETFORGE_A133
 +#include "hw/arm/pocketforge_a133.h"
@@ -454,10 +458,8 @@ index 0000000..d7e48b3
 +    return NULL;
 +#endif
 +}
-+
-+#endif
 diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
-index 41ff314..d259e4c 100644
+index 605a6a9d39..4bc2bfd056 100644
 --- a/hw/input/pocketforge_a133_input.c
 +++ b/hw/input/pocketforge_a133_input.c
 @@ -13,14 +13,41 @@
@@ -796,7 +798,7 @@ index 41ff314..d259e4c 100644
          VMSTATE_INT8(hat_y, PocketForgeA133Input),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/input/virtio-input.c b/hw/input/virtio-input.c
-index 7fef399..ab9f638 100644
+index de822c18d1..80e30cff69 100644
 --- a/hw/input/virtio-input.c
 +++ b/hw/input/virtio-input.c
 @@ -80,6 +80,63 @@ bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
@@ -865,7 +867,7 @@ index 7fef399..ab9f638 100644
      /* nothing */
 diff --git a/include/hw/arm/pocketforge_a133.h b/include/hw/arm/pocketforge_a133.h
 new file mode 100644
-index 0000000..eda48ef
+index 0000000000..710da5f06c
 --- /dev/null
 +++ b/include/hw/arm/pocketforge_a133.h
 @@ -0,0 +1,19 @@
@@ -879,7 +881,7 @@ index 0000000..eda48ef
 +#define HW_ARM_POCKETFORGE_A133_H
 +
 +#include "qapi/error.h"
-+#include "qapi/qapi-types-misc-target.h"
++#include "qapi/qapi-types-misc-arm.h"
 +
 +PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp);
 +void pocketforge_a133_input_send_qmp(const char *device,
@@ -889,7 +891,7 @@ index 0000000..eda48ef
 +
 +#endif
 diff --git a/include/hw/input/pocketforge_a133_input.h b/include/hw/input/pocketforge_a133_input.h
-index e1b7e29..9b50213 100644
+index e1b7e29f9d..9b50213244 100644
 --- a/include/hw/input/pocketforge_a133_input.h
 +++ b/include/hw/input/pocketforge_a133_input.h
 @@ -10,6 +10,35 @@
@@ -929,10 +931,10 @@ index e1b7e29..9b50213 100644
 +
  #endif
 diff --git a/include/hw/virtio/virtio-input.h b/include/hw/virtio/virtio-input.h
-index 9cf981d..2a2f921 100644
+index 19a05ee73c..571ec817b5 100644
 --- a/include/hw/virtio/virtio-input.h
 +++ b/include/hw/virtio/virtio-input.h
-@@ -103,6 +103,9 @@ struct VHostUserInput {
+@@ -102,6 +102,9 @@ struct VHostUserInput {
  };
  
  bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event);
@@ -942,13 +944,13 @@ index 9cf981d..2a2f921 100644
  void virtio_input_init_config(VirtIOInput *vinput,
                                virtio_input_config *config);
  virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
-diff --git a/qapi/misc-target.json b/qapi/misc-target.json
-index 8829145..0913fdd 100644
---- a/qapi/misc-target.json
-+++ b/qapi/misc-target.json
-@@ -295,6 +295,178 @@
- { 'command': 'query-gic-capabilities', 'returns': ['GICCapability'],
-   'if': 'TARGET_ARM' }
+diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
+index 4dc66d00e5..a2ea67bb46 100644
+--- a/qapi/misc-arm.json
++++ b/qapi/misc-arm.json
+@@ -46,6 +46,170 @@
+ ##
+ { 'command': 'query-gic-capabilities', 'returns': ['GICCapability'] }
  
 +##
 +# @PocketForgeAbiVersion:
@@ -959,8 +961,7 @@ index 8829145..0913fdd 100644
 +# Since: 8.2
 +##
 +{ 'struct': 'PocketForgeAbiVersion',
-+  'data': { 'major': 'uint16', 'minor': 'uint16' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'data': { 'major': 'uint16', 'minor': 'uint16' } }
 +
 +##
 +# @PocketForgeInputCode:
@@ -971,8 +972,7 @@ index 8829145..0913fdd 100644
 +# Since: 8.2
 +##
 +{ 'struct': 'PocketForgeInputCode',
-+  'data': { 'code': 'uint16', 'name': 'str' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'data': { 'code': 'uint16', 'name': 'str' } }
 +
 +##
 +# @PocketForgeInputAbsInfo:
@@ -981,12 +981,14 @@ index 8829145..0913fdd 100644
 +# @name: diagnostic symbolic name
 +# @min: inclusive minimum
 +# @max: inclusive maximum
++# @fuzz: input noise tolerance
++# @flat: input dead-zone size
 +#
 +# Since: 8.2
 +##
 +{ 'struct': 'PocketForgeInputAbsInfo',
-+  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int',
++            'fuzz': 'int', 'flat': 'int' } }
 +
 +##
 +# @PocketForgeInputCaps:
@@ -999,8 +1001,7 @@ index 8829145..0913fdd 100644
 +##
 +{ 'struct': 'PocketForgeInputCaps',
 +  'data': { 'type': 'uint16', '*codes': ['PocketForgeInputCode'],
-+            '*abs': ['PocketForgeInputAbsInfo'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++            '*abs': ['PocketForgeInputAbsInfo'] } }
 +
 +##
 +# @PocketForgeInputDeviceInfo:
@@ -1011,16 +1012,15 @@ index 8829145..0913fdd 100644
 +# @vendor: guest-visible vendor identifier
 +# @product: guest-visible product identifier
 +# @version: guest-visible version identifier
-+# @ready: whether the guest virtio driver is active
-+# @caps: advertised evdev capabilities
++# @ready: whether all physical transports can accept an input batch
++# @caps: exact event codes accepted by @pocketforge-input-send
 +#
 +# Since: 8.2
 +##
 +{ 'struct': 'PocketForgeInputDeviceInfo',
 +  'data': { 'id': 'str', 'name': 'str', 'bustype': 'uint16',
 +            'vendor': 'uint16', 'product': 'uint16', 'version': 'uint16',
-+            'ready': 'bool', 'caps': ['PocketForgeInputCaps'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++            'ready': 'bool', 'caps': ['PocketForgeInputCaps'] } }
 +
 +##
 +# @PocketForgeInputInfo:
@@ -1034,8 +1034,7 @@ index 8829145..0913fdd 100644
 +{ 'struct': 'PocketForgeInputInfo',
 +  'data': { 'abi_version': 'PocketForgeAbiVersion',
 +            'max_batch_events': 'uint16',
-+            'devices': ['PocketForgeInputDeviceInfo'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++            'devices': ['PocketForgeInputDeviceInfo'] } }
 +
 +##
 +# @PocketForgeInputEvent:
@@ -1047,8 +1046,7 @@ index 8829145..0913fdd 100644
 +# Since: 8.2
 +##
 +{ 'struct': 'PocketForgeInputEvent',
-+  'data': { 'type': 'int', 'code': 'int', 'value': 'int' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'data': { 'type': 'int', 'code': 'int', 'value': 'int' } }
 +
 +##
 +# @query-pocketforge-input:
@@ -1058,8 +1056,7 @@ index 8829145..0913fdd 100644
 +# Since: 8.2
 +##
 +{ 'command': 'query-pocketforge-input',
-+  'returns': 'PocketForgeInputInfo',
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'returns': 'PocketForgeInputInfo' }
 +
 +##
 +# @pocketforge-input-send:
@@ -1070,8 +1067,7 @@ index 8829145..0913fdd 100644
 +# Since: 8.2
 +##
 +{ 'command': 'pocketforge-input-send',
-+  'data': { 'device': 'str', 'events': ['PocketForgeInputEvent'] },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'data': { 'device': 'str', 'events': ['PocketForgeInputEvent'] } }
 +
 +##
 +# @PocketForgeDisplayScanout:
@@ -1085,8 +1081,7 @@ index 8829145..0913fdd 100644
 +##
 +{ 'struct': 'PocketForgeDisplayScanout',
 +  'data': { 'width': 'uint32', 'height': 'uint32', 'stride': 'uint32',
-+            'fourcc': 'str' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++            'fourcc': 'str' } }
 +
 +##
 +# @PocketForgeDisplayInfo:
@@ -1096,7 +1091,8 @@ index 8829145..0913fdd 100644
 +# @native_width: native panel width in pixels
 +# @native_height: native panel height in pixels
 +# @plane_rotation: guest primary-plane rotation in degrees
-+# @presentation_rotation: clockwise host rotation for upright presentation
++# @presentation_rotation: clockwise host rotation for upright
++#     presentation
 +# @preferred_fourcc: preferred scanout fourcc mnemonic
 +# @supported_fourcc: accepted scanout fourcc mnemonics
 +# @active_scanout: current host display surface, when present
@@ -1108,8 +1104,7 @@ index 8829145..0913fdd 100644
 +            'native_width': 'uint32', 'native_height': 'uint32',
 +            'plane_rotation': 'uint16', 'presentation_rotation': 'uint16',
 +            'preferred_fourcc': 'str', 'supported_fourcc': ['str'],
-+            '*active_scanout': 'PocketForgeDisplayScanout' },
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++            '*active_scanout': 'PocketForgeDisplayScanout' } }
 +
 +##
 +# @query-pocketforge-display:
@@ -1119,17 +1114,16 @@ index 8829145..0913fdd 100644
 +# Since: 8.2
 +##
 +{ 'command': 'query-pocketforge-display',
-+  'returns': 'PocketForgeDisplayInfo',
-+  'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
++  'returns': 'PocketForgeDisplayInfo' }
 +
  ##
- # @SGXEPCSection:
+ # @SsidSizeMode:
  #
 diff --git a/qapi/pragma.json b/qapi/pragma.json
-index 0aa4eed..f6337fb 100644
+index 24aebbe8f5..5f866ac10a 100644
 --- a/qapi/pragma.json
 +++ b/qapi/pragma.json
-@@ -57,6 +57,8 @@
+@@ -105,6 +105,8 @@
          'PciBusInfo',               # query-pci
          'PciDeviceInfo',            # query-pci
          'PciMemoryRegion',          # query-pci
@@ -1139,29 +1133,29 @@ index 0aa4eed..f6337fb 100644
          'QapiErrorClass',           # QMP error replies
          'SshHostKeyCheckMode',      # blockdev-add, -blockdev
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 6ac525f..4aeaef8 100644
+index 60d8023eed..feef5b7253 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -225,6 +225,8 @@ qtests_aarch64 = \
-     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
-      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
-      'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) +         \
-+  (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?        \
-+    ['pocketforge-a133-display-test'] : []) +                                      \
+@@ -278,6 +278,8 @@ qtests_aarch64 = \
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',
+      'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) + \
++  (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?
++    ['pocketforge-a133-display-test'] : []) + \
+   qtests_cxl +                                                                                  \
    ['arm-cpu-features',
     'numa-test',
-    'boot-serial-test',
-@@ -338,6 +340,7 @@ endif
+@@ -441,6 +443,7 @@ endif
  
  if dbus_display
-   qtests += {'dbus-display-test': [dbus_display1_dep, gio]}
-+  qtests += {'pocketforge-a133-display-test': [dbus_display1_dep, gio]}
+   qtests += {'dbus-display-test': [dbus_display1, gio]}
++  qtests += {'pocketforge-a133-display-test': [dbus_display1, gio]}
  endif
  
  qtest_executables = {}
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
 new file mode 100644
-index 0000000..28dad13
+index 0000000000..52cdab1d0b
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -0,0 +1,443 @@
@@ -1174,7 +1168,7 @@ index 0000000..28dad13
 +#include "libqtest.h"
 +#include "libqos/libqos-malloc.h"
 +#include "libqos/virtio-mmio.h"
-+#include "qapi/qmp/qdict.h"
++#include "qobject/qdict.h"
 +#include "ui/dbus-display1.h"
 +#include "standard-headers/linux/virtio_config.h"
 +#include "standard-headers/linux/virtio_gpu.h"
@@ -1609,18 +1603,21 @@ index 0000000..28dad13
 +    return g_test_run();
 +}
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index a25a74e..f7c7188 100644
+index a25a74ead8..d65919d76c 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
-@@ -11,6 +11,7 @@
+@@ -10,8 +10,8 @@
+ #include "libqtest.h"
  #include "libqos/libqos-malloc.h"
  #include "libqos/virtio-mmio.h"
- #include "qapi/qmp/qdict.h"
-+#include "qapi/qmp/qlist.h"
- 
+-#include "qapi/qmp/qdict.h"
+-
++#include "qobject/qdict.h"
++#include "qobject/qlist.h"
  #include "standard-headers/linux/input.h"
  #include "standard-headers/linux/virtio_config.h"
-@@ -243,6 +244,28 @@ static bool inject(InputFixture *f, const char *event)
+ #include "standard-headers/linux/virtio_ids.h"
+@@ -243,6 +243,28 @@ static bool inject(InputFixture *f, const char *event)
      return success;
  }
  
@@ -1649,7 +1646,7 @@ index a25a74e..f7c7188 100644
  static void assert_queue_idle(InputFixture *f)
  {
      QDict *response;
-@@ -263,21 +286,29 @@ static void assert_queue_idle(InputFixture *f)
+@@ -263,21 +285,29 @@ static void assert_queue_idle(InputFixture *f)
      qobject_unref(response);
  }
  
@@ -1685,7 +1682,7 @@ index a25a74e..f7c7188 100644
  static EventBuffers add_event_buffers(InputFixture *f)
  {
      EventBuffers buffers = { 0 };
-@@ -449,11 +480,19 @@ static void test_one_buffer_atomicity(void)
+@@ -449,11 +479,19 @@ static void test_one_buffer_atomicity(void)
  {
      InputFixture f;
      EventBuffers buffers = { 0 };
@@ -1706,7 +1703,7 @@ index a25a74e..f7c7188 100644
      assert_queue_idle(&f);
      g_assert_false(qvirtqueue_get_buf(f.qts, f.vq, NULL, NULL));
      g_assert_false(qtest_qom_get_bool(f.qts, PF_A133_INPUT_PATH, "held"));
-@@ -477,6 +516,42 @@ static void test_one_buffer_atomicity(void)
+@@ -477,6 +515,42 @@ static void test_one_buffer_atomicity(void)
      g_free(trace);
  }
  
@@ -1749,7 +1746,7 @@ index a25a74e..f7c7188 100644
  static void test_no_device(void)
  {
      QTestState *qts;
-@@ -493,9 +568,246 @@ static void test_no_device(void)
+@@ -493,9 +567,246 @@ static void test_no_device(void)
                           PF_A133_INPUT_PATH);
      g_assert_true(qdict_haskey(response, "error"));
      qobject_unref(response);
@@ -1768,9 +1765,9 @@ index a25a74e..f7c7188 100644
 +    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
 +                                 "class"), ==, "DeviceNotFound");
 +    qobject_unref(response);
-     qtest_quit(qts);
- }
- 
++    qtest_quit(qts);
++}
++
 +static void test_display_off(void)
 +{
 +    QTestState *qts;
@@ -1864,9 +1861,9 @@ index a25a74e..f7c7188 100644
 +                       qdict_get_int(scanout, "height"));
 +    }
 +    qobject_unref(response);
-+    qtest_quit(qts);
-+}
-+
+     qtest_quit(qts);
+ }
+ 
 +static void test_non_pocketforge_query_rejected(void)
 +{
 +    QTestState *qts;
@@ -1996,7 +1993,7 @@ index a25a74e..f7c7188 100644
  int main(int argc, char **argv)
  {
      g_test_init(&argc, &argv, NULL);
-@@ -507,8 +819,22 @@ int main(int argc, char **argv)
+@@ -507,8 +818,22 @@ int main(int argc, char **argv)
                     test_reset_and_late_injection);
      qtest_add_func("/aarch64/pocketforge-a133-input/one-buffer-atomicity",
                     test_one_buffer_atomicity);
@@ -2019,3 +2016,6 @@ index a25a74e..f7c7188 100644
  
      return g_test_run();
  }
+-- 
+2.43.0
+

@@ -1,6 +1,7 @@
+From 45eec420dd4620f19cc23c3f9ff53ff4cd90486d Mon Sep 17 00:00:00 2001
 From: qlid <qlid@pocketforge.local>
 Date: Tue, 13 Oct 2026 18:58:00 +0000
-Subject: [PATCH] tests: require A133 lid and AXP717 power fidelity
+Subject: [PATCH 46/50] tests: require A133 lid and AXP717 power fidelity
 
 Add RED coverage for the active-low PL9 hall switch, the AXP717
 IRQLEVEL and OFFLEVEL timers, and both observable and process-exit
@@ -11,9 +12,10 @@ idempotent lid reports cannot create edges, all four IRQLEVEL settings
 are checked immediately below and at their boundary, the OFFLEVEL gate
 is proved disabled and enabled, and a zero REG27 write cannot shut down.
 
----
+Assisted-by: LLM
+
 diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
-index 5c2b2e7..ee0c772 100644
+index dce0af713b..c885360fd8 100644
 --- a/tests/qtest/pocketforge-a133-axp717-test.c
 +++ b/tests/qtest/pocketforge-a133-axp717-test.c
 @@ -30,6 +30,9 @@
@@ -315,7 +317,7 @@ index 5c2b2e7..ee0c772 100644
                     test_pek_reset_clears_machine_state);
      qtest_add_func("/pocketforge-a133/axp717/migration-idle",
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 8f715ec..20991b8 100644
+index 3180d2ccfe..9e50868f9e 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -16,6 +16,17 @@
@@ -447,3 +449,6 @@ index 8f715ec..20991b8 100644
      qtest_add_func("/aarch64/pocketforge-a133-input/uart-component-parameters",
                     test_uart_component_parameters);
      qtest_add_func("/aarch64/pocketforge-a133-input/uart-8n1-eps-ignored",
+-- 
+2.43.0
+

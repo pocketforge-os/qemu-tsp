@@ -1,15 +1,12 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 9a012fca951de415375a379161e703d17cd5d752 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:13:48 +0000
-Subject: [PATCH] hw/display: make A133 invalid translations atomic
+Subject: [PATCH 40/50] hw/display: make A133 invalid translations atomic
 
----
- hw/display/pocketforge_a133_display.c       | 11 +++++-
- tests/qtest/pocketforge-a133-display-test.c | 44 +++++++++++++++++++++
- 2 files changed, 53 insertions(+), 2 deletions(-)
+Assisted-by: LLM
 
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
-index d20b3bd..e6ba122 100644
+index 896bdc19f4..7fd176c648 100644
 --- a/hw/display/pocketforge_a133_display.c
 +++ b/hw/display/pocketforge_a133_display.c
 @@ -74,6 +74,7 @@ struct PocketForgeA133DisplayState {
@@ -38,18 +35,18 @@ index d20b3bd..e6ba122 100644
 +        memcpy(destination + y * surface_stride(surface),
 +               s->frame + y * width * 4, width * 4);
 +    }
-     dpy_gfx_update(s->console, 0, 0, width, height);
+     qemu_console_update(s->console, 0, 0, width, height);
  }
  
-@@ -356,6 +361,7 @@ static void pf_display_realize(DeviceState *dev, Error **errp)
+@@ -357,6 +362,7 @@ static void pf_display_realize(DeviceState *dev, Error **errp)
      timer_mod_ns(s->vblank_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PF_VBLANK_NS);
      if (s->enabled) {
 +        s->frame = g_malloc(PF_NATIVE_WIDTH * PF_NATIVE_HEIGHT * 4);
-         s->console = graphic_console_init(dev, 0, &pf_display_hw_ops, s);
+         s->console = qemu_graphic_console_create(dev, 0,
+                                                  &pf_display_hw_ops, s);
          qemu_console_resize(s->console, PF_NATIVE_WIDTH, PF_NATIVE_HEIGHT);
-     }
-@@ -369,6 +375,7 @@ static void pf_display_unrealize(DeviceState *dev)
+@@ -371,6 +377,7 @@ static void pf_display_unrealize(DeviceState *dev)
      timer_free(s->dsi_transfer_timer);
      timer_free(s->tcon_transfer_timer);
      timer_free(s->vblank_timer);
@@ -58,7 +55,7 @@ index d20b3bd..e6ba122 100644
          g_free(s->bank[i].regs);
          s->bank[i].regs = NULL;
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 5568798..77dfc9d 100644
+index 810c21aa1e..8ee7566d31 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -11,10 +11,13 @@
@@ -133,3 +130,6 @@ index 5568798..77dfc9d 100644
      qtest_quit(qts);
  }
  
+-- 
+2.43.0
+

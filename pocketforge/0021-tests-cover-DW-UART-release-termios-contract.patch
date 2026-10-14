@@ -1,18 +1,15 @@
-From 14dae977d1ad45678ab5f59ef0987d0fd416dc00 Mon Sep 17 00:00:00 2001
+From 752a60a593d4bcb478bd7d4a6dec8a31cb6fa570 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 04:07:12 -0400
-Subject: [PATCH 21/22] tests: cover DW UART release termios contract
+Subject: [PATCH 21/50] tests: cover DW UART release termios contract
 
 Pin the component-parameter register and the release decoder final LCR before implementing support.
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-input-test.c | 56 ++++++++++++++++++++++-
- 1 file changed, 54 insertions(+), 2 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 4bd1f53..4d5bbbb 100644
+index 87cf4c5a30..367de1c81b 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -12,6 +12,8 @@

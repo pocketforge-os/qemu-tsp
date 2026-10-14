@@ -1,24 +1,30 @@
+From 8268cf361b8f134a09846bc3208be37f72e4d74c Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:02:00 +0000
-Subject: [PATCH] hw/display: own A133 display register pipeline
+Subject: [PATCH 35/50] hw/display: own A133 display register pipeline
 
 Replace the display and IOMMU RAM stubs with a clean-room device that
 owns the real apertures. Complete the hardware-owned probe and transfer
 bits and implement the sun50i two-level IOVA walk required by DE2 scanout.
 
+Rebase resolutions:
+- Display Meson/QOM: place the native display model in the v11 source set and use const class-init data.
+
+Assisted-by: LLM
+
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 0637a14..d69d751 100644
+index e0ef2b5c7a..52e8d2ec54 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -102,6 +102,7 @@
+@@ -103,6 +103,7 @@
  #include "hw/arm/pocketforge_a133.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
 +#include "hw/display/pocketforge_a133_display.h"
  #include "hw/i2c/allwinner-i2c.h"
  #include "hw/i2c/i2c.h"
  #include "hw/input/pocketforge_a133_input.h"
-@@ -185,6 +186,7 @@ struct PocketForgeA133MachineState {
+@@ -186,6 +187,7 @@ struct PocketForgeA133MachineState {
      DeviceState *pmic;
      PfA133CcuState *ccu;
      PfA133PioState *pio;
@@ -26,7 +32,7 @@ index 0637a14..d69d751 100644
      MemoryRegion *uart0_mmio;
      MemoryRegion *mmc0_mmio;
      MemoryRegion r_intc_mmio;
-@@ -541,7 +543,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+@@ -542,7 +544,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
      { "pocketforge-a133.watchdog",         0x030090a0, 0x20 },
      { "pocketforge-a133.pwm",              0x0300a000, 0x400 },
      { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
@@ -34,7 +40,7 @@ index 0637a14..d69d751 100644
      { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
      { "pocketforge-a133.ledc",             0x05018000, 0x400 },
      { "pocketforge-a133.ths",              0x05070400, 0x100 },
-@@ -554,13 +555,8 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+@@ -555,13 +556,8 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
      { "pocketforge-a133.ehci1",            0x05200000, 0x100 },
      { "pocketforge-a133.ohci1",            0x05200400, 0x100 },
      { "pocketforge-a133.usbphy_pmu1",      0x05200800, 0x100 },
@@ -48,7 +54,7 @@ index 0637a14..d69d751 100644
      { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
      { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
      { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
-@@ -1164,6 +1160,7 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -1165,6 +1161,7 @@ static void pocketforge_a133_init(MachineState *machine)
  
      pocketforge_a133_create_sram(s, sysmem);
      pocketforge_a133_create_mmio_stubs();
@@ -57,21 +63,20 @@ index 0637a14..d69d751 100644
          s, pic[113], pocketforge_a133_create_r_intc(s, pic[103]));
      qemu_register_reset(pocketforge_a133_power_reset, s);
 diff --git a/hw/display/meson.build b/hw/display/meson.build
-index 344dfe3..5ad55f7 100644
+index ffecedbf70..d5ae145858 100644
 --- a/hw/display/meson.build
 +++ b/hw/display/meson.build
-@@ -5,6 +5,7 @@ system_ss.add(when: 'CONFIG_EDID', if_true: files('edid-generate.c', 'edid-regio
- 
+@@ -6,6 +6,7 @@ system_ss.add(when: 'CONFIG_EDID', if_true: files('edid-generate.c', 'edid-regio
  system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb.c'))
+ stub_ss.add(files('ramfb-stubs.c'))
  system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb-standalone.c'))
 +system_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133_display.c'))
  
  system_ss.add(when: 'CONFIG_VGA_CIRRUS', if_true: files('cirrus_vga.c'))
  system_ss.add(when: ['CONFIG_VGA_CIRRUS', 'CONFIG_VGA_ISA'], if_true: files('cirrus_vga_isa.c'))
-
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
 new file mode 100644
-index 0000000..6045915
+index 0000000000..73972a0330
 --- /dev/null
 +++ b/hw/display/pocketforge_a133_display.c
 @@ -0,0 +1,258 @@
@@ -86,8 +91,8 @@ index 0000000..6045915
 +#include "qemu/bswap.h"
 +#include "qapi/error.h"
 +#include "hw/display/pocketforge_a133_display.h"
-+#include "exec/address-spaces.h"
-+#include "hw/qdev-properties.h"
++#include "system/address-spaces.h"
++#include "hw/core/qdev-properties.h"
 +
 +#define PF_IOMMU_BASE      0x030f0000
 +#define PF_IOMMU_SIZE      0x10000
@@ -293,13 +298,13 @@ index 0000000..6045915
 +    }
 +}
 +
-+static void pf_display_class_init(ObjectClass *klass, void *data)
++static void pf_display_class_init(ObjectClass *klass, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(klass);
 +
 +    dc->realize = pf_display_realize;
 +    dc->unrealize = pf_display_unrealize;
-+    dc->reset = pf_display_reset;
++    device_class_set_legacy_reset(dc, pf_display_reset);
 +    dc->desc = "PocketForge A133 native display pipeline";
 +}
 +
@@ -335,7 +340,7 @@ index 0000000..6045915
 +}
 diff --git a/include/hw/display/pocketforge_a133_display.h b/include/hw/display/pocketforge_a133_display.h
 new file mode 100644
-index 0000000..48b8e90
+index 0000000000..819c341eac
 --- /dev/null
 +++ b/include/hw/display/pocketforge_a133_display.h
 @@ -0,0 +1,16 @@
@@ -343,7 +348,7 @@ index 0000000..48b8e90
 +#ifndef HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
 +#define HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +
 +#define TYPE_POCKETFORGE_A133_DISPLAY "pocketforge-a133-display"
 +OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133DisplayState,
@@ -355,3 +360,6 @@ index 0000000..48b8e90
 +                                        size_t len);
 +
 +#endif
+-- 
+2.43.0
+

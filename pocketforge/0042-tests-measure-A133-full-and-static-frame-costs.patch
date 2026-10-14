@@ -1,14 +1,12 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 30b7e141671a5bafec8c19086e9dff88c4a9ed7f Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:16:16 +0000
-Subject: [PATCH] tests: measure A133 full and static frame costs
+Subject: [PATCH 41/50] tests: measure A133 full and static frame costs
 
----
- tests/qtest/pocketforge-a133-display-test.c | 47 +++++++++++++++++++++
- 1 file changed, 47 insertions(+)
+Assisted-by: LLM
 
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 77dfc9d..584b297 100644
+index 8ee7566d31..23199f4b02 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -56,6 +56,52 @@ typedef struct DisplayTest {
@@ -72,3 +70,6 @@ index 77dfc9d..584b297 100644
      g_assert_cmpint(qemu_socketpair(AF_UNIX, SOCK_STREAM, 0, dbus_pair), ==, 0);
      qtest_qmp_add_client(qts, "@dbus-display", dbus_pair[1]);
      conn = p2p_from_fd(dbus_pair[0]);
+-- 
+2.43.0
+

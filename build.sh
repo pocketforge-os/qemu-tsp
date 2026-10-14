@@ -178,7 +178,7 @@ if [ ! -f tests/qtest/pocketforge-a133-mmc-test.c ]; then
 fi
 
 echo "== apply PocketForge patch: display and versioned input ABI =="
-if ! grep -q 'query-pocketforge-display' qapi/misc-target.json; then
+if ! grep -q 'query-pocketforge-display' qapi/misc-arm.json; then
   git apply "$ROOT/pocketforge/0015-hw-arm-add-PocketForge-display-and-input-ABI.patch"
 fi
 
@@ -369,6 +369,10 @@ if ! grep -q 'PF_IOMMU_PC_IVLD_ADDR' \
   git apply "$ROOT/pocketforge/0051-tests-cover-A133-IOMMU-invalidation-completion.patch"
 fi
 
+echo "== test PocketForge QAPI build-configuration gating =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree
@@ -409,16 +413,17 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-mmc-test \
   tests/qtest/pocketforge-a133-bootrom-test \
   tests/qtest/pocketforge-a133-ccu-test
-meson test -C "$SYSTEM_BUILD_DIR" --print-errorlogs \
-  qtest-aarch64/pocketforge-a100-rtc-test \
-  qtest-aarch64/pocketforge-a133-display-test \
-  qtest-aarch64/pocketforge-a133-input-test \
-  qtest-aarch64/pocketforge-a133-mmio-map-test \
-  qtest-aarch64/pocketforge-a133-r-i2c-test \
-  qtest-aarch64/pocketforge-a133-axp717-test \
-  qtest-aarch64/pocketforge-a133-mmc-test \
-  qtest-aarch64/pocketforge-a133-bootrom-test \
-  qtest-aarch64/pocketforge-a133-ccu-test
+"$SYSTEM_BUILD_DIR/pyvenv/bin/meson" test -C "$SYSTEM_BUILD_DIR" \
+  --print-errorlogs \
+  qemu:qtest-aarch64/pocketforge-a100-rtc-test \
+  qemu:qtest-aarch64/pocketforge-a133-display-test \
+  qemu:qtest-aarch64/pocketforge-a133-input-test \
+  qemu:qtest-aarch64/pocketforge-a133-mmio-map-test \
+  qemu:qtest-aarch64/pocketforge-a133-r-i2c-test \
+  qemu:qtest-aarch64/pocketforge-a133-axp717-test \
+  qemu:qtest-aarch64/pocketforge-a133-mmc-test \
+  qemu:qtest-aarch64/pocketforge-a133-bootrom-test \
+  qemu:qtest-aarch64/pocketforge-a133-ccu-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 cp "$SYSTEM_BUILD_DIR/tests/qtest/pocketforge-a133-dbus-listener" \
   "$OUT/pocketforge-a133-dbus-listener"
