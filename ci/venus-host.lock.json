@@ -18,7 +18,8 @@
   "vulkan_headers": {
     "version": "1.4.365",
     "repository": "https://github.com/KhronosGroup/Vulkan-Headers.git",
-    "commit": "b2ff582bfd4448d7b5f9ccd6a766b3ab322d59ed"
+    "commit": "c46850864f4661461b0f6cb9922c058ffea4915e",
+    "tag_object": "b2ff582bfd4448d7b5f9ccd6a766b3ab322d59ed"
   },
   "vulkan_loader": {
     "version": "1.4.365",
