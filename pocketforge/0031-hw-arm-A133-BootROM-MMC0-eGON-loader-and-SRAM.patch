@@ -1,4 +1,4 @@
-From 8bdf3153bff8a2962d6c8d0dbf9d9a3d8edaf983 Mon Sep 17 00:00:00 2001
+From d32f9d00cd00204fc9628ff293877518adc5f725 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 10:05:00 +0000
 Subject: [PATCH 31/50] hw: arm: A133 BootROM MMC0 eGON loader and SRAM reset
@@ -25,10 +25,8 @@ correct mrc/tst encodings, -accel tcg so the SPL really executes, the
 QEMU MPIDR reset value including the MP-extensions bit, and
 power-of-two SD media sizes.
 
-
 Rebase resolutions:
 - Reset/block APIs: use the v11 system reset and block-backend I/O interfaces while preserving reset ordering.
-
 
 Assisted-by: LLM
 

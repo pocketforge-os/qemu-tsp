@@ -1,4 +1,4 @@
-From 3194d10e9da544279e8a8c6d43d6bc7099ace6ce Mon Sep 17 00:00:00 2001
+From 354d3e84981d7891bc11515f48197a7004e260ff Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Sat, 10 Oct 2026 00:48:12 -0400
 Subject: [PATCH 17/50] hw/input: route A133 controls through gamepad MCU UARTs
@@ -8,10 +8,8 @@ bounded gamepad-MCU frame sources feeding the existing UART3 and UART4 RX
 FIFOs. Negotiate input ABI 2.0 for per-UART ordering and readiness, and expose
 only the exact digital and hat codes implemented by this revision.
 
-
 Rebase resolutions:
 - QAPI: carry the input fuzz/flat fields in v11 misc-arm.json after the target-schema split.
-
 
 Assisted-by: LLM
 

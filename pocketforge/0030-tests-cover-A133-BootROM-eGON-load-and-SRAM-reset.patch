@@ -1,4 +1,4 @@
-From f244622e4996843dfc39d5d281b079f6160d6849 Mon Sep 17 00:00:00 2001
+From b1be9589971805ed03d0a9e19fea850e392866d4 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 08:45:00 +0000
 Subject: [PATCH 30/50] tests: cover A133 BootROM eGON load and SRAM reset
@@ -11,10 +11,8 @@ truncated-media and no-media fixtures must be rejected without any copy
 or execution. Wired into tests/qtest/meson.build; build.sh picks the
 patch up in the same change.
 
-
 Rebase resolutions:
 - Qtest Meson: register the BootROM test in the v11 qtests_aarch64 map.
-
 
 Assisted-by: LLM
 

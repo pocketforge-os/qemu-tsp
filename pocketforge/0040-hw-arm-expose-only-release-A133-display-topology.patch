@@ -1,4 +1,4 @@
-From 79f0d30cec2cdb5313545b527275dfdf7584640b Mon Sep 17 00:00:00 2001
+From bf6a50831a18cdf0942b47b23e7d0d7d88590b8a Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:14:00 +0000
 Subject: [PATCH 39/50] hw/arm: expose only the release A133 display topology
@@ -6,7 +6,6 @@ Subject: [PATCH 39/50] hw/arm: expose only the release A133 display topology
 Remove the synthetic virtio-gpu transport and its DT augmentation now that
 the release kernel drives the native DE2/TCON/DSI model. The input and PMIC
 paths remain unchanged and the guest DT is no longer display-modified.
-
 
 Assisted-by: LLM
 

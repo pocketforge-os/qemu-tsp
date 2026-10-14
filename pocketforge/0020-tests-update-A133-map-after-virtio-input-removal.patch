@@ -1,11 +1,10 @@
-From 39a39800f9b626ae8cc354c667488b8efbb556b1 Mon Sep 17 00:00:00 2001
+From 44df0b15e32c678ebb332a32add3a5bcb4483472 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 01:44:35 -0400
 Subject: [PATCH 20/50] tests: update A133 map after virtio-input removal
 
 The machine now exposes only its display transport on virtio-mmio. Keep the exact live-map contract aligned with that intentional removal.
-
 
 Assisted-by: LLM
 

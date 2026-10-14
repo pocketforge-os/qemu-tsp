@@ -1,11 +1,10 @@
-From 638381beccd9ebd9ccf76fb9227dd3df1c61ed43 Mon Sep 17 00:00:00 2001
+From 4346d5975765845a5010aa9436f8c969b80dbff9 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.invalid>
 Date: Sat, 10 Oct 2026 09:00:00 +0000
 Subject: [PATCH 27/50] hw/arm: indent gamepad query capabilities
 
 Keep the existing gamepad capability construction inside its device-present
 guard after the power-key query extension wrapped that path.
-
 
 Assisted-by: LLM
 

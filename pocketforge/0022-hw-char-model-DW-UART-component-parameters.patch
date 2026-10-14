@@ -1,11 +1,10 @@
-From 370674fd7b64284c369a28588d82664d805bf56b Mon Sep 17 00:00:00 2001
+From d8a6ca137df3f218d6a51a29a9ce53886f3813db Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 04:07:12 -0400
 Subject: [PATCH 22/50] hw/char: model DW UART component parameters
 
 Report the 32-bit APB width and 16-byte FIFO used by the model, and accept inactive EPS selection in the release decoder 8N1 termios state.
-
 
 Assisted-by: LLM
 

@@ -1,4 +1,4 @@
-From 26bf5452aeeb2a047ab84dd11db01613640a9b8b Mon Sep 17 00:00:00 2001
+From d2079256fdd3926851f933c60edbcd1dcb563bf9 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sat, 10 Oct 2026 07:38:45 -0400
 Subject: [PATCH 29/50] hw: preserve A133 PEK state across reset and migration

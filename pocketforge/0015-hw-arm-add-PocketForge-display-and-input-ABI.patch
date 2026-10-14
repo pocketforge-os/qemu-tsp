@@ -1,4 +1,4 @@
-From f2044ded9402cc5bf8165df9e31fe40774886de7 Mon Sep 17 00:00:00 2001
+From 0f00cc580370b2f242d4b50b82885e874a548b5a Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 23:13:12 -0400
@@ -6,10 +6,10 @@ Subject: [PATCH 15/50] hw/arm: add PocketForge display and input ABI
 
 Rebase resolutions:
 - QAPI: move the target schema additions from removed misc-target.json into v11 misc-arm.json and use the generated misc-arm headers.
+- QAPI gating: omit all three PocketForge commands from generated dispatch when CONFIG_POCKETFORGE_A133 is disabled.
 - ARM Meson: compile the QMP implementation through arm_common_ss and rely on that target selection instead of poisoned CONFIG guards.
 - Qobject: use the v11 qobject/ QDict and QList header locations in qtests.
 - Qtest Meson: wire the display test and generated D-Bus sources through the v11 test maps.
-
 
 Assisted-by: LLM
 
@@ -920,10 +920,10 @@ index 19a05ee73c..571ec817b5 100644
                                virtio_input_config *config);
  virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
 diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
-index 4dc66d00e5..a2ea67bb46 100644
+index 4dc66d00e5..5e41d96a3d 100644
 --- a/qapi/misc-arm.json
 +++ b/qapi/misc-arm.json
-@@ -46,6 +46,170 @@
+@@ -46,6 +46,173 @@
  ##
  { 'command': 'query-gic-capabilities', 'returns': ['GICCapability'] }
  
@@ -1031,7 +1031,8 @@ index 4dc66d00e5..a2ea67bb46 100644
 +# Since: 8.2
 +##
 +{ 'command': 'query-pocketforge-input',
-+  'returns': 'PocketForgeInputInfo' }
++  'returns': 'PocketForgeInputInfo',
++  'if': 'CONFIG_POCKETFORGE_A133' }
 +
 +##
 +# @pocketforge-input-send:
@@ -1042,7 +1043,8 @@ index 4dc66d00e5..a2ea67bb46 100644
 +# Since: 8.2
 +##
 +{ 'command': 'pocketforge-input-send',
-+  'data': { 'device': 'str', 'events': ['PocketForgeInputEvent'] } }
++  'data': { 'device': 'str', 'events': ['PocketForgeInputEvent'] },
++  'if': 'CONFIG_POCKETFORGE_A133' }
 +
 +##
 +# @PocketForgeDisplayScanout:
@@ -1089,7 +1091,8 @@ index 4dc66d00e5..a2ea67bb46 100644
 +# Since: 8.2
 +##
 +{ 'command': 'query-pocketforge-display',
-+  'returns': 'PocketForgeDisplayInfo' }
++  'returns': 'PocketForgeDisplayInfo',
++  'if': 'CONFIG_POCKETFORGE_A133' }
 +
  ##
  # @SsidSizeMode:

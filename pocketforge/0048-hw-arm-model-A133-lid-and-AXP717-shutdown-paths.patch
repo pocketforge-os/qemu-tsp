@@ -1,4 +1,4 @@
-From 79533558c29b8c6a2b3eb971e4323e0b7cd6085c Mon Sep 17 00:00:00 2001
+From a999fb3c5750ce296a492ec7e650efd688890cfd Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 15:15:42 -0400
@@ -7,7 +7,6 @@ Subject: [PATCH 47/50] hw/arm: model A133 hall and AXP717 shutdown paths
 Rebase resolutions:
 - Runstate: use the v11 system/runstate.h shutdown interface and preserve distinct guest and host-UI causes.
 - QOM/Meson: use the v11 const class-init signature and current misc source set for the R-PIO device.
-
 
 Assisted-by: LLM
 

@@ -1,4 +1,4 @@
-From f0e7e1ee09463c2df811ced6c19efb95ddc73202 Mon Sep 17 00:00:00 2001
+From 9170dc94ec5f4668ea764fc8aff9b1a24e856331 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 21:44:00 +0000
 Subject: [PATCH 50/50] tests: cover A133 IOMMU invalidation completion
@@ -7,7 +7,6 @@ The mainline sun50i-iommu driver polls the range-TLB and PTW-cache
 invalidation enable registers until the hardware clears each command.
 Assert those completion semantics directly, alongside retained address
 and mask registers so a write-discard implementation cannot pass.
-
 
 Assisted-by: LLM
 

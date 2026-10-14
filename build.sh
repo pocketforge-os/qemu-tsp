@@ -369,6 +369,10 @@ if ! grep -q 'PF_IOMMU_PC_IVLD_ADDR' \
   git apply "$ROOT/pocketforge/0051-tests-cover-A133-IOMMU-invalidation-completion.patch"
 fi
 
+echo "== test PocketForge QAPI build-configuration gating =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-qapi-config-test.py" qapi/misc-arm.json
+
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --
 verify_patch_stack_tree

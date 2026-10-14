@@ -1,4 +1,4 @@
-From c2f6fd454d516a1284f552784c5d9d031bd3dd52 Mon Sep 17 00:00:00 2001
+From 171eafbe22b4bc46fb250ebb5e9c3299c4af0914 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:41:00 +0000
 Subject: [PATCH 45/50] hw/display: scan out advertised A133 formats
@@ -6,7 +6,6 @@ Subject: [PATCH 45/50] hw/display: scan out advertised A133 formats
 Exercise every DE2 format exposed by query-pocketforge-display and convert
 the red/blue byte order of XB24 into the host x8r8g8b8 surface.  Keep AR24
 and XR24 on the direct-copy path used by the release framebuffer.
-
 
 Assisted-by: LLM
 

@@ -1,4 +1,4 @@
-From e78df197e90cd199c0131165c04bddbaf4ad27a6 Mon Sep 17 00:00:00 2001
+From 40d198db4ce532f17f13ab40d3f94b34354ff561 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sat, 10 Oct 2026 00:00:00 +0000
 Subject: [PATCH 26/50] hw: model A133 AXP717 power key interrupt path
@@ -6,10 +6,8 @@ Subject: [PATCH 26/50] hw: model A133 AXP717 power key interrupt path
 Route AXP717 PEK edges through the real A100 NMI register block and expose
 the separate build-6 axp20x-pek device through input ABI 2.2.
 
-
 Rebase resolutions:
 - Migration: make VMStateField storage const and retain the v11 post-load/version contract.
-
 
 Assisted-by: LLM
 

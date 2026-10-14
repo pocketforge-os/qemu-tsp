@@ -1,4 +1,4 @@
-From 3774c74d4b6bc88fdaa1ad37fe2384fc520a646b Mon Sep 17 00:00:00 2001
+From 5e324a41d5d34ba78ae3a7e814392da3d4f4dbdd Mon Sep 17 00:00:00 2001
 From: qlid <qlid@pocketforge.local>
 Date: Tue, 13 Oct 2026 18:58:00 +0000
 Subject: [PATCH 46/50] tests: require A133 lid and AXP717 power fidelity
@@ -11,7 +11,6 @@ The positive and negative controls share each invocation: invalid and
 idempotent lid reports cannot create edges, all four IRQLEVEL settings
 are checked immediately below and at their boundary, the OFFLEVEL gate
 is proved disabled and enabled, and a zero REG27 write cannot shut down.
-
 
 Assisted-by: LLM
 

@@ -1,11 +1,10 @@
-From 5d0fb8486fe5a430912ecc0ecca955c09068f892 Mon Sep 17 00:00:00 2001
+From 1edcb16d4c5b3b56f2058d12234901a948ca855c Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:23:31 +0000
 Subject: [PATCH 44/50] tests: add A133 Display1 frame listener
 
 Rebase resolutions:
 - D-Bus Meson: build the listener with the v11 generated dbus_display1 source and gio dependency.
-
 
 Assisted-by: LLM
 

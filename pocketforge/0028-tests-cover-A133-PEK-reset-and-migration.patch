@@ -1,11 +1,10 @@
-From 4627e4b3d34653e57b36cc2cb111a7d7bcdb525e Mon Sep 17 00:00:00 2001
+From fdced3570a96dd4eb76dd17a08b1f8f7f0867f2a Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sat, 10 Oct 2026 07:38:45 -0400
 Subject: [PATCH 28/50] tests: cover A133 PEK reset and migration
 
 Rebase resolutions:
 - Migration qtest: port helper includes and calls to the v11 migration test API.
-
 
 Assisted-by: LLM
 

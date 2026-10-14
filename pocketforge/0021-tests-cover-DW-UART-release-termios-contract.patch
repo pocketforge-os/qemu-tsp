@@ -1,11 +1,10 @@
-From 40ec2f37f7264513bbe05c37eef7a5d55cb52a98 Mon Sep 17 00:00:00 2001
+From bdb5d3ad062e25d4e01aae606b5a55475b4d9670 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 04:07:12 -0400
 Subject: [PATCH 21/50] tests: cover DW UART release termios contract
 
 Pin the component-parameter register and the release decoder final LCR before implementing support.
-
 
 Assisted-by: LLM
 

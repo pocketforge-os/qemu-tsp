@@ -1,4 +1,4 @@
-From b2aed317f616341949aa277b7f0d29c5a8718fd3 Mon Sep 17 00:00:00 2001
+From 0c2864d87b607926f773c5273eae0433b3f82bfe Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:22:00 +0000
 Subject: [PATCH 37/50] hw/display: scan out A133 DE2 UI plane through IOMMU
@@ -7,10 +7,8 @@ Create the native 720x1280 QemuConsole, decode the A100 primary UI channel
 on mixer double-buffer commits, translate its IOVA page by page, and copy
 the XR24 frame into the standard QEMU display surface used by D-Bus.
 
-
 Rebase resolutions:
 - Display API: port console creation and damage updates to qemu_graphic_console_create() and qemu_console_update().
-
 
 Assisted-by: LLM
 

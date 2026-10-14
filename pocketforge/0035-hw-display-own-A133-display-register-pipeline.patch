@@ -1,4 +1,4 @@
-From 8a5910d61852b41598c49a4797c0ea1eafa9fdb4 Mon Sep 17 00:00:00 2001
+From e6772d37d74372bcb17b645cc227185feb2af9ac Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:02:00 +0000
 Subject: [PATCH 35/50] hw/display: own A133 display register pipeline
@@ -7,10 +7,8 @@ Replace the display and IOMMU RAM stubs with a clean-room device that
 owns the real apertures. Complete the hardware-owned probe and transfer
 bits and implement the sun50i two-level IOVA walk required by DE2 scanout.
 
-
 Rebase resolutions:
 - Display Meson/QOM: place the native display model in the v11 source set and use const class-init data.
-
 
 Assisted-by: LLM
 

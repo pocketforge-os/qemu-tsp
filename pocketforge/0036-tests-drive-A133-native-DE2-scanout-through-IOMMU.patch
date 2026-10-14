@@ -1,4 +1,4 @@
-From 8b08be25d07e187843c53958a0eed5a89f1aa41c Mon Sep 17 00:00:00 2001
+From f1ac2658ab88fd74114a805f8e3190fd8d10e983 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:12:00 +0000
 Subject: [PATCH 36/50] tests: drive A133 native DE2 scanout through IOMMU
@@ -8,10 +8,8 @@ release driver's native contract: populate sun50i IOMMU tables, program
 DE2 UI channel 2, and commit via the mixer double-buffer register. Require
 finite DSI and TCON command completion rather than write-discard stubs.
 
-
 Rebase resolutions:
 - Qobject: use the v11 qobject/ QDict header after replacing the earlier virtio display fixture.
-
 
 Assisted-by: LLM
 

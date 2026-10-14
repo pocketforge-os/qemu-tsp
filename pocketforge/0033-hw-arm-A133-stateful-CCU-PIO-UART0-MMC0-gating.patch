@@ -1,4 +1,4 @@
-From c88b32e04a05e6702526f0ec3e5a3b738c0a899b Mon Sep 17 00:00:00 2001
+From b1708f4d5385f82cd966be1f95ac2df986115935 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 11:35:00 +0000
 Subject: [PATCH 33/50] hw: arm: A133 stateful CCU and PIO gating of UART0 and
@@ -26,7 +26,6 @@ Bead: tsp-mc9m.41.984.54.11.2
 
 Rebase resolutions:
 - Headers/APIs: use v11 system block-backend, reset, and TCG interfaces for gated boot and reset handling.
-
 
 Assisted-by: LLM
 

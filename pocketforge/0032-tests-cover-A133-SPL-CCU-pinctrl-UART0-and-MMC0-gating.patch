@@ -1,4 +1,4 @@
-From 6fa7004ffcb320b6bec0960aaeca4cb1ff5022d1 Mon Sep 17 00:00:00 2001
+From 171bb853fe08a3ec1d2bccfea92fe56d49986631 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 11:05:00 +0000
 Subject: [PATCH 32/50] tests: cover A133 SPL CCU pinctrl UART0 and MMC0 gating
@@ -21,10 +21,8 @@ view and UART contract probes, and the mmc test performs the SPL MMC0
 clock/gate/pinmux sequence before driving the controller, matching the
 wiring the model change introduces.
 
-
 Rebase resolutions:
 - Qtest Meson: register the CCU test in the v11 qtests_aarch64 map.
-
 
 Assisted-by: LLM
 

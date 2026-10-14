@@ -1,4 +1,4 @@
-From 84a5d78cefa9e7473531ff7667f7bd61b92eda5b Mon Sep 17 00:00:00 2001
+From 876cb0f57f5c6bb5ac7280776f9a19011309bb9a Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:16:16 +0000
 Subject: [PATCH 41/50] tests: measure A133 full and static frame costs
