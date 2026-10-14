@@ -203,7 +203,7 @@ index 0000000..22ebef0
 +
 +#include "qemu/osdep.h"
 +#include "hw/misc/pocketforge_a133_ccu.h"
-+#include "hw/irq.h"
++#include "hw/core/irq.h"
 +#include "hw/qdev-properties.h"
 +#include "migration/vmstate.h"
 +#include "qapi/error.h"
@@ -424,7 +424,7 @@ index 0000000..fbde5b0
 +
 +#include "qemu/osdep.h"
 +#include "hw/misc/pocketforge_a133_pio.h"
-+#include "hw/irq.h"
++#include "hw/core/irq.h"
 +#include "hw/qdev-properties.h"
 +#include "migration/vmstate.h"
 +#include "qapi/error.h"

@@ -34,7 +34,7 @@ index fa94c2f..f1d60ff 100644
 +#include "qemu/timer.h"
  #include "qapi/error.h"
  #include "hw/display/pocketforge_a133_display.h"
-+#include "hw/irq.h"
++#include "hw/core/irq.h"
  #include "exec/address-spaces.h"
  #include "hw/qdev-properties.h"
  #include "ui/console.h"

@@ -296,7 +296,7 @@ index 0000000..d8b0b09
 +
 +#include "qemu/osdep.h"
 +#include "hw/char/dw_apb_uart.h"
-+#include "hw/irq.h"
++#include "hw/core/irq.h"
 +#include "hw/qdev-properties.h"
 +#include "hw/qdev-properties-system.h"
 +#include "migration/vmstate.h"
