@@ -1,0 +1,96 @@
+From 2af2c3d7ab07d4b71872d219bf3c90ce6430a995 Mon Sep 17 00:00:00 2001
+From: venus <venus@invalid>
+Date: Wed, 14 Oct 2026 00:13:57 -0400
+Subject: [PATCH 55/56] tests: require Venus-only virtio-gpu property
+
+Add a qtest that proves the GL device keeps its existing Venus and hostmem properties while exposing the new default-on virgl selector.\n\nAssisted-by: LLM
+---
+ tests/qtest/meson.build                  |  2 +
+ tests/qtest/virtio-gpu-venus-only-test.c | 62 ++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+)
+ create mode 100644 tests/qtest/virtio-gpu-venus-only-test.c
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index b161c2f..46290b2 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -284,6 +284,8 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_VIRTIO_GPU') and
+    config_all_devices.has_key('CONFIG_VIRTIO_SHMEM_TEST') ?
+     ['virtio-mmio-shm-test'] : []) + \
++  (virgl.found() and opengl.found() ?
++    ['virtio-gpu-venus-only-test'] : []) + \
+   qtests_cxl +                                                                                  \
+   ['arm-cpu-features',
+    'numa-test',
+diff --git a/tests/qtest/virtio-gpu-venus-only-test.c b/tests/qtest/virtio-gpu-venus-only-test.c
+new file mode 100644
+index 0000000..c0b6657
+--- /dev/null
++++ b/tests/qtest/virtio-gpu-venus-only-test.c
+@@ -0,0 +1,62 @@
++/*
++ * Virtio GPU Venus-only mode tests
++ *
++ * Copyright (c) 2026 PocketForge
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest.h"
++#include "qobject/qdict.h"
++#include "qobject/qlist.h"
++
++static QDict *find_property(QList *properties, const char *name)
++{
++    const QListEntry *entry;
++
++    QLIST_FOREACH_ENTRY(properties, entry) {
++        QDict *property = qobject_to(QDict, qlist_entry_obj(entry));
++
++        if (!strcmp(qdict_get_str(property, "name"), name)) {
++            return property;
++        }
++    }
++
++    return NULL;
++}
++
++static void test_venus_only_property(void)
++{
++    QTestState *qts = qtest_init("-machine none -nodefaults -display none");
++    QDict *response;
++    QList *properties;
++    QDict *virgl;
++
++    response = qtest_qmp(qts,
++                         "{'execute': 'device-list-properties',"
++                         " 'arguments': {'typename':"
++                         " 'virtio-gpu-gl-device'}}");
++    g_assert_false(qdict_haskey(response, "error"));
++    properties = qdict_get_qlist(response, "return");
++    g_assert_nonnull(properties);
++
++    /* Positive controls: this is the GL/Venus device, not a false match. */
++    g_assert_nonnull(find_property(properties, "venus"));
++    g_assert_nonnull(find_property(properties, "blob"));
++    g_assert_nonnull(find_property(properties, "hostmem"));
++    g_assert_nonnull(find_property(properties, "max_outputs"));
++
++    virgl = find_property(properties, "virgl");
++    g_assert_nonnull(virgl);
++    g_assert_true(qdict_get_bool(virgl, "default-value"));
++
++    qobject_unref(response);
++    qtest_quit(qts);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/virtio-gpu/venus-only/property", test_venus_only_property);
++    return g_test_run();
++}
+-- 
+2.43.0
+
