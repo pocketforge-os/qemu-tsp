@@ -34,9 +34,10 @@ build-6 DTB use `source: "build6"`; the build-6 descriptor and DTB digest above
 are their provenance. This keeps the exact-DTB assertion meaningful while the
 live QEMU map deliberately covers the union needed by both owned images.
 
-The QEMU side is based on upstream commit
-`11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea`.  Before this work, the exact
-applied patch stack was inspected through the running machine with HMP
+The current QEMU side is rebased on v11.1.2 commit
+`4fc49f46dc95d4a27de2509e7fceb2931e91faeb`; the coverage investigation was
+originally performed on `11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea`.
+Before this work, the exact applied patch stack was inspected with HMP
 `info mtree -f`.  That behavioral map lacked many enabled DT resources.  The
 preserved red result is the reference fidelity run 36341301460, job
 108681805081: all three positive cases reached the unmodified DTB and aborted
