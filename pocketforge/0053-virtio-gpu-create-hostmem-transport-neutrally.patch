@@ -1,4 +1,4 @@
-From e546266ccb5cb5839f016779de00eba63034f7b1 Mon Sep 17 00:00:00 2001
+From e32550ff23f0e54d069b85c1b3ced57fb98d7fdd Mon Sep 17 00:00:00 2001
 From: qlid <qlid@invalid>
 Date: Tue, 13 Oct 2026 19:51:20 -0400
 Subject: [PATCH 53/54] virtio-gpu: create hostmem transport-neutrally

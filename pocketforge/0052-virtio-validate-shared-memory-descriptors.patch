@@ -1,4 +1,4 @@
-From a7e84ca4796a6447dcdc77b618a4c6bea7af3c8b Mon Sep 17 00:00:00 2001
+From f3a53c0322b51686b18a9312ad879dc779b19cf2 Mon Sep 17 00:00:00 2001
 From: qlid <qlid@invalid>
 Date: Tue, 13 Oct 2026 19:51:20 -0400
 Subject: [PATCH 52/54] virtio: validate shared memory descriptors
