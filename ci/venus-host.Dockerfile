@@ -57,6 +57,7 @@ RUN set -eux; \
       -DLLVM_TARGETS_TO_BUILD=X86 \
       -DLLVM_ENABLE_PROJECTS= \
       -DLLVM_BUILD_LLVM_DYLIB=ON \
+      '-DLLVM_DYLIB_COMPONENTS=bitwriter;mcdisassembler;mcjit;core;executionengine;scalaropts;transformutils;instcombine;native' \
       -DLLVM_LINK_LLVM_DYLIB=ON \
       -DLLVM_ENABLE_RTTI=ON \
       -DLLVM_ENABLE_TERMINFO=OFF \
