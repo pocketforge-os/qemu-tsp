@@ -415,6 +415,11 @@ if ! grep -Fq 'DEFINE_PROP_BOOL("virgl"' hw/display/virtio-gpu-gl.c; then
   git apply "$ROOT/pocketforge/0059-virtio-gpu-add-Venus-only-render-server-mode.patch"
 fi
 
+echo "== apply PocketForge patch: expose virglrenderer build availability =="
+if ! grep -Fq "config_host_data.set('CONFIG_VIRGL', virgl.found())" meson.build; then
+  git apply "$ROOT/pocketforge/0060-build-expose-virglrenderer-availability-to-machine-c.patch"
+fi
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .

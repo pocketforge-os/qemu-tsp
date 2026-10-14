@@ -173,6 +173,58 @@ RUN set -eux; \
     test -x /opt/venus/libexec/virgl_render_server; \
     test -f /opt/venus/share/vulkan/icd.d/lvp_icd.x86_64.json
 
+FROM virglrenderer AS qemu
+ARG QEMU_TSP_REF
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        libfdt-dev \
+        libgbm-dev \
+        libglib2.0-dev \
+        libpixman-1-dev \
+    && find /var/lib/apt/lists -mindepth 1 -delete
+COPY UPSTREAM /stack/UPSTREAM
+COPY pocketforge/ /stack/pocketforge/
+COPY ci/venus-runtime-stage.py /stack/venus-runtime-stage.py
+RUN set -eux; \
+    test "${#QEMU_TSP_REF}" -eq 40; \
+    case "$QEMU_TSP_REF" in *[!0-9a-f]*) exit 1 ;; esac; \
+    repo=$(sed -n 's/^repo *= *//p' /stack/UPSTREAM); \
+    commit=$(sed -n 's/^commit *= *//p' /stack/UPSTREAM); \
+    git init -q /src/qemu; \
+    git -C /src/qemu remote add origin "$repo"; \
+    git -C /src/qemu fetch -q --depth 1 origin "$commit"; \
+    git -C /src/qemu checkout -q --detach FETCH_HEAD; \
+    test "$(git -C /src/qemu rev-parse HEAD)" = "$commit"; \
+    GIT_COMMITTER_NAME=PocketForge \
+    GIT_COMMITTER_EMAIL=build@pocketforge.invalid \
+      git -C /src/qemu am /stack/pocketforge/*.patch; \
+    mkdir /src/qemu/build; \
+    cd /src/qemu/build; \
+    PKG_CONFIG_PATH=/opt/venus/lib/x86_64-linux-gnu/pkgconfig:/opt/venus/lib/pkgconfig \
+    LD_LIBRARY_PATH=/opt/venus/lib/x86_64-linux-gnu:/opt/venus/lib \
+      ../configure \
+        --target-list=aarch64-softmmu \
+        --without-default-features \
+        --with-pkgversion="pocketforge-qemu-tsp-head=$QEMU_TSP_REF" \
+        -Dpixman=enabled \
+        -Dgio=enabled \
+        -Ddbus_display=enabled \
+        --enable-opengl \
+        --enable-virglrenderer; \
+    LD_LIBRARY_PATH=/opt/venus/lib/x86_64-linux-gnu:/opt/venus/lib \
+      ninja -j4 qemu-system-aarch64; \
+    LD_LIBRARY_PATH=/opt/venus/lib/x86_64-linux-gnu:/opt/venus/lib \
+      python3 /stack/venus-runtime-stage.py \
+        --qemu /src/qemu/build/qemu-system-aarch64 \
+        --render-server /opt/venus/libexec/virgl_render_server \
+        --virglrenderer /opt/venus/lib/x86_64-linux-gnu/libvirglrenderer.so.1.11.0 \
+        --vulkan-loader /opt/venus/lib/libvulkan.so.1.4.365 \
+        --lavapipe /opt/venus/lib/x86_64-linux-gnu/libvulkan_lvp.so \
+        --llvm /opt/venus/lib/libLLVM.so.20.1 \
+        --icd /opt/venus/share/vulkan/icd.d/lvp_icd.x86_64.json \
+        --lock /venus-host.lock.json \
+        --output /runtime; \
+    /runtime/qemu-system-aarch64 -M help | grep -q pocketforge-a133
+
 FROM scratch AS export
-COPY --from=virglrenderer /opt/venus/ /
-COPY ci/venus-host.lock.json /share/pocketforge/venus-host.lock.json
+COPY --from=qemu /runtime/ /

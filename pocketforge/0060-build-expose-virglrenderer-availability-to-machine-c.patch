@@ -1,0 +1,28 @@
+From 732a9ef4b2ee2d25f8ae576b77b36c6e800b40cc Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 03:37:55 -0400
+Subject: [PATCH] build: expose virglrenderer availability to machine code
+
+The PocketForge A133 machine selects its GL transport with CONFIG_VIRGL. Export the dependency result so a virgl-enabled build reaches the registered virtio-gpu-gl device instead of silently selecting the 2D fallback.
+
+Assisted-by: LLM
+---
+ meson.build | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/meson.build b/meson.build
+index 40e3f4e..f7c3f70 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2517,6 +2517,7 @@ config_host_data.set('CONFIG_PNG', png.found())
+ config_host_data.set('CONFIG_VNC', vnc.found())
+ config_host_data.set('CONFIG_VNC_JPEG', jpeg.found())
+ config_host_data.set('CONFIG_VNC_SASL', sasl.found())
++config_host_data.set('CONFIG_VIRGL', virgl.found())
+ if virgl.found()
+   config_host_data.set('VIRGL_VERSION_MAJOR', virgl.version().split('.')[0])
+   config_host_data.set('VIRGL_VERSION_MINOR', virgl.version().split('.')[1])
+-- 
+2.43.0
+
