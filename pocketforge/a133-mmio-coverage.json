@@ -4,7 +4,7 @@
   "pins": {
     "platform": "a57d2b92f22f1b26aadc33b60a534f8f91e796ae",
     "kernel": "6ccb87902144babc2838b03840c0413bf0941ab4",
-    "qemu_upstream": "11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea",
+    "qemu_upstream": "4fc49f46dc95d4a27de2509e7fceb2931e91faeb",
     "dtb_source": "arch/arm64/boot/dts/allwinner/sun50i-a133-pocketforge-odyssey.dtb",
     "dtb_sha256": "8d7d185c1a1f78f72861cf8a98577c38a60b500291a2a9b49e42bcc1a54e0440",
     "build6_acceptance": {
