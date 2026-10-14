@@ -203,8 +203,8 @@ index 0000000..22ebef0
 +
 +#include "qemu/osdep.h"
 +#include "hw/misc/pocketforge_a133_ccu.h"
-+#include "hw/core/irq.h"
-+#include "hw/core/qdev-properties.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
 +#include "migration/vmstate.h"
 +#include "qapi/error.h"
 +#include "qemu/module.h"
@@ -424,8 +424,8 @@ index 0000000..fbde5b0
 +
 +#include "qemu/osdep.h"
 +#include "hw/misc/pocketforge_a133_pio.h"
-+#include "hw/core/irq.h"
-+#include "hw/core/qdev-properties.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
 +#include "migration/vmstate.h"
 +#include "qapi/error.h"
 +#include "qemu/module.h"
@@ -610,7 +610,7 @@ index 0000000..de3e1bf
 +#ifndef HW_MISC_POCKETFORGE_A133_CCU_H
 +#define HW_MISC_POCKETFORGE_A133_CCU_H
 +
-+#include "hw/core/sysbus.h"
++#include "hw/sysbus.h"
 +#include "qom/object.h"
 +
 +#define TYPE_POCKETFORGE_A133_CCU "pocketforge-a133-ccu"
@@ -664,7 +664,7 @@ index 0000000..214e5f3
 +#ifndef HW_MISC_POCKETFORGE_A133_PIO_H
 +#define HW_MISC_POCKETFORGE_A133_PIO_H
 +
-+#include "hw/core/sysbus.h"
++#include "hw/sysbus.h"
 +#include "qom/object.h"
 +
 +#define TYPE_POCKETFORGE_A133_PIO "pocketforge-a133-pio"

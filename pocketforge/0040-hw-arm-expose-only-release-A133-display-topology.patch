@@ -17,7 +17,7 @@ index 8e98617..3e95241 100644
 @@ -118,8 +118,6 @@
  #include "hw/sd/allwinner-sdhost.h"
  #include "hw/sd/sd.h"
- #include "hw/core/sysbus.h"
+ #include "hw/sysbus.h"
 -#include "hw/virtio/virtio-mmio.h"
 -#include "hw/virtio/virtio-gpu.h"
  #include "exec/address-spaces.h"

@@ -34,9 +34,9 @@ index fa94c2f..f1d60ff 100644
 +#include "qemu/timer.h"
  #include "qapi/error.h"
  #include "hw/display/pocketforge_a133_display.h"
-+#include "hw/core/irq.h"
++#include "hw/irq.h"
  #include "exec/address-spaces.h"
- #include "hw/core/qdev-properties.h"
+ #include "hw/qdev-properties.h"
  #include "ui/console.h"
 @@ -33,6 +35,9 @@
  #define PF_IOMMU_PC_IVLD   0xa8

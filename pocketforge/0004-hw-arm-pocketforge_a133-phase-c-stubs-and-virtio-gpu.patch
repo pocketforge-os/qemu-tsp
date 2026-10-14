@@ -142,8 +142,8 @@ index eb89470..3d24bf3 100644
   * This code is licensed under the GPL.
   */
 @@ -68,6 +96,8 @@
- #include "hw/core/qdev-properties.h"
- #include "hw/core/sysbus.h"
+ #include "hw/qdev-properties.h"
+ #include "hw/sysbus.h"
  #include "exec/address-spaces.h"
 +#include "sysemu/device_tree.h"
 +#include "hw/arm/fdt.h"
