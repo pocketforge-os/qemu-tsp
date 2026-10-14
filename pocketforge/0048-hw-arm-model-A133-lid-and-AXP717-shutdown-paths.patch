@@ -478,7 +478,7 @@ index 0000000..5a00088
 +
 +#include "qemu/osdep.h"
 +#include "hw/misc/pocketforge_a100_r_pio.h"
-+#include "hw/irq.h"
++#include "hw/core/irq.h"
 +#include "migration/vmstate.h"
 +#include "qapi/error.h"
 +#include "qemu/module.h"
@@ -695,7 +695,7 @@ index 0000000..369766c
 +#ifndef HW_MISC_POCKETFORGE_A100_R_PIO_H
 +#define HW_MISC_POCKETFORGE_A100_R_PIO_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +#include "qom/object.h"
 +
 +#define TYPE_POCKETFORGE_A100_R_PIO "pocketforge-a100-r-pio"

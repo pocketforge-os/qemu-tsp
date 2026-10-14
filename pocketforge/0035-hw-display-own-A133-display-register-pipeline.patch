@@ -19,7 +19,7 @@ index 0637a14..d69d751 100644
 +++ b/hw/arm/pocketforge_a133.c
 @@ -102,6 +102,7 @@
  #include "hw/arm/pocketforge_a133.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
 +#include "hw/display/pocketforge_a133_display.h"
  #include "hw/i2c/allwinner-i2c.h"
@@ -93,7 +93,7 @@ index 0000000..6045915
 +#include "qapi/error.h"
 +#include "hw/display/pocketforge_a133_display.h"
 +#include "exec/address-spaces.h"
-+#include "hw/qdev-properties.h"
++#include "hw/core/qdev-properties.h"
 +
 +#define PF_IOMMU_BASE      0x030f0000
 +#define PF_IOMMU_SIZE      0x10000
@@ -349,7 +349,7 @@ index 0000000..48b8e90
 +#ifndef HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
 +#define HW_DISPLAY_POCKETFORGE_A133_DISPLAY_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +
 +#define TYPE_POCKETFORGE_A133_DISPLAY "pocketforge-a133-display"
 +OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133DisplayState,

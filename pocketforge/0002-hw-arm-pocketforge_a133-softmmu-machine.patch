@@ -104,12 +104,12 @@ index 0000000..aa1d63c
 +#include "cpu.h"
 +#include "hw/arm/boot.h"
 +#include "hw/arm/bsa.h"
-+#include "hw/boards.h"
++#include "hw/core/boards.h"
 +#include "hw/char/dw_apb_uart.h"
 +#include "hw/intc/arm_gic.h"
 +#include "hw/intc/arm_gic_common.h"
-+#include "hw/qdev-properties.h"
-+#include "hw/sysbus.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/core/sysbus.h"
 +#include "exec/address-spaces.h"
 +#include "sysemu/sysemu.h"
 +#include "qemu/module.h"
@@ -296,9 +296,9 @@ index 0000000..d8b0b09
 +
 +#include "qemu/osdep.h"
 +#include "hw/char/dw_apb_uart.h"
-+#include "hw/irq.h"
-+#include "hw/qdev-properties.h"
-+#include "hw/qdev-properties-system.h"
++#include "hw/core/irq.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/core/qdev-properties-system.h"
 +#include "migration/vmstate.h"
 +#include "chardev/char-fe.h"
 +#include "qapi/error.h"
@@ -632,7 +632,7 @@ index 0000000..d8b0b09
 +    DEFINE_PROP_END_OF_LIST(),
 +};
 +
-+static void dw_apb_uart_class_init(ObjectClass *oc, void *data)
++static void dw_apb_uart_class_init(ObjectClass *oc, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +
@@ -704,7 +704,7 @@ index 0000000..0d91852
 +#ifndef HW_DW_APB_UART_H
 +#define HW_DW_APB_UART_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +#include "chardev/char-fe.h"
 +#include "qom/object.h"
 +
