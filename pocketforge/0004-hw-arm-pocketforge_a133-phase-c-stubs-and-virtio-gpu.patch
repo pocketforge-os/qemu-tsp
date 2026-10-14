@@ -1,5 +1,14 @@
+From 328d237acfc440f6110c2287e3162c3b341f40ab Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 12:54:13 -0400
+Subject: [PATCH 04/50] hw/arm: pocketforge_a133 Phase C stubs and virtio-gpu
+ graft
+
+Assisted-by: LLM
+
 diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
-index 3c907e0..9aace6c 100644
+index 3c907e01bb..9aace6c196 100644
 --- a/docs/pocketforge-a133-peripheral-stubs.md
 +++ b/docs/pocketforge-a133-peripheral-stubs.md
 @@ -23,27 +23,41 @@ purpose of getting past `probe()`.
@@ -67,7 +76,7 @@ index 3c907e0..9aace6c 100644
 +now independently reproduced under `-M pocketforge-a133`. Full transcript:
 +`pocketforge-automation` `scripts/qemu-pocketforge-a133-ui-evidence/serial.txt`.
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index eb89470..3d24bf3 100644
+index c22df98cf5..72952b0150 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -38,18 +38,46 @@
@@ -127,16 +136,16 @@ index eb89470..3d24bf3 100644
   *
   * This code is licensed under the GPL.
   */
-@@ -68,6 +96,8 @@
- #include "hw/qdev-properties.h"
- #include "hw/sysbus.h"
- #include "exec/address-spaces.h"
-+#include "sysemu/device_tree.h"
+@@ -71,6 +99,8 @@
+ #include "hw/core/sysbus.h"
+ #include "system/address-spaces.h"
+ #include "system/system.h"
++#include "system/device_tree.h"
 +#include "hw/arm/fdt.h"
- #include "sysemu/sysemu.h"
  #include "qemu/module.h"
  #include "chardev/char.h"
-@@ -120,8 +150,244 @@
+ 
+@@ -122,8 +152,244 @@
  #define PF_A133_DMA_BASE         0x03002000
  #define PF_A133_DMA_SIZE         0x1000
  
@@ -381,7 +390,7 @@ index eb89470..3d24bf3 100644
  #define PF_A133_NUM_CPUS        4
  #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
  
-@@ -184,6 +450,65 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+@@ -186,6 +452,65 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
      }
  }
  
@@ -447,7 +456,7 @@ index eb89470..3d24bf3 100644
  static void pocketforge_a133_init(MachineState *machine)
  {
      MemoryRegion *sysmem = get_system_memory();
-@@ -242,12 +567,61 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -244,12 +569,61 @@ static void pocketforge_a133_init(MachineState *machine)
                                        PF_A133_R_INTC_SIZE);
      pocketforge_a133_mmio_stub_create("pocketforge-a133.dma",
                                        PF_A133_DMA_BASE, PF_A133_DMA_SIZE);
@@ -509,7 +518,7 @@ index eb89470..3d24bf3 100644
      arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
  }
  
-@@ -259,7 +633,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+@@ -261,7 +635,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
      };
  
      mc->desc = "PocketForge OS A133 fidelity-CI machine "
@@ -518,3 +527,6 @@ index eb89470..3d24bf3 100644
      mc->init = pocketforge_a133_init;
      mc->max_cpus = PF_A133_NUM_CPUS;
      mc->min_cpus = PF_A133_NUM_CPUS;
+-- 
+2.43.0
+

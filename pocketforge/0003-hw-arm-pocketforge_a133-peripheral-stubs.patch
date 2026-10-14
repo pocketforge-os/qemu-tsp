@@ -1,6 +1,14 @@
+From 6ab2b4654a8a3b9920b066d5fb738afe2af308d0 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 11:22:46 -0400
+Subject: [PATCH 03/50] hw/arm: pocketforge_a133 peripheral stubs
+
+Assisted-by: LLM
+
 diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
 new file mode 100644
-index 0000000..3c907e0
+index 0000000000..3c907e01bb
 --- /dev/null
 +++ b/docs/pocketforge-a133-peripheral-stubs.md
 @@ -0,0 +1,49 @@
@@ -54,10 +62,10 @@ index 0000000..3c907e0
 +unverified scope. The next phase to reach that far should audit both drivers
 +properly before stubbing.
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 7b549dc..92fae69 100644
+index d80d212bc5..96b7248512 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
-@@ -276,6 +276,7 @@ config POCKETFORGE_A133
+@@ -198,6 +198,7 @@ config POCKETFORGE_A133
      depends on TCG && AARCH64
      select ARM_GIC
      select DW_APB_UART
@@ -66,7 +74,7 @@ index 7b549dc..92fae69 100644
  config SABRELITE
      bool
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index aa1d63c..eb89470 100644
+index 43f16bd1f5..c22df98cf5 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -3,12 +3,10 @@
@@ -129,15 +137,15 @@ index aa1d63c..eb89470 100644
   *
   * The real, unmodified sun50i-a133-pocketforge-tsp.dtb is loaded verbatim
   * via -dtb; this machine does not synthesize or auto-generate a device
-@@ -43,6 +62,7 @@
+@@ -44,6 +63,7 @@
  #include "hw/arm/bsa.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
 +#include "hw/misc/pocketforge_a133_mmio_stub.h"
  #include "hw/intc/arm_gic.h"
  #include "hw/intc/arm_gic_common.h"
- #include "hw/qdev-properties.h"
-@@ -65,6 +85,41 @@
+ #include "hw/core/qdev-properties.h"
+@@ -67,6 +87,41 @@
  #define PF_A133_UART0_BASE      0x05000000
  #define PF_A133_UART0_IRQ       0 /* GIC_SPI 0 */
  
@@ -179,7 +187,7 @@ index aa1d63c..eb89470 100644
  #define PF_A133_RAM_BASE        0x40000000
  
  #define PF_A133_NUM_CPUS        4
-@@ -163,6 +218,31 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -165,6 +220,31 @@ static void pocketforge_a133_init(MachineState *machine)
      dw_apb_uart_create(PF_A133_UART0_BASE, pic[PF_A133_UART0_IRQ],
                         serial_hd(0));
  
@@ -211,7 +219,7 @@ index aa1d63c..eb89470 100644
      binfo->ram_size = machine->ram_size;
      binfo->board_id = -1; /* device-tree boot only, no ATAGS board id */
      binfo->loader_start = PF_A133_RAM_BASE;
-@@ -179,7 +259,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+@@ -181,7 +261,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
      };
  
      mc->desc = "PocketForge OS A133 fidelity-CI machine "
@@ -221,10 +229,10 @@ index aa1d63c..eb89470 100644
      mc->max_cpus = PF_A133_NUM_CPUS;
      mc->min_cpus = PF_A133_NUM_CPUS;
 diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
-index cc8a8c1..6c36ac7 100644
+index 1543ee6653..b36fea415e 100644
 --- a/hw/misc/Kconfig
 +++ b/hw/misc/Kconfig
-@@ -201,3 +201,6 @@ config XLNX_VERSAL_TRNG
+@@ -258,3 +258,6 @@ config XLNX_ZYNQ_DDRC
      bool
  
  source macio/Kconfig
@@ -232,10 +240,10 @@ index cc8a8c1..6c36ac7 100644
 +config POCKETFORGE_A133_MMIO_STUB
 +    bool
 diff --git a/hw/misc/meson.build b/hw/misc/meson.build
-index 36c20d5..842b8c7 100644
+index 23265f6035..f9c59908c1 100644
 --- a/hw/misc/meson.build
 +++ b/hw/misc/meson.build
-@@ -154,3 +154,5 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
+@@ -168,3 +168,5 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
  
  # HPPA devices
  system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
@@ -243,7 +251,7 @@ index 36c20d5..842b8c7 100644
 +system_ss.add(when: 'CONFIG_POCKETFORGE_A133_MMIO_STUB', if_true: files('pocketforge_a133_mmio_stub.c'))
 diff --git a/hw/misc/pocketforge_a133_mmio_stub.c b/hw/misc/pocketforge_a133_mmio_stub.c
 new file mode 100644
-index 0000000..233ee5f
+index 0000000000..fe6ea07b63
 --- /dev/null
 +++ b/hw/misc/pocketforge_a133_mmio_stub.c
 @@ -0,0 +1,128 @@
@@ -351,13 +359,13 @@ index 0000000..233ee5f
 +    s->mmio_name = NULL;
 +}
 +
-+static void pf_a133_mmio_stub_class_init(ObjectClass *oc, void *data)
++static void pf_a133_mmio_stub_class_init(ObjectClass *oc, const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(oc);
 +
 +    dc->realize = pf_a133_mmio_stub_realize;
 +    dc->unrealize = pf_a133_mmio_stub_unrealize;
-+    dc->reset = pf_a133_mmio_stub_reset;
++    device_class_set_legacy_reset(dc, pf_a133_mmio_stub_reset);
 +    /* Internal wiring only (machine-instantiated); no user-creatable bus. */
 +    dc->user_creatable = false;
 +}
@@ -377,7 +385,7 @@ index 0000000..233ee5f
 +type_init(pf_a133_mmio_stub_register_types)
 diff --git a/include/hw/misc/pocketforge_a133_mmio_stub.h b/include/hw/misc/pocketforge_a133_mmio_stub.h
 new file mode 100644
-index 0000000..fb83035
+index 0000000000..17ed2c7f6d
 --- /dev/null
 +++ b/include/hw/misc/pocketforge_a133_mmio_stub.h
 @@ -0,0 +1,55 @@
@@ -413,7 +421,7 @@ index 0000000..fb83035
 +#ifndef HW_POCKETFORGE_A133_MMIO_STUB_H
 +#define HW_POCKETFORGE_A133_MMIO_STUB_H
 +
-+#include "hw/sysbus.h"
++#include "hw/core/sysbus.h"
 +#include "qom/object.h"
 +
 +#define TYPE_POCKETFORGE_A133_MMIO_STUB "pocketforge-a133-mmio-stub"
@@ -436,3 +444,6 @@ index 0000000..fb83035
 +                                               uint32_t size);
 +
 +#endif /* HW_POCKETFORGE_A133_MMIO_STUB_H */
+-- 
+2.43.0
+

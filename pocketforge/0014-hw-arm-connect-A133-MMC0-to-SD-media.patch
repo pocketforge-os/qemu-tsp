@@ -1,20 +1,16 @@
-From f5d7ace53408a41a01bfbe2f1b5c07068ed72396 Mon Sep 17 00:00:00 2001
+From 2717d65191ebb8ce2c42ef1b474b236de48e682e Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Fri, 9 Oct 2026 19:09:58 -0400
-Subject: [PATCH 14/14] hw/arm: connect A133 MMC0 to SD media
+Subject: [PATCH 14/50] hw/arm: connect A133 MMC0 to SD media
+
+Rebase resolutions:
+- Qtest Meson: register the MMC test in the v11 qtests_aarch64 map.
+- SD protocol test: consume v11 SD CMD3's randomized nonzero RCA and reuse it for CMD7 instead of assuming 0x4567.
 
 Assisted-by: LLM
----
- docs/pocketforge-a133-peripheral-stubs.md    |  12 ++
- hw/arm/pocketforge_a133.c                    |  43 ++++-
- tests/qtest/meson.build                      |   2 +-
- tests/qtest/pocketforge-a133-mmc-test.c      | 171 +++++++++++++++++++
- tests/qtest/pocketforge-a133-mmio-map-test.c |   3 +-
- 5 files changed, 227 insertions(+), 4 deletions(-)
- create mode 100644 tests/qtest/pocketforge-a133-mmc-test.c
 
 diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
-index 311c650..cd0eb09 100644
+index 311c650409..cd0eb09231 100644
 --- a/docs/pocketforge-a133-peripheral-stubs.md
 +++ b/docs/pocketforge-a133-peripheral-stubs.md
 @@ -61,3 +61,15 @@ bounded software register bank: IRQ enable `0x40..0x44`, W1C IRQ status
@@ -34,7 +30,7 @@ index 311c650..cd0eb09 100644
 +corrupt control image, and checks that a command with no attached medium gets
 +no response.
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 3b03d48..d2f67a3 100644
+index b7885b7117..24732bb343 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -64,6 +64,9 @@
@@ -55,21 +51,22 @@ index 3b03d48..d2f67a3 100644
  #include "qapi/error.h"
  #include "cpu.h"
  #include "hw/arm/boot.h"
-@@ -98,10 +102,13 @@
- #include "hw/intc/arm_gic_common.h"
- #include "hw/qdev-properties.h"
+@@ -100,11 +104,14 @@
+ #include "hw/core/qdev-properties.h"
+ #include "hw/core/irq.h"
  #include "hw/rtc/pocketforge_a100_rtc.h"
 +#include "hw/sd/allwinner-sdhost.h"
 +#include "hw/sd/sd.h"
- #include "hw/sysbus.h"
+ #include "hw/core/sysbus.h"
  #include "hw/virtio/virtio-mmio.h"
- #include "exec/address-spaces.h"
- #include "sysemu/device_tree.h"
-+#include "sysemu/blockdev.h"
+ #include "system/address-spaces.h"
+ #include "system/system.h"
+ #include "system/device_tree.h"
++#include "system/blockdev.h"
  #include "hw/arm/fdt.h"
- #include "sysemu/sysemu.h"
  #include "qemu/module.h"
-@@ -139,6 +146,10 @@ struct PocketForgeA133MachineState {
+ #include "chardev/char.h"
+@@ -141,6 +148,10 @@ struct PocketForgeA133MachineState {
  /* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
  #define PF_A133_RTC_BASE        0x07000000
  
@@ -80,7 +77,7 @@ index 3b03d48..d2f67a3 100644
  /*
   * Phase B (tsp-mc9m.41.925.2.2) RAM-backed register-file stubs -- addresses
   * and sizes taken verbatim from sun50i-a100.dtsi's "ccu", "watchdog", "pio",
-@@ -442,7 +453,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+@@ -444,7 +455,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
      { "pocketforge-a133.pio",              0x0300b000, 0x400 },
      { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
      { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
@@ -88,7 +85,7 @@ index 3b03d48..d2f67a3 100644
      { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
      { "pocketforge-a133.ledc",             0x05018000, 0x400 },
      { "pocketforge-a133.ths",              0x05070400, 0x100 },
-@@ -513,6 +523,34 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+@@ -515,6 +525,34 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
          PF_A133_R_I2C0_SIZE - AW_I2C_MEM_SIZE);
  }
  
@@ -123,7 +120,7 @@ index 3b03d48..d2f67a3 100644
  static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
  {
      DeviceState *gicdev;
-@@ -684,6 +722,7 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -686,6 +724,7 @@ static void pocketforge_a133_init(MachineState *machine)
  
      pocketforge_a133_create_mmio_stubs();
      pocketforge_a133_create_r_i2c0(s, pic[113]);
@@ -131,7 +128,7 @@ index 3b03d48..d2f67a3 100644
  
      pocketforge_a133_create_virtio_mmio(machine, pic);
  
-@@ -713,6 +752,8 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+@@ -715,6 +754,8 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
      mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a53");
      mc->default_ram_size = 1 * GiB;
      mc->default_ram_id = "pocketforge-a133.ram";
@@ -141,24 +138,24 @@ index 3b03d48..d2f67a3 100644
      mc->no_floppy = true;
      mc->no_parallel = true;
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 3e64a49..6ac525f 100644
+index aa4a95dfaf..60d8023eed 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -224,7 +224,7 @@ qtests_aarch64 = \
-   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
-     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
-      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
--     'pocketforge-a133-axp717-test'] : []) +                                      \
-+     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) +         \
+@@ -277,7 +277,7 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',
+-     'pocketforge-a133-axp717-test'] : []) + \
++     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) + \
+   qtests_cxl +                                                                                  \
    ['arm-cpu-features',
     'numa-test',
-    'boot-serial-test',
 diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a133-mmc-test.c
 new file mode 100644
-index 0000000..8411e74
+index 0000000000..63cead3b77
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-mmc-test.c
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,173 @@
 +/*
 + * PocketForge A133 MMC0 qtest
 + *
@@ -235,6 +232,7 @@ index 0000000..8411e74
 +static void initialize_sd(QTestState *qts)
 +{
 +    uint32_t irq;
++    uint32_t rca;
 +
 +    irq = send_command(qts, 0, 0);
 +    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
@@ -246,8 +244,9 @@ index 0000000..8411e74
 +    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
 +    irq = send_command(qts, CMD_RESP | 3, 0);
 +    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
-+    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_RESP0) >> 16, ==, 0x4567);
-+    irq = send_command(qts, CMD_RESP | 7, 0x45670000);
++    rca = qtest_readl(qts, MMC0_BASE + REG_RESP0) >> 16;
++    g_assert_cmphex(rca, !=, 0);
++    irq = send_command(qts, CMD_RESP | 7, rca << 16);
 +    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
 +    irq = send_command(qts, CMD_RESP | 16, 512);
 +    g_assert_cmphex(irq & RINTR_CMD_DONE, !=, 0);
@@ -331,7 +330,7 @@ index 0000000..8411e74
 +    return g_test_run();
 +}
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index ca85b91..de7685d 100644
+index ca85b91198..de7685da20 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -35,7 +35,7 @@ static const ExpectedRegion expected_regions[] = {

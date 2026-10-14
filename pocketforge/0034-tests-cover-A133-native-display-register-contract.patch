@@ -1,14 +1,17 @@
+From 106a547d8522040bbf82aa26dc4d10c450f7bdab Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 18:52:00 +0000
-Subject: [PATCH] tests: cover A133 native display register contract
+Subject: [PATCH 34/50] tests: cover A133 native display register contract
 
 Add the first route-(b) RED qtest. It requires hardware-owned completion
 semantics that RAM-backed probe stubs cannot provide: IOMMU TLB flush,
 DSI instruction completion, and TCON trigger completion. The D-PHY
 read/write case is the positive control in the same invocation.
 
+Assisted-by: LLM
+
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 28dad13..118d35a 100644
+index 52cdab1d0b..88053361e2 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -25,6 +25,13 @@
@@ -77,3 +80,6 @@ index 28dad13..118d35a 100644
 +                   test_native_register_contract);
      return g_test_run();
  }
+-- 
+2.43.0
+

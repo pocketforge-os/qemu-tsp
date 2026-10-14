@@ -1,8 +1,8 @@
-From cffd3b6475d1d6e6ef6f60245927431dd62d07bb Mon Sep 17 00:00:00 2001
+From 2178b4f9d677f206dafe3d88671e506c00358898 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sat, 3 Oct 2026 15:29:48 -0400
-Subject: [PATCH] hw/input: make virtio input reports queue-atomic
+Subject: [PATCH 08/50] hw/input: make virtio input reports queue-atomic
 
 Check the complete report fits before claiming guest buffers. This keeps
 a rejected input-plus-SYN report from transiently draining a one-buffer
@@ -12,13 +12,9 @@ Free elements on the defensive rollback path, and cover repeated
 one-buffer rejection followed by successful press and release reports.
 
 Assisted-by: LLM
----
- hw/input/virtio-input.c                   |  14 ++-
- tests/qtest/pocketforge-a133-input-test.c | 141 ++++++++++++++++++++--
- 2 files changed, 143 insertions(+), 12 deletions(-)
 
 diff --git a/hw/input/virtio-input.c b/hw/input/virtio-input.c
-index 0478b21..7fef399 100644
+index 3ebfc6c898..de822c18d1 100644
 --- a/hw/input/virtio-input.c
 +++ b/hw/input/virtio-input.c
 @@ -43,12 +43,22 @@ bool virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
@@ -47,7 +43,7 @@ index 0478b21..7fef399 100644
              vinput->qindex = 0;
              trace_virtio_input_queue_full();
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 424c022..a25a74e 100644
+index 424c0226d7..a25a74ead8 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -33,6 +33,7 @@ typedef struct InputFixture {

@@ -1,8 +1,15 @@
+From e12eb67ac233e79c52a0edf3d7aa1f4f2360d947 Mon Sep 17 00:00:00 2001
+From: Matt Burke <burke9077@gmail.com>
+Date: Fri, 26 Jun 2026 17:35:29 -0400
+Subject: [PATCH 01/50] linux-user: evdev/uinput ioctl pass-through
+
+Assisted-by: LLM
+
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index e384e14..c05fec5 100644
+index 9f454502cb..05b6e1d346 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
-@@ -5571,6 +5571,84 @@ IOCTLEntry ioctl_entries[] = {
+@@ -5695,6 +5695,84 @@ IOCTLEntry ioctl_entries[] = {
  
  /* ??? Implement proper locking for ioctls.  */
  /* do_ioctl() Must return target values and target errnos. */
@@ -87,7 +94,7 @@ index e384e14..c05fec5 100644
  static abi_long do_ioctl(int fd, int cmd, abi_long arg)
  {
      const IOCTLEntry *ie;
-@@ -5583,6 +5661,14 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+@@ -5707,6 +5785,14 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
      ie = ioctl_entries;
      for(;;) {
          if (ie->target_cmd == 0) {
@@ -102,3 +109,6 @@ index e384e14..c05fec5 100644
              qemu_log_mask(
                  LOG_UNIMP, "Unsupported ioctl: cmd=0x%04lx\n", (long)cmd);
              return -TARGET_ENOTTY;
+-- 
+2.43.0
+

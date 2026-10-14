@@ -1,14 +1,20 @@
+From 3860a350df456e072e3b43052c078d5a6a4be751 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:12:00 +0000
-Subject: [PATCH] tests: drive A133 native DE2 scanout through IOMMU
+Subject: [PATCH 36/50] tests: drive A133 native DE2 scanout through IOMMU
 
 Replace the virtio-gpu proxy path in the display export test with the
 release driver's native contract: populate sun50i IOMMU tables, program
 DE2 UI channel 2, and commit via the mixer double-buffer register. Require
 finite DSI and TCON command completion rather than write-discard stubs.
 
+Rebase resolutions:
+- Qobject: use the v11 qobject/ QDict header after replacing the earlier virtio display fixture.
+
+Assisted-by: LLM
+
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 326846f..5568798 100644
+index 88053361e2..810c21aa1e 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -5,41 +5,30 @@
@@ -17,7 +23,7 @@ index 326846f..5568798 100644
  #include "libqtest.h"
 -#include "libqos/libqos-malloc.h"
 -#include "libqos/virtio-mmio.h"
- #include "qapi/qmp/qdict.h"
+ #include "qobject/qdict.h"
  #include "ui/dbus-display1.h"
 -#include "standard-headers/linux/virtio_config.h"
 -#include "standard-headers/linux/virtio_gpu.h"
@@ -334,3 +340,6 @@ index 326846f..5568798 100644
      qtest_clock_step(qts, 100 * 1000);
      g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
                      ==, 0);
+-- 
+2.43.0
+

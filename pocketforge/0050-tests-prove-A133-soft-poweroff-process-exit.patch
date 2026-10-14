@@ -1,8 +1,16 @@
+From bd0f557160db66b9b3b8bb162adb516f60f8228e Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 15:52:00 -0400
+Subject: [PATCH 49/50] tests: prove A133 soft poweroff process exit
+
+Assisted-by: LLM
+
 diff --git a/tests/qtest/libqtest.c b/tests/qtest/libqtest.c
-index d8f80dcb95..102b32dadb 100644
+index c33c799c92..f6f870cfb3 100644
 --- a/tests/qtest/libqtest.c
 +++ b/tests/qtest/libqtest.c
-@@ -1113,6 +1113,11 @@ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value)
+@@ -1276,6 +1276,11 @@ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value)
      qtest_write(s, "writel", addr, value);
  }
  
@@ -15,10 +23,10 @@ index d8f80dcb95..102b32dadb 100644
  {
      qtest_write(s, "writeq", addr, value);
 diff --git a/tests/qtest/libqtest.h b/tests/qtest/libqtest.h
-index 6e3d3525ad..b580166a6b 100644
+index 45217fb8dc..4c94ca2acf 100644
 --- a/tests/qtest/libqtest.h
 +++ b/tests/qtest/libqtest.h
-@@ -506,6 +506,18 @@ void qtest_writew(QTestState *s, uint64_t addr, uint16_t value);
+@@ -574,6 +574,18 @@ void qtest_writew(QTestState *s, uint64_t addr, uint16_t value);
   */
  void qtest_writel(QTestState *s, uint64_t addr, uint32_t value);
  
@@ -38,10 +46,10 @@ index 6e3d3525ad..b580166a6b 100644
   * qtest_writeq:
   * @s: #QTestState instance to operate on.
 diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
-index fc45c4f0d0..21a5950c49 100644
+index 126afdbee8..58091cafe1 100644
 --- a/tests/qtest/pocketforge-a133-axp717-test.c
 +++ b/tests/qtest/pocketforge-a133-axp717-test.c
-@@ -89,6 +89,14 @@ static void axp717_write_on(QTestState *qts, uint8_t reg, uint8_t value)
+@@ -90,6 +90,14 @@ static void axp717_write_on(QTestState *qts, uint8_t reg, uint8_t value)
      i2c_stop_on(qts);
  }
  
@@ -56,7 +64,7 @@ index fc45c4f0d0..21a5950c49 100644
  static uint8_t axp717_read_on(QTestState *qts, uint8_t reg)
  {
      uint8_t value;
-@@ -360,6 +368,12 @@ static void test_axp717_soft_poweroff_exit(void)
+@@ -361,6 +369,12 @@ static void test_axp717_soft_poweroff_exit(void)
      qobject_unref(response);
      g_free(events.reason);
      qtest_quit(qts);
@@ -69,3 +77,6 @@ index fc45c4f0d0..21a5950c49 100644
  }
  
  static void test_pek_reset_clears_machine_state(void)
+-- 
+2.43.0
+

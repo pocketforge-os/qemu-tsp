@@ -1,7 +1,7 @@
-From 41542acecba745653ddb6f9bfab94a7ed298b4f0 Mon Sep 17 00:00:00 2001
+From a175c038f4347ae1137667cfe7b3967a9340b0e2 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 11:05:00 +0000
-Subject: [PATCH 32/32] tests: cover A133 SPL CCU pinctrl UART0 and MMC0 gating
+Subject: [PATCH 32/50] tests: cover A133 SPL CCU pinctrl UART0 and MMC0 gating
 
 Add the pocketforge-a133-ccu qtest for the early CCU/PIO behavior the
 pinned A133 SPL relies on: one hermetic invocation carries the full
@@ -21,31 +21,27 @@ view and UART contract probes, and the mmc test performs the SPL MMC0
 clock/gate/pinmux sequence before driving the controller, matching the
 wiring the model change introduces.
 
+Rebase resolutions:
+- Qtest Meson: register the CCU test in the v11 qtests_aarch64 map.
+
 Assisted-by: LLM
----
- tests/qtest/meson.build                      |   2 +-
- tests/qtest/pocketforge-a133-ccu-test.c      | 578 +++++++++++++++++++
- tests/qtest/pocketforge-a133-mmc-test.c      |  20 +
- tests/qtest/pocketforge-a133-mmio-map-test.c |  25 +-
- 4 files changed, 623 insertions(+), 2 deletions(-)
- create mode 100644 tests/qtest/pocketforge-a133-ccu-test.c
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 020d204..887f670 100644
+index 362aab1d81..b0d8abcd23 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -225,7 +225,7 @@ qtests_aarch64 = \
-     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
-      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
-      'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',                 \
--     'pocketforge-a133-bootrom-test'] : []) +                                      \
-+     'pocketforge-a133-bootrom-test', 'pocketforge-a133-ccu-test'] : []) +                                      \
-   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?        \
-     ['pocketforge-a133-display-test'] : []) +                                      \
-   ['arm-cpu-features',
+@@ -278,7 +278,7 @@ qtests_aarch64 = \
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',
+      'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',
+-     'pocketforge-a133-bootrom-test'] : []) + \
++     'pocketforge-a133-bootrom-test', 'pocketforge-a133-ccu-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?
+     ['pocketforge-a133-display-test'] : []) + \
+   qtests_cxl +                                                                                  \
 diff --git a/tests/qtest/pocketforge-a133-ccu-test.c b/tests/qtest/pocketforge-a133-ccu-test.c
 new file mode 100644
-index 0000000..2a10ed9
+index 0000000000..a2c9744188
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-ccu-test.c
 @@ -0,0 +1,578 @@
@@ -628,10 +624,10 @@ index 0000000..2a10ed9
 +    return g_test_run();
 +}
 diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a133-mmc-test.c
-index 8411e74..3b39b19 100644
+index 63cead3b77..aa21baef42 100644
 --- a/tests/qtest/pocketforge-a133-mmc-test.c
 +++ b/tests/qtest/pocketforge-a133-mmc-test.c
-@@ -125,6 +125,23 @@ static QTestState *start_with_image(const char *path)
+@@ -127,6 +127,23 @@ static QTestState *start_with_image(const char *path)
                         "-drive if=sd,format=raw,file=%s", quoted);
  }
  
@@ -655,7 +651,7 @@ index 8411e74..3b39b19 100644
  static void test_real_media_and_controls(void)
  {
      static const char valid_gpt[8] = "EFI PART";
-@@ -137,6 +154,7 @@ static void test_real_media_and_controls(void)
+@@ -139,6 +156,7 @@ static void test_real_media_and_controls(void)
  
      /* Positive: shifted A100 DMA addresses fetch the raw GPT signature. */
      qts = start_with_image(valid_path);
@@ -663,7 +659,7 @@ index 8411e74..3b39b19 100644
      g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
                      STAS_CARD_PRESENT, !=, 0);
      initialize_sd(qts);
-@@ -146,6 +164,7 @@ static void test_real_media_and_controls(void)
+@@ -148,6 +166,7 @@ static void test_real_media_and_controls(void)
  
      /* Negative control: bytes come from media; a corrupt GPT stays corrupt. */
      qts = start_with_image(corrupt_path);
@@ -671,7 +667,7 @@ index 8411e74..3b39b19 100644
      initialize_sd(qts);
      read_gpt_marker(qts, marker);
      g_assert_cmpmem(marker, sizeof(marker), corrupt_gpt, sizeof(corrupt_gpt));
-@@ -154,6 +173,7 @@ static void test_real_media_and_controls(void)
+@@ -156,6 +175,7 @@ static void test_real_media_and_controls(void)
  
      /* Negative control: without media, commands receive no response. */
      qts = qtest_init("-M pocketforge-a133 -m 64M");
@@ -680,7 +676,7 @@ index 8411e74..3b39b19 100644
      g_assert_cmphex(irq & RINTR_NO_RESP, !=, 0);
      qtest_quit(qts);
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index 49779be..105de00 100644
+index 49779be550..105de0082c 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -124,6 +124,23 @@ static QTestState *mmio_start(void)
@@ -733,3 +729,4 @@ index 49779be..105de00 100644
          g_assert_cmphex(qtest_readl(qts, uart_bases[i] + 0x7c), ==, 0x6);
 -- 
 2.43.0
+

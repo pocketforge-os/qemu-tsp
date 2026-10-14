@@ -1,7 +1,7 @@
-From e42900ee7fd022c89b4397d0d3393767ee15a9b1 Mon Sep 17 00:00:00 2001
+From 9a4d0f0005fb7a096da82b52ae183f686a82e955 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 10:05:00 +0000
-Subject: [PATCH 31/31] hw: arm: A133 BootROM MMC0 eGON loader and SRAM reset
+Subject: [PATCH 31/50] hw: arm: A133 BootROM MMC0 eGON loader and SRAM reset
  path
 
 Promote SRAM A1/C/A2 to RAM-backed executable memory at their pinned
@@ -25,15 +25,13 @@ correct mrc/tst encodings, -accel tcg so the SPL really executes, the
 QEMU MPIDR reset value including the MP-extensions bit, and
 power-of-two SD media sizes.
 
+Rebase resolutions:
+- Reset/block APIs: use the v11 system reset and block-backend I/O interfaces while preserving reset ordering.
+
 Assisted-by: LLM
----
- hw/arm/pocketforge_a133.c                    | 214 ++++++++++++++++++++++++++-
- tests/qtest/pocketforge-a133-bootrom-test.c  |  41 +++--
- tests/qtest/pocketforge-a133-mmio-map-test.c |  65 +++++++-
- 3 files changed, 294 insertions(+), 26 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 983e4f1..9bf3610 100644
+index 723f3ed033..3e8e61f16f 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -87,6 +87,7 @@
@@ -45,26 +43,25 @@ index 983e4f1..9bf3610 100644
  #include "qemu/units.h"
  #include "qemu/error-report.h"
 @@ -95,6 +96,7 @@
- #include "qapi/qapi-commands-misc-target.h"
- #include "qapi/qapi-types-misc-target.h"
+ #include "qapi/qapi-commands-misc-arm.h"
+ #include "qapi/qapi-types-misc-arm.h"
  #include "cpu.h"
 +#include "internals.h"
  #include "hw/arm/boot.h"
+ #include "hw/arm/machines-qom.h"
  #include "hw/arm/bsa.h"
- #include "hw/arm/pocketforge_a133.h"
-@@ -119,9 +121,11 @@
+@@ -121,8 +123,10 @@
  #include "migration/vmstate.h"
- #include "sysemu/device_tree.h"
- #include "sysemu/blockdev.h"
-+#include "sysemu/block-backend-io.h"
- #include "sysemu/reset.h"
+ #include "system/device_tree.h"
+ #include "system/blockdev.h"
++#include "system/block-backend-io.h"
+ #include "system/reset.h"
  #include "hw/arm/fdt.h"
- #include "sysemu/sysemu.h"
-+#include "sysemu/tcg.h"
++#include "system/tcg.h"
  #include "qemu/module.h"
  #include "chardev/char.h"
  #include "ui/qemu-pixman.h"
-@@ -132,6 +136,41 @@
+@@ -133,6 +137,41 @@
  OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133MachineState,
                             POCKETFORGE_A133_MACHINE)
  
@@ -106,7 +103,7 @@ index 983e4f1..9bf3610 100644
  struct PocketForgeA133MachineState {
      MachineState parent_obj;
      I2CBus *r_i2c0_bus;
-@@ -143,6 +182,10 @@ struct PocketForgeA133MachineState {
+@@ -144,6 +183,10 @@ struct PocketForgeA133MachineState {
      DWApbUartState *gamepad_uart[2];
      DeviceState *pmic;
      MemoryRegion r_intc_mmio;
@@ -117,7 +114,7 @@ index 983e4f1..9bf3610 100644
      qemu_irq r_intc_parent_irq;
      uint32_t r_intc_ctrl;
      uint32_t r_intc_enable;
-@@ -482,9 +525,6 @@ typedef struct PfA133StubRegion {
+@@ -483,9 +526,6 @@ typedef struct PfA133StubRegion {
   * aperture (notably DE2's 4 MiB window).
   */
  static const PfA133StubRegion pf_a133_stub_regions[] = {
@@ -127,7 +124,7 @@ index 983e4f1..9bf3610 100644
      { "pocketforge-a133.gpu",              0x01800000, 0x80000 },
      { "pocketforge-a133.crypto",           0x01904000, 0x800 },
      { "pocketforge-a133.video_codec",      0x01c0e000, 0x1000 },
-@@ -548,6 +588,147 @@ static void pocketforge_a133_create_mmio_stubs(void)
+@@ -549,6 +589,147 @@ static void pocketforge_a133_create_mmio_stubs(void)
      }
  }
  
@@ -275,7 +272,7 @@ index 983e4f1..9bf3610 100644
  static void pocketforge_a133_r_intc_update(PocketForgeA133MachineState *s)
  {
      qemu_set_irq(s->r_intc_parent_irq,
-@@ -677,7 +858,8 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+@@ -678,7 +859,8 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
          PF_A133_R_I2C0_SIZE - AW_I2C_MEM_SIZE);
  }
  
@@ -285,7 +282,7 @@ index 983e4f1..9bf3610 100644
  {
      DriveInfo *di = drive_get(IF_SD, 0, 0);
      BlockBackend *blk = di ? blk_by_legacy_dinfo(di) : NULL;
-@@ -699,6 +881,8 @@ static void pocketforge_a133_create_mmc0(qemu_irq irq)
+@@ -700,6 +882,8 @@ static void pocketforge_a133_create_mmc0(qemu_irq irq)
      if (!di) {
          return;
      }
@@ -294,7 +291,7 @@ index 983e4f1..9bf3610 100644
  
      card = qdev_new(TYPE_SD_CARD);
      qdev_prop_set_drive_err(card, "drive", blk, &error_fatal);
-@@ -870,6 +1054,16 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -871,6 +1055,16 @@ static void pocketforge_a133_init(MachineState *machine)
           */
          object_property_set_bool(cpuobj, "has_el3", false, &error_fatal);
  
@@ -311,7 +308,7 @@ index 983e4f1..9bf3610 100644
          qdev_realize(DEVICE(cpuobj), NULL, &error_fatal);
          object_unref(cpuobj);
      }
-@@ -912,13 +1106,14 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -913,13 +1107,14 @@ static void pocketforge_a133_init(MachineState *machine)
  
      pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
  
@@ -327,7 +324,7 @@ index 983e4f1..9bf3610 100644
  
      pocketforge_a133_create_virtio_mmio(machine, pic);
  
-@@ -929,6 +1124,15 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -930,6 +1125,15 @@ static void pocketforge_a133_init(MachineState *machine)
      binfo->psci_conduit = QEMU_PSCI_CONDUIT_SMC;
      binfo->modify_dtb = pocketforge_a133_modify_dtb;
      arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
@@ -344,7 +341,7 @@ index 983e4f1..9bf3610 100644
  
  static void pocketforge_a133_machine_init(MachineClass *mc)
 diff --git a/tests/qtest/pocketforge-a133-bootrom-test.c b/tests/qtest/pocketforge-a133-bootrom-test.c
-index c828f31..91d3af6 100644
+index c828f3134c..91d3af6c01 100644
 --- a/tests/qtest/pocketforge-a133-bootrom-test.c
 +++ b/tests/qtest/pocketforge-a133-bootrom-test.c
 @@ -60,10 +60,10 @@
@@ -453,7 +450,7 @@ index c828f31..91d3af6 100644
      assert_not_booted(qts);
  
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index 52052cb..49779be 100644
+index 52052cb0ae..49779be550 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -15,9 +15,6 @@ typedef struct ExpectedRegion {

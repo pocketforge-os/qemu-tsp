@@ -1,15 +1,12 @@
-From 2361aa773195e3a053b9254a716a295397c81729 Mon Sep 17 00:00:00 2001
+From ed187e635ee68c405fae6b92a339274453bbbfd8 Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Sat, 10 Oct 2026 05:00:17 -0400
-Subject: [PATCH 1/2] tests: cover A133 MCU analog controls
+Subject: [PATCH 23/50] tests: cover A133 MCU analog controls
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-input-test.c | 116 +++++++++++++++++++++-
- 1 file changed, 114 insertions(+), 2 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 4d5bbbb..5a0c1ec 100644
+index 367de1c81b..b1b908172b 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -68,6 +68,19 @@ static QDict *raw_send(QTestState *qts, int type, int code, int value)

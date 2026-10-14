@@ -1,17 +1,20 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From b86df0cd26cde7d0407b15f5bec5179d8ffdc25e Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:41:00 +0000
-Subject: [PATCH] hw/display: scan out advertised A133 formats
+Subject: [PATCH 45/50] hw/display: scan out advertised A133 formats
 
 Exercise every DE2 format exposed by query-pocketforge-display and convert
 the red/blue byte order of XB24 into the host x8r8g8b8 surface.  Keep AR24
 and XR24 on the direct-copy path used by the release framebuffer.
 
+Assisted-by: LLM
+
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
-index e6ba122..9ff3b24 100644
+index 063d4dfed5..0d1ef0f801 100644
 --- a/hw/display/pocketforge_a133_display.c
 +++ b/hw/display/pocketforge_a133_display.c
-@@ -271,6 +271,6 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+@@ -273,7 +273,7 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+     PfDisplayBank *de2 = &s->bank[PF_BANK_DE2];
      DisplaySurface *surface;
      uint32_t attr, size, pitch, laddr;
 -    unsigned int width, height, format, y;
@@ -19,7 +22,7 @@ index e6ba122..9ff3b24 100644
      uint8_t *destination;
  
      if (!s->console) {
-@@ -288,7 +288,7 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+@@ -289,7 +289,7 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
  
      if (!(attr & BIT(0)) || width != PF_NATIVE_WIDTH ||
          height != PF_NATIVE_HEIGHT || pitch < width * 4 ||
@@ -28,7 +31,7 @@ index e6ba122..9ff3b24 100644
          return;
      }
  
-@@ -299,6 +299,16 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
+@@ -300,6 +300,16 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
                  s->frame + y * width * 4, width * 4)) {
              return;
          }
@@ -46,10 +49,10 @@ index e6ba122..9ff3b24 100644
      destination = surface_data(surface);
      if (surface_stride(surface) == width * 4 &&
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 40f84c0..3c712b1 100644
+index f8a850a6e9..4145486207 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
-@@ -55,6 +55,7 @@ typedef struct DisplayTest {
+@@ -56,6 +56,7 @@ typedef struct DisplayTest {
      guint update_format;
      gsize update_bytes;
      uint8_t update_pixel[4];
@@ -57,7 +60,7 @@ index 40f84c0..3c712b1 100644
  } DisplayTest;
  
  enum {
-@@ -168,6 +169,8 @@ static gboolean handle_scanout(QemuDBusDisplay1Listener *object,
+@@ -175,6 +176,8 @@ static gboolean handle_scanout(QemuDBusDisplay1Listener *object,
      memcpy(test->first, pixels, sizeof(test->first));
      memcpy(test->last, pixels + test->bytes - sizeof(test->last),
             sizeof(test->last));
@@ -66,7 +69,7 @@ index 40f84c0..3c712b1 100644
      g_main_loop_quit(test->loop);
      return DBUS_METHOD_INVOCATION_HANDLED;
  }
-@@ -239,6 +242,40 @@ static gpointer server_thread(gpointer data)
+@@ -238,6 +241,40 @@ static gpointer server_thread(gpointer data)
      return p2p_from_fd(GPOINTER_TO_INT(data));
  }
  
@@ -107,7 +110,7 @@ index 40f84c0..3c712b1 100644
  static void test_native_scanout(void)
  {
      g_autoptr(GError) err = NULL;
-@@ -314,6 +351,17 @@ static void test_native_scanout(void)
+@@ -308,6 +345,17 @@ static void test_native_scanout(void)
      g_assert_cmpuint(test.first[3], ==, 0x00);
      g_assert_cmpint(memcmp(test.first, test.last, sizeof(test.first)), !=, 0);
  
@@ -125,3 +128,6 @@ index 40f84c0..3c712b1 100644
      /* Map the observed native marker using the queried clockwise direction. */
      if (presentation_rotation == 90) {
          presented_x = PF_HEIGHT - 1;
+-- 
+2.43.0
+
