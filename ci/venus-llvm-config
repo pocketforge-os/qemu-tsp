@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 1 ] && [ "$1" = "--components" ]; then
+    /opt/venus/bin/llvm-config --components | sed 's/$/ engine/'
+else
+    exec /opt/venus/bin/llvm-config "$@"
+fi

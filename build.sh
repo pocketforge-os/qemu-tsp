@@ -401,9 +401,36 @@ if grep -q '#ifdef CONFIG_OPENGL' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0057-hw-arm-gate-A133-GL-accelerator-on-virgl.patch"
 fi
 
+echo "== apply PocketForge patch: expose virglrenderer build availability =="
+if ! grep -Fq "config_host_data.set('CONFIG_VIRGL', virgl.found())" meson.build; then
+  git apply "$ROOT/pocketforge/0060-build-expose-virglrenderer-availability-to-machine-c.patch"
+fi
+
 echo "== test A133 render build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-render-config-test.py" .
+
+echo "== apply PocketForge patch: RED Venus-only virtio-gpu property qtest =="
+if [ ! -f tests/qtest/virtio-gpu-venus-only-test.c ]; then
+  git apply "$ROOT/pocketforge/0058-tests-require-Venus-only-virtio-gpu-property.patch"
+fi
+
+echo "== apply PocketForge patch: Venus-only render-server mode =="
+if ! grep -Fq 'DEFINE_PROP_BOOL("virgl"' hw/display/virtio-gpu-gl.c; then
+  git apply "$ROOT/pocketforge/0059-virtio-gpu-add-Venus-only-render-server-mode.patch"
+fi
+
+echo "== apply PocketForge patch: Venus-only virtio-gpu queue contract =="
+if ! grep -Fq 'test_venus_only_queue_contract' \
+    tests/qtest/virtio-gpu-venus-only-test.c; then
+  git apply "$ROOT/pocketforge/0061-tests-exercise-Venus-only-GPU-queues.patch"
+fi
+
+echo "== apply PocketForge patch: defer Venus migration blocker =="
+if ! grep -Fq 'test_venus_only_migration_blocker' \
+    tests/qtest/virtio-gpu-venus-only-test.c; then
+  git apply "$ROOT/pocketforge/0062-virtio-gpu-defer-Venus-migration-blocker-until-render.patch"
+fi
 
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
@@ -442,7 +469,7 @@ prepare_owned_build_dir "$SYSTEM_BUILD_DIR"
 # harness, scripts/qemu-pocketforge-a133-ui.sh, to capture render evidence) -- without it
 # --without-default-features strips pixman along with every other UI backend and
 # `screendump` fails at runtime with QMP error CommandNotFound (no build-time signal).
-(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features --with-pkgversion="$STACK_PKGVERSION" -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled)
+(cd "$SYSTEM_BUILD_DIR" && ../configure --target-list=aarch64-softmmu --without-default-features --with-pkgversion="$STACK_PKGVERSION" -Dpixman=enabled -Dgio=enabled -Ddbus_display=enabled --enable-opengl --enable-virglrenderer)
 ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-dbus-listener \
   tests/qtest/pocketforge-a100-rtc-test \
@@ -454,7 +481,9 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-mmc-test \
   tests/qtest/pocketforge-a133-bootrom-test \
   tests/qtest/pocketforge-a133-ccu-test \
+  tests/qtest/virtio-gpu-venus-only-test \
   tests/qtest/virtio-mmio-shm-test
+QTEST_QEMU_ARGS="-global virtio-gpu-gl-device.virgl=off" \
 "$SYSTEM_BUILD_DIR/pyvenv/bin/meson" test -C "$SYSTEM_BUILD_DIR" \
   --print-errorlogs \
   qemu:qtest-aarch64/pocketforge-a100-rtc-test \
@@ -466,6 +495,7 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   qemu:qtest-aarch64/pocketforge-a133-mmc-test \
   qemu:qtest-aarch64/pocketforge-a133-bootrom-test \
   qemu:qtest-aarch64/pocketforge-a133-ccu-test \
+  qemu:qtest-aarch64/virtio-gpu-venus-only-test \
   qemu:qtest-aarch64/virtio-mmio-shm-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 cp "$SYSTEM_BUILD_DIR/tests/qtest/pocketforge-a133-dbus-listener" \

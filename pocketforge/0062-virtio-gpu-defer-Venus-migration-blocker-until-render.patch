@@ -1,0 +1,111 @@
+From c00479713b964de19eaf37c7bc8f4e2bbe67730d Mon Sep 17 00:00:00 2001
+From: venus <venus@invalid>
+Date: Wed, 14 Oct 2026 04:23:04 -0400
+Subject: [PATCH] virtio-gpu: defer Venus migration blocker until renderer init
+
+Allow an untouched Venus-capable device to migrate with the rest of the machine, but install the blocker before initializing any non-migratable renderer state.
+
+Assisted-by: LLM
+---
+ hw/display/virtio-gpu-base.c             |  3 ++-
+ hw/display/virtio-gpu-virgl.c            | 13 +++++++++++
+ tests/qtest/virtio-gpu-venus-only-test.c | 28 ++++++++++++++++++++++++
+ 3 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index ec27051..0edc411 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -226,7 +226,8 @@ virtio_gpu_base_device_realize(DeviceState *qdev,
+         }
+     }
+ 
+-    if (virtio_gpu_virgl_enabled(g->conf)) {
++    if (virtio_gpu_virgl_enabled(g->conf) &&
++        !virtio_gpu_venus_enabled(g->conf)) {
+         error_setg(&g->migration_blocker, "virgl is not yet migratable");
+         if (migrate_add_blocker(&g->migration_blocker, errp) < 0) {
+             return false;
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index 1f9a779..1733733 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -19,6 +19,7 @@
+ #include "hw/virtio/virtio-gpu.h"
+ #include "hw/virtio/virtio-gpu-bswap.h"
+ #include "hw/virtio/virtio-gpu-pixman.h"
++#include "migration/blocker.h"
+ 
+ #include "ui/egl-helpers.h"
+ 
+@@ -1437,10 +1438,22 @@ static bool virtio_gpu_virgl_reset(VirtIOGPU *g)
+ 
+ static int virtio_gpu_virgl_init(VirtIOGPU *g)
+ {
++    Error *local_err = NULL;
+     int ret;
+     uint32_t flags = 0;
+     VirtIOGPUGL *gl = VIRTIO_GPU_GL(g);
+ 
++    if (!g->parent_obj.migration_blocker) {
++        error_setg(&g->parent_obj.migration_blocker,
++                   "virgl renderer is not yet migratable");
++        ret = migrate_add_blocker(&g->parent_obj.migration_blocker,
++                                  &local_err);
++        if (ret < 0) {
++            error_report_err(local_err);
++            return ret;
++        }
++    }
++
+ #if VIRGL_RENDERER_CALLBACKS_VERSION >= 4
+     if (qemu_egl_display) {
+         virtio_gpu_3d_cbs.version = 4;
+diff --git a/tests/qtest/virtio-gpu-venus-only-test.c b/tests/qtest/virtio-gpu-venus-only-test.c
+index 98c24e3..664eda2 100644
+--- a/tests/qtest/virtio-gpu-venus-only-test.c
++++ b/tests/qtest/virtio-gpu-venus-only-test.c
+@@ -255,6 +255,32 @@ static void test_venus_only_queue_contract(void)
+     venus_device_stop(test);
+ }
+ 
++static void test_venus_only_migration_blocker(void)
++{
++    VenusOnlyDevice *test = venus_device_start();
++    struct virtio_gpu_get_capset_info request = { };
++    struct virtio_gpu_resp_capset_info response = { };
++    QDict *qmp_response;
++
++    /* A control command initializes the non-migratable renderer. */
++    request.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_GET_CAPSET_INFO);
++    submit_command(test, test->control, &request, sizeof(request),
++                   &response, sizeof(response));
++    g_assert_cmphex(le32_to_cpu(response.hdr.type), ==,
++                    VIRTIO_GPU_RESP_OK_CAPSET_INFO);
++
++    qmp_response = qtest_qmp(test->qts,
++                            "{'execute': 'migrate', 'arguments': "
++                            " {'uri': 'exec:cat >/dev/null'}}");
++    g_assert_true(qdict_haskey(qmp_response, "error"));
++    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(qmp_response,
++                                                          "error"),
++                                          "desc"),
++                            "virgl renderer is not yet migratable"));
++    qobject_unref(qmp_response);
++    venus_device_stop(test);
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -268,5 +294,7 @@ int main(int argc, char **argv)
+                    test_venus_only_rejects_drm);
+     qtest_add_func("/virtio-gpu/venus-only/queue-contract",
+                    test_venus_only_queue_contract);
++    qtest_add_func("/virtio-gpu/venus-only/migration-blocker",
++                   test_venus_only_migration_blocker);
+     return g_test_run();
+ }
+-- 
+2.43.0
+

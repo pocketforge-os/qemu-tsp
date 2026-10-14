@@ -11,8 +11,11 @@ RUN apt-get update \
         flex \
         git \
         libfdt-dev \
+        libepoxy-dev \
+        libgbm-dev \
         libglib2.0-dev \
         libpixman-1-dev \
+        libvirglrenderer-dev \
         meson \
         mtools \
         ninja-build \

@@ -1,0 +1,224 @@
+From 805e11f2d286520d3641a19daa1cc6323d5ca58f Mon Sep 17 00:00:00 2001
+From: venus <venus@invalid>
+Date: Wed, 14 Oct 2026 00:21:00 -0400
+Subject: [PATCH 59/59] virtio-gpu: add Venus-only render server mode
+
+Allow virglrenderer to expose Venus without initializing vrend or requiring an OpenGL display backend. Keep the legacy behavior as the default, filter virgl capsets in render-only mode, and reject scanout, cursor, and DRM-native configurations by requiring max_outputs=0.
+
+Assisted-by: LLM
+---
+ docs/system/devices/virtio/virtio-gpu.rst |  9 ++++
+ hw/display/virtio-gpu-gl.c                | 28 ++++++++++-
+ hw/display/virtio-gpu-virgl.c             | 18 ++++---
+ include/hw/virtio/virtio-gpu.h            |  1 +
+ tests/qtest/virtio-gpu-venus-only-test.c  | 61 +++++++++++++++++++++++
+ 5 files changed, 108 insertions(+), 9 deletions(-)
+
+diff --git a/docs/system/devices/virtio/virtio-gpu.rst b/docs/system/devices/virtio/virtio-gpu.rst
+index d05f8cb..6dafc7d 100644
+--- a/docs/system/devices/virtio/virtio-gpu.rst
++++ b/docs/system/devices/virtio/virtio-gpu.rst
+@@ -103,6 +103,15 @@ of virtio-gpu host memory window. This is typically between 256M and 8G.
+ .. parsed-literal::
+     -device virtio-gpu-gl,hostmem=8G,blob=true,venus=true
+ 
++The ``virgl`` field defaults to ``on`` for compatibility.  It may be disabled
++for a render-only device which exposes Venus without creating an OpenGL
++renderer or a scanout.  This mode requires ``venus=on``, ``max_outputs=0``,
++and does not support ``drm_native_context``.  The display backend does not
++need OpenGL support in this mode.
++
++.. parsed-literal::
++    -device virtio-gpu-gl,hostmem=8G,blob=true,venus=true,virgl=off,max_outputs=0
++
+ .. _venus: https://docs.mesa3d.org/drivers/venus.html
+ 
+ DRM native context is supported since release of `virglrenderer`_ v1.0.0
+diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
+index 0909957..0c21e1d 100644
+--- a/hw/display/virtio-gpu-gl.c
++++ b/hw/display/virtio-gpu-gl.c
+@@ -109,8 +109,8 @@ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
+     ERRP_GUARD();
+     VirtIOGPUBase *b = VIRTIO_GPU_BASE(qdev);
+     VirtIOGPU *g = VIRTIO_GPU(b);
+-#if !defined(CONFIG_WIN32)
+     VirtIOGPUGL *gl = VIRTIO_GPU_GL(g);
++#if !defined(CONFIG_WIN32)
+     void *map;
+ #endif
+ 
+@@ -124,7 +124,22 @@ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
+         return;
+     }
+ 
+-    if (!display_opengl) {
++    if (!gl->virgl && !virtio_gpu_venus_enabled(b->conf)) {
++        error_setg(errp, "virgl=off requires venus=on");
++        return;
++    }
++
++    if (!gl->virgl && b->conf.max_outputs != 0) {
++        error_setg(errp, "virgl=off requires max_outputs=0");
++        return;
++    }
++
++    if (!gl->virgl && virtio_gpu_drm_enabled(b->conf)) {
++        error_setg(errp, "virgl=off is incompatible with drm_native_context=on");
++        return;
++    }
++
++    if (gl->virgl && !display_opengl) {
+         error_setg(errp,
+                    "The display backend does not have OpenGL support enabled");
+         error_append_hint(errp,
+@@ -136,6 +151,14 @@ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
+ 
+     g->parent_obj.conf.flags |= (1 << VIRTIO_GPU_FLAG_VIRGL_ENABLED);
+     g->capset_ids = virtio_gpu_virgl_get_capsets(g);
++    if (!gl->virgl &&
++        (g->capset_ids->len != 1 ||
++         g_array_index(g->capset_ids, uint32_t, 0) !=
++         VIRTIO_GPU_CAPSET_VENUS)) {
++        error_setg(errp, "virgl=off requires a Venus renderer capset");
++        g_clear_pointer(&g->capset_ids, g_array_unref);
++        return;
++    }
+     VIRTIO_GPU_BASE(g)->virtio_config.num_capsets = g->capset_ids->len;
+ 
+ #if VIRGL_VERSION_MAJOR >= 1
+@@ -180,6 +203,7 @@ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
+ }
+ 
+ static const Property virtio_gpu_gl_properties[] = {
++    DEFINE_PROP_BOOL("virgl", VirtIOGPUGL, virgl, true),
+     DEFINE_PROP_BIT("stats", VirtIOGPU, parent_obj.conf.flags,
+                     VIRTIO_GPU_FLAG_STATS_ENABLED, false),
+     DEFINE_PROP_BIT("venus", VirtIOGPU, parent_obj.conf.flags,
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index f16a790..1f9a779 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -1459,6 +1459,9 @@ static int virtio_gpu_virgl_init(VirtIOGPU *g)
+     }
+ #endif
+ #if VIRGL_VERSION_MAJOR >= 1
++    if (!gl->virgl) {
++        flags |= VIRGL_RENDERER_NO_VIRGL;
++    }
+     if (virtio_gpu_venus_enabled(g->parent_obj.conf)) {
+         flags |= VIRGL_RENDERER_VENUS | VIRGL_RENDERER_RENDER_SERVER;
+     }
+@@ -1554,14 +1557,15 @@ GArray *virtio_gpu_virgl_get_capsets(VirtIOGPU *g)
+ 
+     capset_ids = g_array_new(false, false, sizeof(uint32_t));
+ 
+-    /* VIRGL is always supported. */
+-    virtio_gpu_virgl_add_capset(capset_ids, VIRTIO_GPU_CAPSET_VIRGL);
++    if (VIRTIO_GPU_GL(g)->virgl) {
++        virtio_gpu_virgl_add_capset(capset_ids, VIRTIO_GPU_CAPSET_VIRGL);
+ 
+-    virgl_renderer_get_cap_set(VIRTIO_GPU_CAPSET_VIRGL2,
+-                               &capset_max_ver,
+-                               &capset_max_size);
+-    if (capset_max_ver) {
+-        virtio_gpu_virgl_add_capset(capset_ids, VIRTIO_GPU_CAPSET_VIRGL2);
++        virgl_renderer_get_cap_set(VIRTIO_GPU_CAPSET_VIRGL2,
++                                   &capset_max_ver,
++                                   &capset_max_size);
++        if (capset_max_ver) {
++            virtio_gpu_virgl_add_capset(capset_ids, VIRTIO_GPU_CAPSET_VIRGL2);
++        }
+     }
+ 
+     if (virtio_gpu_venus_enabled(g->parent_obj.conf)) {
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 35a1853..35b6e21 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -254,6 +254,7 @@ typedef enum {
+ struct VirtIOGPUGL {
+     struct VirtIOGPU parent_obj;
+ 
++    bool virgl;
+     RenderState renderer_state;
+ 
+     QEMUTimer *fence_poll;
+diff --git a/tests/qtest/virtio-gpu-venus-only-test.c b/tests/qtest/virtio-gpu-venus-only-test.c
+index c0b6657..14af410 100644
+--- a/tests/qtest/virtio-gpu-venus-only-test.c
++++ b/tests/qtest/virtio-gpu-venus-only-test.c
+@@ -54,9 +54,70 @@ static void test_venus_only_property(void)
+     qtest_quit(qts);
+ }
+ 
++static void assert_realize_fails(const char *device, const char *message)
++{
++    const char *qemu = qtest_qemu_binary(NULL);
++    const char *args[] = {
++        qemu, "-machine", "virt", "-nodefaults", "-display", "none",
++        "-device", device, "-S", NULL,
++    };
++    g_autofree char *stdout_text = NULL;
++    g_autofree char *stderr_text = NULL;
++    g_autoptr(GError) error = NULL;
++    int status;
++
++    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL,
++                              G_SPAWN_DEFAULT, NULL, NULL,
++                              &stdout_text, &stderr_text, &status, &error));
++    g_assert_no_error(error);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), !=, 0);
++    g_assert_nonnull(strstr(stderr_text, message));
++}
++
++static void test_venus_only_realize(void)
++{
++    QTestState *qts;
++
++    g_assert_false(g_file_test("/dev/dri", G_FILE_TEST_EXISTS));
++    qts = qtest_init("-machine virt -nodefaults -display none "
++                     "-device virtio-gpu-gl-pci,venus=on,virgl=off,"
++                     "max_outputs=0,blob=on,hostmem=256M");
++    qtest_quit(qts);
++}
++
++static void test_venus_only_requires_venus(void)
++{
++    assert_realize_fails("virtio-gpu-gl-pci,virgl=off,venus=off,"
++                         "max_outputs=0",
++                         "virgl=off requires venus=on");
++}
++
++static void test_venus_only_rejects_scanout(void)
++{
++    assert_realize_fails("virtio-gpu-gl-pci,virgl=off,venus=on,"
++                         "max_outputs=1",
++                         "virgl=off requires max_outputs=0");
++}
++
++static void test_venus_only_rejects_drm(void)
++{
++    assert_realize_fails("virtio-gpu-gl-pci,virgl=off,venus=on,"
++                         "max_outputs=0,drm_native_context=on",
++                         "virgl=off is incompatible with "
++                         "drm_native_context=on");
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+     qtest_add_func("/virtio-gpu/venus-only/property", test_venus_only_property);
++    qtest_add_func("/virtio-gpu/venus-only/realize", test_venus_only_realize);
++    qtest_add_func("/virtio-gpu/venus-only/requires-venus",
++                   test_venus_only_requires_venus);
++    qtest_add_func("/virtio-gpu/venus-only/rejects-scanout",
++                   test_venus_only_rejects_scanout);
++    qtest_add_func("/virtio-gpu/venus-only/rejects-drm",
++                   test_venus_only_rejects_drm);
+     return g_test_run();
+ }
+-- 
+2.43.0
+
