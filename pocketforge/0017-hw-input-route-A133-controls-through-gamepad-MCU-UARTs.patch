@@ -945,7 +945,7 @@ index 0d91852..c5824e6 100644
  
 @@ -62,8 +64,15 @@ struct DWApbUartState {
  
-     CharBackend chr;
+     CharFrontend chr;
      qemu_irq irq;
 +    DWApbUartRxReady rx_ready;
 +    void *rx_ready_opaque;

@@ -734,7 +734,7 @@ index 0000000..0d91852
 +    int read_pos;
 +    int read_count;
 +
-+    CharBackend chr;
++    CharFrontend chr;
 +    qemu_irq irq;
 +};
 +
