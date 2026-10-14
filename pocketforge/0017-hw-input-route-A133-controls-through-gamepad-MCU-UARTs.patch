@@ -1009,7 +1009,7 @@ index f742318..47db0ac 100644
 -  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int' },
 +  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int',
 +            'fuzz': 'int', 'flat': 'int' },
-   'if': { 'all': [ 'TARGET_AARCH64', 'CONFIG_TCG' ] } }
+   'if': 'CONFIG_TCG' }
  
  ##
 @@ -151,8 +154,8 @@
