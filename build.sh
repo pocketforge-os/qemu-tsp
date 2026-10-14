@@ -420,6 +420,12 @@ if ! grep -Fq "config_host_data.set('CONFIG_VIRGL', virgl.found())" meson.build;
   git apply "$ROOT/pocketforge/0060-build-expose-virglrenderer-availability-to-machine-c.patch"
 fi
 
+echo "== apply PocketForge patch: Venus-only virtio-gpu queue contract =="
+if ! grep -Fq 'test_venus_only_queue_contract' \
+    tests/qtest/virtio-gpu-venus-only-test.c; then
+  git apply "$ROOT/pocketforge/0061-tests-exercise-Venus-only-GPU-queues.patch"
+fi
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .

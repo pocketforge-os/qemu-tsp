@@ -1,0 +1,190 @@
+From 3af1bda165f45c277ed84aa15e9b7b2a37ff8550 Mon Sep 17 00:00:00 2001
+From: venus <venus@invalid>
+Date: Wed, 14 Oct 2026 04:18:30 -0400
+Subject: [PATCH] tests: exercise Venus-only GPU queues
+
+Drive the modern A133 virtio-mmio transport to prove that render-only mode exposes exactly the Venus capset and rejects scanout and cursor commands with no outputs.
+
+Assisted-by: LLM
+---
+ tests/qtest/virtio-gpu-venus-only-test.c | 149 +++++++++++++++++++++++
+ 1 file changed, 149 insertions(+)
+
+diff --git a/tests/qtest/virtio-gpu-venus-only-test.c b/tests/qtest/virtio-gpu-venus-only-test.c
+index 14af410..98c24e3 100644
+--- a/tests/qtest/virtio-gpu-venus-only-test.c
++++ b/tests/qtest/virtio-gpu-venus-only-test.c
+@@ -7,8 +7,44 @@
+ 
+ #include "qemu/osdep.h"
+ #include "libqtest.h"
++#include "libqos/libqos-malloc.h"
++#include "libqos/virtio-mmio.h"
++#include "qemu/bswap.h"
+ #include "qobject/qdict.h"
+ #include "qobject/qlist.h"
++#include "standard-headers/linux/virtio_config.h"
++#include "standard-headers/linux/virtio_gpu.h"
++#include "standard-headers/linux/virtio_ids.h"
++#include "standard-headers/linux/virtio_mmio.h"
++
++#define A133_GPU_MMIO 0x0a000000
++#define A133_RAM_BASE 0x40000000
++#define TEST_TIMEOUT_US (30 * G_USEC_PER_SEC)
++
++typedef struct VenusOnlyDevice {
++    QTestState *qts;
++    QGuestAllocator alloc;
++    QVirtioMMIODevice mmio;
++    QVirtQueue *control;
++    QVirtQueue *cursor;
++} VenusOnlyDevice;
++
++static void modern_queue_enable(VenusOnlyDevice *test, QVirtQueue *vq)
++{
++    uint64_t base = test->mmio.addr;
++
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_SEL, vq->index);
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_DESC_LOW, vq->desc);
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_DESC_HIGH,
++                 vq->desc >> 32);
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_AVAIL_LOW, vq->avail);
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_AVAIL_HIGH,
++                 vq->avail >> 32);
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_USED_LOW, vq->used);
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_USED_HIGH,
++                 vq->used >> 32);
++    qtest_writel(test->qts, base + VIRTIO_MMIO_QUEUE_READY, 1);
++}
+ 
+ static QDict *find_property(QList *properties, const char *name)
+ {
+@@ -108,6 +144,117 @@ static void test_venus_only_rejects_drm(void)
+                          "drm_native_context=on");
+ }
+ 
++static VenusOnlyDevice *venus_device_start(void)
++{
++    VenusOnlyDevice *test = g_new0(VenusOnlyDevice, 1);
++    QVirtioDevice *vdev = &test->mmio.vdev;
++    uint64_t features;
++
++    test->qts = qtest_init("-machine pocketforge-a133 -display none "
++                           "-global virtio-gpu-gl-device.virgl=off");
++    alloc_init(&test->alloc, 0, A133_RAM_BASE,
++               A133_RAM_BASE + 64 * 1024 * 1024, 4096);
++    qvirtio_mmio_init_device(&test->mmio, test->qts, A133_GPU_MMIO, 4096);
++    g_assert_cmpuint(vdev->device_type, ==, VIRTIO_ID_GPU);
++
++    qvirtio_start_device(vdev);
++    features = qvirtio_get_features(vdev) & ~QVIRTIO_F_BAD_FEATURE;
++    features &= ~(1ULL << VIRTIO_F_ACCESS_PLATFORM);
++    features &= ~(1ULL << VIRTIO_F_RING_PACKED);
++    features &= ~(1ULL << VIRTIO_RING_F_EVENT_IDX);
++    features &= ~(1ULL << VIRTIO_RING_F_INDIRECT_DESC);
++    qvirtio_set_features(vdev, features);
++    test->control = qvirtqueue_setup(vdev, &test->alloc, 0);
++    test->cursor = qvirtqueue_setup(vdev, &test->alloc, 1);
++    modern_queue_enable(test, test->control);
++    modern_queue_enable(test, test->cursor);
++    qvirtio_set_driver_ok(vdev);
++    return test;
++}
++
++static void venus_device_stop(VenusOnlyDevice *test)
++{
++    qvirtqueue_cleanup(test->mmio.vdev.bus, test->cursor, &test->alloc);
++    qvirtqueue_cleanup(test->mmio.vdev.bus, test->control, &test->alloc);
++    alloc_destroy(&test->alloc);
++    qtest_quit(test->qts);
++    g_free(test);
++}
++
++static void submit_command(VenusOnlyDevice *test, QVirtQueue *vq,
++                           const void *request, size_t request_size,
++                           void *response, size_t response_size)
++{
++    QVirtioDevice *vdev = &test->mmio.vdev;
++    uint64_t request_addr = guest_alloc(&test->alloc, request_size);
++    uint64_t response_addr = 0;
++    uint32_t head;
++
++    qtest_memwrite(test->qts, request_addr, request, request_size);
++    head = qvirtqueue_add(test->qts, vq, request_addr, request_size,
++                         false, response_size != 0);
++    if (response_size) {
++        response_addr = guest_alloc(&test->alloc, response_size);
++        qtest_memset(test->qts, response_addr, 0xff, response_size);
++        qvirtqueue_add(test->qts, vq, response_addr, response_size,
++                       true, false);
++    }
++    qvirtqueue_kick(test->qts, vdev, vq, head);
++    qvirtio_wait_used_elem(test->qts, vdev, vq, head, NULL,
++                           TEST_TIMEOUT_US);
++    if (response_size) {
++        qtest_memread(test->qts, response_addr, response, response_size);
++        guest_free(&test->alloc, response_addr);
++    }
++    guest_free(&test->alloc, request_addr);
++}
++
++static void test_venus_only_queue_contract(void)
++{
++    VenusOnlyDevice *test = venus_device_start();
++    QVirtioDevice *vdev = &test->mmio.vdev;
++    struct virtio_gpu_get_capset_info cap_request = { };
++    struct virtio_gpu_resp_capset_info cap_response = { };
++    struct virtio_gpu_set_scanout scanout = { };
++    struct virtio_gpu_set_scanout_blob blob = { };
++    struct virtio_gpu_ctrl_hdr response = { };
++    struct virtio_gpu_update_cursor cursor = { };
++
++    g_assert_cmpuint(qvirtio_config_readl(vdev,
++                     offsetof(struct virtio_gpu_config, num_scanouts)), ==, 0);
++    g_assert_cmpuint(qvirtio_config_readl(vdev,
++                     offsetof(struct virtio_gpu_config, num_capsets)), ==, 1);
++
++    cap_request.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_GET_CAPSET_INFO);
++    submit_command(test, test->control, &cap_request, sizeof(cap_request),
++                   &cap_response, sizeof(cap_response));
++    g_assert_cmphex(le32_to_cpu(cap_response.hdr.type), ==,
++                    VIRTIO_GPU_RESP_OK_CAPSET_INFO);
++    g_assert_cmpuint(le32_to_cpu(cap_response.capset_id), ==,
++                     VIRTIO_GPU_CAPSET_VENUS);
++    g_assert_cmpuint(le32_to_cpu(cap_response.capset_max_size), >, 0);
++
++    scanout.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_SET_SCANOUT);
++    submit_command(test, test->control, &scanout, sizeof(scanout),
++                   &response, sizeof(response));
++    g_assert_cmphex(le32_to_cpu(response.type), ==,
++                    VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID);
++
++    memset(&response, 0, sizeof(response));
++    blob.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_SET_SCANOUT_BLOB);
++    submit_command(test, test->control, &blob, sizeof(blob),
++                   &response, sizeof(response));
++    g_assert_cmphex(le32_to_cpu(response.type), ==,
++                    VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID);
++
++    cursor.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_UPDATE_CURSOR);
++    submit_command(test, test->cursor, &cursor, sizeof(cursor), NULL, 0);
++    cursor.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_MOVE_CURSOR);
++    submit_command(test, test->cursor, &cursor, sizeof(cursor), NULL, 0);
++
++    venus_device_stop(test);
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -119,5 +266,7 @@ int main(int argc, char **argv)
+                    test_venus_only_rejects_scanout);
+     qtest_add_func("/virtio-gpu/venus-only/rejects-drm",
+                    test_venus_only_rejects_drm);
++    qtest_add_func("/virtio-gpu/venus-only/queue-contract",
++                   test_venus_only_queue_contract);
+     return g_test_run();
+ }
+-- 
+2.43.0
+
