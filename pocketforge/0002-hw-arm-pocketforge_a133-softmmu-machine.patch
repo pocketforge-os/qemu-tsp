@@ -628,7 +628,6 @@ index 0000000..d8b0b09
 +};
 +
 +static Property dw_apb_uart_properties[] = {
-+    DEFINE_PROP_CHR("chardev", DWApbUartState, chr),
 +    {},
 +};
 +
