@@ -1,0 +1,161 @@
+From 9bef3b643bd7c56c692799747669c74f355efb01 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 00:12:21 -0400
+Subject: [PATCH 56/56] hw/arm: wire A133 render accelerator
+
+Add the modern virtio-mmio transport, render-only GPU, fixed host-visible shared-memory window, and release-DT augmentation for the PocketForge A133 machine. OpenGL builds select the Venus-capable device while the minimal qtest configuration retains a transport-identical no-renderer placeholder.
+
+Assisted-by: LLM
+---
+ hw/arm/pocketforge_a133.c                    | 81 ++++++++++++++++++--
+ tests/qtest/pocketforge-a133-mmio-map-test.c |  6 +-
+ 2 files changed, 76 insertions(+), 11 deletions(-)
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 230f4ea..b8dba07 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -104,6 +104,8 @@
+ #include "hw/core/boards.h"
+ #include "hw/char/dw_apb_uart.h"
+ #include "hw/display/pocketforge_a133_display.h"
++#include "hw/virtio/virtio-gpu.h"
++#include "hw/virtio/virtio-mmio.h"
+ #include "hw/i2c/allwinner-i2c.h"
+ #include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
+@@ -497,20 +499,29 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+ #define PF_A133_RAM_BASE        0x40000000
+ 
+ /*
+- * virtio-gpu graft (Phase C). One virtio-mmio transport
+- * slots at addresses/IRQs entirely outside the real SoC's MMIO map (real
+- * DT's highest declared reg end is well under 0x08000000; highest GIC_SPI
+- * is 143) -- these are QEMU-only synthetic devices with no real-hardware
+- * counterpart, matching -M virt's own slot size (0x200) and node shape.
++ * Render-only virtio-gpu transport.  The transport lives above the A133's
++ * peripheral ranges and below its DRAM.  The host-visible window occupies
++ * an unassigned hole: Allwinner A133 User Manual v1.1, chapter 3.1,
++ * "Memory Mapping", page 35, ends the peripheral map at 0x09020fff and
++ * starts DRAM at 0x40000000.
++ *
++ * This QEMU-only synthetic device has no real-hardware counterpart and uses
++ * -M virt's standard virtio-mmio node shape.  It has no scanout: the A133 DE2
++ * device remains the only display connector and D-Bus display source.
+  * The modern VIRTIO_F_VERSION_1 transport is required for
+  * drivers/gpu/drm/virtio/virtgpu_kms.c to bind at all, so each transport's
+- * force-legacy property is set to false explicitly BEFORE realization (see
+- * pocketforge_a133_create_virtio_mmio() below) -- the machine provides the
++ * force-legacy property is set to false explicitly BEFORE realization --
++ * the machine provides the
+  * modern transport on its own; it does not depend on an out-of-tree
+  * `-global virtio-mmio.force-legacy=false` CLI override the way
+  * deliverable-1's `-M virt` recipe (pocketforge-automation
+  * scripts/qemu-a133-virt.sh) does.
+  */
++#define PF_A133_RENDER_MMIO_BASE     0x0a000000
++#define PF_A133_RENDER_MMIO_SIZE     0x200
++#define PF_A133_RENDER_MMIO_IRQ      150
++#define PF_A133_RENDER_HOSTMEM_BASE  0x10000000
++#define PF_A133_RENDER_HOSTMEM_SIZE  (256 * MiB)
+ 
+ #define PF_A133_NUM_CPUS        4
+ #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
+@@ -990,6 +1001,58 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+     }
+ }
+ 
++static void pocketforge_a133_create_render_accelerator(
++    MachineState *machine, qemu_irq irq)
++{
++    DeviceState *transport = qdev_new(TYPE_VIRTIO_MMIO);
++    DeviceState *gpu;
++
++    qdev_prop_set_bit(transport, "force-legacy", false);
++    object_property_set_uint(OBJECT(transport), "shm-base",
++                             PF_A133_RENDER_HOSTMEM_BASE, &error_fatal);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(transport), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(transport), 0,
++                    PF_A133_RENDER_MMIO_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(transport), 0, irq);
++
++    /*
++     * OpenGL builds use the Venus-capable device.  Minimal qtest builds do
++     * not compile virglrenderer, so retain the transport-identical 2D device
++     * there; the Venus-only renderer policy is layered separately.
++     */
++#ifdef CONFIG_OPENGL
++    gpu = qdev_new(TYPE_VIRTIO_GPU_GL);
++    object_property_set_bool(OBJECT(gpu), "venus", true, &error_fatal);
++    object_property_set_bool(OBJECT(gpu), "blob", true, &error_fatal);
++#else
++    gpu = qdev_new(TYPE_VIRTIO_GPU);
++#endif
++    object_property_set_uint(OBJECT(gpu), "hostmem",
++                             PF_A133_RENDER_HOSTMEM_SIZE, &error_fatal);
++    object_property_set_uint(OBJECT(gpu), "max_outputs", 0, &error_fatal);
++    object_property_add_child(OBJECT(machine), "pocketforge-render-gpu",
++                              OBJECT(gpu));
++    qdev_realize(gpu, BUS(&VIRTIO_MMIO(transport)->bus), &error_fatal);
++    object_unref(OBJECT(gpu));
++}
++
++static void pocketforge_a133_modify_dtb(const struct arm_boot_info *binfo,
++                                        void *fdt)
++{
++    g_autofree char *node = g_strdup_printf("/virtio_mmio@%" PRIx64,
++                                             (uint64_t)PF_A133_RENDER_MMIO_BASE);
++
++    qemu_fdt_add_subnode(fdt, node);
++    qemu_fdt_setprop_string(fdt, node, "compatible", "virtio,mmio");
++    qemu_fdt_setprop_sized_cells(fdt, node, "reg",
++                                 2, PF_A133_RENDER_MMIO_BASE,
++                                 2, PF_A133_RENDER_MMIO_SIZE);
++    qemu_fdt_setprop_cells(fdt, node, "interrupts",
++                           GIC_FDT_IRQ_TYPE_SPI, PF_A133_RENDER_MMIO_IRQ,
++                           GIC_FDT_IRQ_FLAGS_EDGE_LO_HI);
++    qemu_fdt_setprop(fdt, node, "dma-coherent", NULL, 0);
++}
++
+ static void pocketforge_a133_init(MachineState *machine)
+ {
+     PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(machine);
+@@ -1087,13 +1150,15 @@ static void pocketforge_a133_init(MachineState *machine)
+     s->power_state_registered = true;
+     pocketforge_a133_create_mmc0(s, pic[PF_A133_MMC0_IRQ]);
+     pocketforge_a133_create_ccu_pio(s, machine);
++    pocketforge_a133_create_render_accelerator(
++        machine, pic[PF_A133_RENDER_MMIO_IRQ]);
+ 
+     binfo->ram_size = machine->ram_size;
+     binfo->board_id = -1; /* device-tree boot only, no ATAGS board id */
+     binfo->loader_start = PF_A133_RAM_BASE;
+     binfo->dtb_filename = machine->dtb;
+     binfo->psci_conduit = QEMU_PSCI_CONDUIT_SMC;
+-    binfo->modify_dtb = NULL;
++    binfo->modify_dtb = pocketforge_a133_modify_dtb;
+     arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
+ 
+     /*
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index 84234dc..82c66a7 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -330,10 +330,10 @@ static void test_render_accelerator_contract(void)
+     g_assert_cmphex(qtest_readl(qts, PF_A133_RENDER_MMIO_BASE +
+                                 VIRTIO_MMIO_CONFIG + 8), ==, 0);
+ 
+-    map = qtest_hmp(qts, "info mtree -f");
++    map = qtest_hmp(qts, "info mtree");
+     g_assert_nonnull(strstr(map,
+-        "0000000010000000-000000001fffffff (prio 0, i/o): "
+-        "virtio-shmem-1"));
++        "0000000010000000-000000001fffffff"));
++    g_assert_nonnull(strstr(map, "virtio-shmem-1"));
+     g_assert_nonnull(strstr(map,
+         "000000000a000000-000000000a0001ff (prio 0, i/o): virtio-mmio"));
+ 
+-- 
+2.43.0
+

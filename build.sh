@@ -385,14 +385,34 @@ if [ ! -f tests/qtest/virtio-mmio-shm-test.c ]; then
   git apply "$ROOT/pocketforge/0054-virtio-mmio-implement-shared-memory-regions.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 render-accelerator topology =="
+if ! grep -q 'render-accelerator-contract' \
+    tests/qtest/pocketforge-a133-mmio-map-test.c; then
+  git apply "$ROOT/pocketforge/0055-tests-require-A133-render-accelerator-topology.patch"
+fi
+
+echo "== apply PocketForge patch: A133 render-accelerator wiring =="
+if ! grep -q 'PF_A133_RENDER_HOSTMEM_BASE' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0056-hw-arm-wire-A133-render-accelerator.patch"
+fi
+
+echo "== apply PocketForge patch: select A133 GL device only with virgl =="
+if grep -q '#ifdef CONFIG_OPENGL' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0057-hw-arm-gate-A133-GL-accelerator-on-virgl.patch"
+fi
+
+echo "== test A133 render build-configuration gating =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-render-config-test.py" .
+
 echo "== apply PocketForge patch: RED Venus-only virtio-gpu property qtest =="
 if [ ! -f tests/qtest/virtio-gpu-venus-only-test.c ]; then
-  git apply "$ROOT/pocketforge/0055-tests-require-Venus-only-virtio-gpu-property.patch"
+  git apply "$ROOT/pocketforge/0058-tests-require-Venus-only-virtio-gpu-property.patch"
 fi
 
 echo "== apply PocketForge patch: Venus-only render-server mode =="
 if ! grep -Fq 'DEFINE_PROP_BOOL("virgl"' hw/display/virtio-gpu-gl.c; then
-  git apply "$ROOT/pocketforge/0056-virtio-gpu-add-Venus-only-render-server-mode.patch"
+  git apply "$ROOT/pocketforge/0059-virtio-gpu-add-Venus-only-render-server-mode.patch"
 fi
 
 echo "== test PocketForge QAPI build-configuration gating =="

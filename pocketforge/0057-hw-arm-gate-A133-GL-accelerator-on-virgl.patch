@@ -1,0 +1,29 @@
+From 70020fe267b51835407f5b98245200275f442618 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 00:23:27 -0400
+Subject: [PATCH] hw/arm: gate A133 GL accelerator on virgl
+
+Select virtio-gpu-gl only when the renderer-backed device type is registered. OpenGL UI support alone is insufficient; OpenGL-enabled builds without virgl must retain the 2D placeholder.
+
+Assisted-by: LLM
+---
+ hw/arm/pocketforge_a133.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index b8dba07..d518e09 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -1020,7 +1020,7 @@ static void pocketforge_a133_create_render_accelerator(
+      * not compile virglrenderer, so retain the transport-identical 2D device
+      * there; the Venus-only renderer policy is layered separately.
+      */
+-#ifdef CONFIG_OPENGL
++#ifdef CONFIG_VIRGL
+     gpu = qdev_new(TYPE_VIRTIO_GPU_GL);
+     object_property_set_bool(OBJECT(gpu), "venus", true, &error_fatal);
+     object_property_set_bool(OBJECT(gpu), "blob", true, &error_fatal);
+-- 
+2.43.0
+

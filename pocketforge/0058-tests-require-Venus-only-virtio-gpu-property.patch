@@ -1,7 +1,7 @@
-From 2af2c3d7ab07d4b71872d219bf3c90ce6430a995 Mon Sep 17 00:00:00 2001
+From 94bae40c299fe95d6516beaff32e53cb62792677 Mon Sep 17 00:00:00 2001
 From: venus <venus@invalid>
 Date: Wed, 14 Oct 2026 00:13:57 -0400
-Subject: [PATCH 55/56] tests: require Venus-only virtio-gpu property
+Subject: [PATCH 58/59] tests: require Venus-only virtio-gpu property
 
 Add a qtest that proves the GL device keeps its existing Venus and hostmem properties while exposing the new default-on virgl selector.\n\nAssisted-by: LLM
 ---

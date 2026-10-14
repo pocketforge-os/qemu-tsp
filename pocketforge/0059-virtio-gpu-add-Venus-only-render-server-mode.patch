@@ -1,7 +1,7 @@
-From 7bf28dcf2b0a887832b596e74726ed65d77f5f99 Mon Sep 17 00:00:00 2001
+From 805e11f2d286520d3641a19daa1cc6323d5ca58f Mon Sep 17 00:00:00 2001
 From: venus <venus@invalid>
 Date: Wed, 14 Oct 2026 00:21:00 -0400
-Subject: [PATCH 56/56] virtio-gpu: add Venus-only render server mode
+Subject: [PATCH 59/59] virtio-gpu: add Venus-only render server mode
 
 Allow virglrenderer to expose Venus without initializing vrend or requiring an OpenGL display backend. Keep the legacy behavior as the default, filter virgl capsets in render-only mode, and reject scanout, cursor, and DRM-native configurations by requiring max_outputs=0.
 
