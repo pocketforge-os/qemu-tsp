@@ -173,7 +173,11 @@ RUN set -eux; \
     test -x /opt/venus/libexec/virgl_render_server; \
     test -f /opt/venus/share/vulkan/icd.d/lvp_icd.x86_64.json
 
-FROM virglrenderer AS qemu
+FROM virglrenderer AS venus-host
+
+# The fidelity workflow overrides this named context with the lock-addressed
+# venus-host image from pf-synology.  Local builds retain the source stages.
+FROM venus-host AS qemu
 ARG QEMU_TSP_REF
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
