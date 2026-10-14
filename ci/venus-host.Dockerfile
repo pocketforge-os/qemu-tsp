@@ -57,7 +57,7 @@ RUN set -eux; \
       -DLLVM_TARGETS_TO_BUILD=X86 \
       -DLLVM_ENABLE_PROJECTS= \
       -DLLVM_BUILD_LLVM_DYLIB=ON \
-      '-DLLVM_DYLIB_COMPONENTS=bitwriter;mcdisassembler;mcjit;core;executionengine;interpreter;scalaropts;transformutils;instcombine;native' \
+      '-DLLVM_DYLIB_COMPONENTS=bitwriter;mcdisassembler;mcjit;core;executionengine;scalaropts;transformutils;instcombine;native' \
       -DLLVM_LINK_LLVM_DYLIB=ON \
       -DLLVM_ENABLE_RTTI=ON \
       -DLLVM_ENABLE_TERMINFO=OFF \
@@ -107,10 +107,11 @@ ARG MESA_CACHE_BUST=lock
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends glslang-tools \
     && find /var/lib/apt/lists -mindepth 1 -delete
+COPY --chmod=0755 ci/venus-llvm-config /usr/local/bin/llvm-config
 COPY ci/venus-host.lock.json /venus-host.lock.json
 COPY --from=llvm /opt/venus /opt/venus
 COPY --from=vulkan /opt/venus /opt/venus
-ENV PATH=/opt/venus/bin:$PATH \
+ENV PATH=/usr/local/bin:/opt/venus/bin:$PATH \
     PKG_CONFIG_PATH=/opt/venus/lib/x86_64-linux-gnu/pkgconfig:/opt/venus/lib/pkgconfig \
     LD_LIBRARY_PATH=/opt/venus/lib/x86_64-linux-gnu:/opt/venus/lib
 RUN set -eux; \
