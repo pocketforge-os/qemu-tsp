@@ -1,16 +1,12 @@
-From ae195cf7c72fc38b6f858c465291820e58e88193 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:34 -0400
-Subject: [PATCH] hw-display-complete-A133-DCS-command-state
+From c19274adedc2f6c6c0fccf8707c4e46ec9726a1a Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:18:22 +0000
+Subject: [PATCH 42/50] hw/display: complete A133 DCS command state
 
----
- hw/display/pocketforge_a133_display.c       | 19 ++++++++++++++++++-
- tests/qtest/pocketforge-a133-display-test.c |  9 +++++++++
- 2 files changed, 27 insertions(+), 1 deletion(-)
+Assisted-by: LLM
 
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
-index e6ba122..54389a0 100644
+index 7fd176c648..b08f33fe5f 100644
 --- a/hw/display/pocketforge_a133_display.c
 +++ b/hw/display/pocketforge_a133_display.c
 @@ -38,6 +38,12 @@
@@ -55,7 +51,7 @@ index e6ba122..54389a0 100644
  
      if (size != 4 || (offset & 3)) {
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 584b297..b128ef7 100644
+index 23199f4b02..2afffeac8e 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -20,6 +20,8 @@
@@ -81,3 +77,6 @@ index 584b297..b128ef7 100644
      qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, 0);
      g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0), ==,
                      0);
+-- 
+2.43.0
+

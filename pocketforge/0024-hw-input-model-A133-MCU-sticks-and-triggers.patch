@@ -1,20 +1,15 @@
-From cd39099bbbd2d8f616229dfc183dc0959d675aa0 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:45:11 -0400
-Subject: [PATCH] patch 0024
+From 6c0af6c6fe617517011ebcb32092aa4c727fff5f Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 05:00:17 -0400
+Subject: [PATCH 24/50] hw/input: model A133 MCU sticks and triggers
 
 Assisted-by: LLM
----
- hw/arm/pocketforge_a133.c         |  2 +-
- hw/input/pocketforge_a133_input.c | 99 +++++++++++++++++++++++++++----
- 2 files changed, 90 insertions(+), 11 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index c064a3b..5026871 100644
+index 51ac15e7d3..efaf6853d6 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -903,7 +903,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -906,7 +906,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
      device_tail = &info->devices;
      info->abi_version = g_new0(PocketForgeAbiVersion, 1);
      info->abi_version->major = 2;
@@ -24,7 +19,7 @@ index c064a3b..5026871 100644
      s = POCKETFORGE_A133_MACHINE(current_machine);
      if (!s->input_device) {
 diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
-index b6262ee..bc49632 100644
+index 507ec3e0c7..6765b3f4c8 100644
 --- a/hw/input/pocketforge_a133_input.c
 +++ b/hw/input/pocketforge_a133_input.c
 @@ -29,8 +29,13 @@ const PocketForgeA133InputKeyCap pocketforge_a133_input_keys[] = {
@@ -211,3 +206,6 @@ index b6262ee..bc49632 100644
      object_property_add_str(obj, "event", NULL,
                              pocketforge_a133_input_set_event);
      object_property_add_bool(obj, "ready", pocketforge_a133_input_ready, NULL);
+-- 
+2.43.0
+

@@ -1,15 +1,18 @@
-From d4ac08a2f6cf5bc5ee900d526cce3142095e030a Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:35 -0400
-Subject: [PATCH] tests-cover-A133-IOMMU-invalidation-completion
+From f0e7e1ee09463c2df811ced6c19efb95ddc73202 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 21:44:00 +0000
+Subject: [PATCH 50/50] tests: cover A133 IOMMU invalidation completion
 
----
- tests/qtest/pocketforge-a133-display-test.c | 28 ++++++++++++++++++++-
- 1 file changed, 27 insertions(+), 1 deletion(-)
+The mainline sun50i-iommu driver polls the range-TLB and PTW-cache
+invalidation enable registers until the hardware clears each command.
+Assert those completion semantics directly, alongside retained address
+and mask registers so a write-discard implementation cannot pass.
+
+
+Assisted-by: LLM
 
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 6dc7154..1ca2214 100644
+index 4145486207..682756724e 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -18,7 +18,12 @@
@@ -54,3 +57,6 @@ index 6dc7154..1ca2214 100644
      /* DSI INST_ST completion is what every long DCS transfer polls. */
      qtest_writel(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0, BIT(0));
      g_assert_cmphex(qtest_readl(qts, PF_DSI_BASE + PF_DSI_BASIC_CTL0) &
+-- 
+2.43.0
+

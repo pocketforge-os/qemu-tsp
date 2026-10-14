@@ -1,35 +1,31 @@
-From 835e3fb1f8ae6f36d577b43d6ad1eee82839c4ae Mon Sep 17 00:00:00 2001
+From 29c95b73a919c18d8ff8ee943994f57e70291056 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:36:38 -0400
-Subject: [PATCH] hw/input: add PocketForge A133 controls
+Date: Sat, 3 Oct 2026 14:10:12 -0400
+Subject: [PATCH 07/50] hw/input: add PocketForge A133 deterministic controls
 
-Deterministic A133 input layer with virtual device stack and qtest coverage.
+Attach a gamepad-compatible virtio-input device to the second modern
+virtio-mmio transport of the pocketforge-a133 machine.
 
-Manual resolution:
-- hw/input/meson.build: insert entry after CONFIG_VIRTIO_INPUT_HOST (v11.1.2 removed TSC2005/VHOST_USER_INPUT lines from build context)
-- include/hw/virtio/virtio-input.h: port virtio_input_send return type void->bool (context shift in 11.1.2 header)
-- tests/qtest/meson.build: add input-test to rebased A133 test list
+Expose ordered QOM press and release injection while rejecting malformed,
+late, or out-of-order transitions and queue exhaustion.
+
+Advertise the evdev identity and capabilities consumed by PocketForge.
+Cover identity, every navigation mapping, negative controls, reset, and the
+optional no-device machine setting with qtest.
+
+
+Rebase resolutions:
+- Input Meson: place the device beside CONFIG_VIRTIO_INPUT_HOST after the v11 source-set cleanup.
+- Virtio input: port send callbacks to the v11 boolean delivery contract.
+- QOM/machine: retain the AArch64 target interface when replacing DEFINE_MACHINE with explicit TypeInfo.
+- Qtest Meson: register the input test in the v11 qtests_aarch64 map.
+
 
 Assisted-by: LLM
----
- hw/arm/Kconfig                            |   2 +
- hw/arm/pocketforge_a133.c                 |  74 +++-
- hw/input/Kconfig                          |   4 +
- hw/input/meson.build                      |   1 +
- hw/input/pocketforge_a133_input.c         | 294 ++++++++++++++++
- hw/input/virtio-input.c                   |   9 +-
- include/hw/input/pocketforge_a133_input.h |  15 +
- include/hw/virtio/virtio-input.h          |   2 +-
- tests/qtest/meson.build                   |   3 +-
- tests/qtest/pocketforge-a133-input-test.c | 393 ++++++++++++++++++++++
- 10 files changed, 784 insertions(+), 13 deletions(-)
- create mode 100644 hw/input/pocketforge_a133_input.c
- create mode 100644 include/hw/input/pocketforge_a133_input.h
- create mode 100644 tests/qtest/pocketforge-a133-input-test.c
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 02b7c38..142d1bc 100644
+index 02b7c3894b..142d1bcfb3 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -199,7 +199,9 @@ config POCKETFORGE_A133
@@ -43,7 +39,7 @@ index 02b7c38..142d1bc 100644
  config SABRELITE
      bool
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 1523f1e..1694550 100644
+index a8ff21bb54..c8550b3a39 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -53,9 +53,9 @@
@@ -59,7 +55,7 @@ index 1523f1e..1694550 100644
   * pocketforge_a133_create_virtio_mmio()/pocketforge_a133_modify_dtb()
   * below for how a from-scratch machine loading a REAL, unmodified DT (no
   * auto-generated FDT like -M virt has) still makes virtio-mmio
-@@ -91,12 +91,14 @@
+@@ -92,6 +92,7 @@
  #include "hw/arm/bsa.h"
  #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
@@ -67,14 +63,15 @@ index 1523f1e..1694550 100644
  #include "hw/misc/pocketforge_a133_mmio_stub.h"
  #include "hw/intc/arm_gic.h"
  #include "hw/intc/arm_gic_common.h"
- #include "hw/core/qdev-properties.h"
+@@ -99,6 +100,7 @@
+ #include "hw/core/irq.h"
  #include "hw/rtc/pocketforge_a100_rtc.h"
  #include "hw/core/sysbus.h"
 +#include "hw/virtio/virtio-mmio.h"
- #include "exec/address-spaces.h"
- #include "sysemu/device_tree.h"
- #include "hw/arm/fdt.h"
-@@ -104,6 +106,15 @@
+ #include "system/address-spaces.h"
+ #include "system/system.h"
+ #include "system/device_tree.h"
+@@ -106,6 +108,15 @@
  #include "qemu/module.h"
  #include "chardev/char.h"
  
@@ -90,7 +87,7 @@ index 1523f1e..1694550 100644
  /*
   * Addresses/IRQ taken verbatim from the real device tree
   * (arch/arm64/boot/dts/allwinner/sun50i-a100.dtsi, kernel-sunxi-6.x
-@@ -539,6 +550,7 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+@@ -541,6 +552,7 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
  static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
                                                  qemu_irq *pic)
  {
@@ -98,7 +95,7 @@ index 1523f1e..1694550 100644
      int i;
  
      for (i = 0; i < PF_A133_VIRTIO_MMIO_COUNT; i++) {
-@@ -551,15 +563,23 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+@@ -553,15 +565,23 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
           * force-legacy property defaults to true (pre-VIRTIO_F_VERSION_1
           * legacy virtio), and sysbus_create_simple() realizes the device
           * with no way to set a property first. Doing it this way makes the
@@ -125,12 +122,12 @@ index 1523f1e..1694550 100644
      }
  }
  
-@@ -671,4 +691,44 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+@@ -673,4 +693,45 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
      mc->no_parallel = true;
  }
  
 -DEFINE_MACHINE("pocketforge-a133", pocketforge_a133_machine_init)
-+static void pocketforge_a133_machine_class_init(ObjectClass *oc, const void *data)
++static void pocketforge_a133_machine_class_init(ObjectClass *oc, void *data)
 +{
 +    pocketforge_a133_machine_init(MACHINE_CLASS(oc));
 +}
@@ -163,6 +160,7 @@ index 1523f1e..1694550 100644
 +    .instance_size = sizeof(PocketForgeA133MachineState),
 +    .instance_init = pocketforge_a133_instance_init,
 +    .class_init = pocketforge_a133_machine_class_init,
++    .interfaces = aarch64_machine_interfaces,
 +};
 +
 +static void pocketforge_a133_machine_register_types(void)
@@ -172,7 +170,7 @@ index 1523f1e..1694550 100644
 +
 +type_init(pocketforge_a133_machine_register_types)
 diff --git a/hw/input/Kconfig b/hw/input/Kconfig
-index a116cb8..70c9ba2 100644
+index a116cb82df..70c9ba2a32 100644
 --- a/hw/input/Kconfig
 +++ b/hw/input/Kconfig
 @@ -26,6 +26,10 @@ config VIRTIO_INPUT_HOST
@@ -187,7 +185,7 @@ index a116cb8..70c9ba2 100644
      bool
      default y
 diff --git a/hw/input/meson.build b/hw/input/meson.build
-index 90a2149..01e862f 100644
+index 90a214962c..01e862ff67 100644
 --- a/hw/input/meson.build
 +++ b/hw/input/meson.build
 @@ -8,5 +8,6 @@ system_ss.add(when: 'CONFIG_STELLARIS_GAMEPAD', if_true: files('stellaris_gamepa
@@ -199,10 +197,10 @@ index 90a2149..01e862f 100644
  system_ss.add(when: 'CONFIG_LASIPS2', if_true: files('lasips2.c'))
 diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
 new file mode 100644
-index 0000000..41ff314
+index 0000000000..605a6a9d39
 --- /dev/null
 +++ b/hw/input/pocketforge_a133_input.c
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,295 @@
 +/*
 + * PocketForge A133 deterministic virtual controls
 + *
@@ -473,7 +471,8 @@ index 0000000..41ff314
 +    object_property_add_bool(obj, "held", pocketforge_a133_input_held, NULL);
 +}
 +
-+static void pocketforge_a133_input_class_init(ObjectClass *klass, const void *data)
++static void pocketforge_a133_input_class_init(ObjectClass *klass,
++                                              const void *data)
 +{
 +    DeviceClass *dc = DEVICE_CLASS(klass);
 +    VirtIOInputClass *vic = VIRTIO_INPUT_CLASS(klass);
@@ -498,7 +497,7 @@ index 0000000..41ff314
 +
 +type_init(pocketforge_a133_input_register_types)
 diff --git a/hw/input/virtio-input.c b/hw/input/virtio-input.c
-index 6494cfb..3ebfc6c 100644
+index 6494cfbbe8..3ebfc6c898 100644
 --- a/hw/input/virtio-input.c
 +++ b/hw/input/virtio-input.c
 @@ -20,13 +20,13 @@
@@ -545,7 +544,7 @@ index 6494cfb..3ebfc6c 100644
  static void virtio_input_handle_evt(VirtIODevice *vdev, VirtQueue *vq)
 diff --git a/include/hw/input/pocketforge_a133_input.h b/include/hw/input/pocketforge_a133_input.h
 new file mode 100644
-index 0000000..e1b7e29
+index 0000000000..e1b7e29f9d
 --- /dev/null
 +++ b/include/hw/input/pocketforge_a133_input.h
 @@ -0,0 +1,15 @@
@@ -565,7 +564,7 @@ index 0000000..e1b7e29
 +
 +#endif
 diff --git a/include/hw/virtio/virtio-input.h b/include/hw/virtio/virtio-input.h
-index 1e94f8a..19a05ee 100644
+index 1e94f8a03d..19a05ee73c 100644
 --- a/include/hw/virtio/virtio-input.h
 +++ b/include/hw/virtio/virtio-input.h
 @@ -101,7 +101,7 @@ struct VHostUserInput {
@@ -578,22 +577,22 @@ index 1e94f8a..19a05ee 100644
                                virtio_input_config *config);
  virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 2cb3d5b..40df9b0 100644
+index 08e6604ab6..885594f7f9 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -272,7 +272,8 @@ qtests_aarch64 = \
-   (config_all_devices.has_key('CONFIG_ASPEED_SOC') ? qtests_aspeed64 : []) + \
-   (config_all_devices.has_key('CONFIG_NPCM8XX') ? qtests_npcm8xx : []) + \
-   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
--    ['pocketforge-a100-rtc-test', 'pocketforge-a133-mmio-map-test'] : []) +         \
-+    ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
-+     'pocketforge-a133-mmio-map-test'] : []) +                                    \
-   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+@@ -275,7 +275,8 @@ qtests_aarch64 = \
     config_all_devices.has_key('CONFIG_ARM_VIRT') ?
     ['iommu-smmuv3-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?
+-    ['pocketforge-a100-rtc-test', 'pocketforge-a133-mmio-map-test'] : []) + \
++    ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
++     'pocketforge-a133-mmio-map-test'] : []) + \
+   qtests_cxl +                                                                                  \
+   ['arm-cpu-features',
+    'numa-test',
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
 new file mode 100644
-index 0000000..424c022
+index 0000000000..424c0226d7
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -0,0 +1,393 @@
@@ -799,7 +798,7 @@ index 0000000..424c022
 +static EventBuffers add_event_buffers(InputFixture *f)
 +{
 +    EventBuffers buffers;
-+    struct virtio_input_event zero = {NULL};
++    struct virtio_input_event zero = { 0 };
 +    int i;
 +
 +    for (i = 0; i < 2; i++) {
@@ -990,3 +989,6 @@ index 0000000..424c022
 +
 +    return g_test_run();
 +}
+-- 
+2.43.0
+

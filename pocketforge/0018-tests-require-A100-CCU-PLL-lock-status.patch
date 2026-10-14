@@ -1,16 +1,13 @@
-From 67f513a503a851a96eb3a269e901b7ba64f3471b Mon Sep 17 00:00:00 2001
+From 5de4ae520e060490d6afa3713c3a936d9c11417b Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:43:35 -0400
-Subject: [PATCH] patch 0018
+Date: Sat, 10 Oct 2026 01:32:35 -0400
+Subject: [PATCH 18/50] tests: require A100 CCU PLL lock status
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-mmio-map-test.c | 21 ++++++++++++++++++++
- 1 file changed, 21 insertions(+)
 
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index de7685d..b929ad5 100644
+index de7685da20..b929ad5bb9 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -193,6 +193,25 @@ static void test_uart_model_contract(void)
@@ -48,3 +45,6 @@ index de7685d..b929ad5 100644
  
      return g_test_run();
  }
+-- 
+2.43.0
+

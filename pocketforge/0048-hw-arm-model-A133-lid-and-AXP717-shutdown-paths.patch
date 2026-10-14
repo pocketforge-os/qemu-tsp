@@ -1,26 +1,21 @@
-From bfacf2852e2b583a5d1885db12fc55ca7411af83 Mon Sep 17 00:00:00 2001
+From 79533558c29b8c6a2b3eb971e4323e0b7cd6085c Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:34 -0400
-Subject: [PATCH] hw-arm-model-A133-lid-and-AXP717-shutdown-paths
+Date: Tue, 13 Oct 2026 15:15:42 -0400
+Subject: [PATCH 47/50] hw/arm: model A133 hall and AXP717 shutdown paths
 
----
- hw/arm/pocketforge_a133.c                  | 108 ++++++++++-
- hw/misc/axp2xx.c                           | 168 ++++++++++++++--
- hw/misc/meson.build                        |   1 +
- hw/misc/pocketforge_a100_r_pio.c           | 215 +++++++++++++++++++++
- include/hw/misc/pocketforge_a100_r_pio.h   |  21 ++
- tests/qtest/pocketforge-a133-axp717-test.c |  15 +-
- tests/qtest/pocketforge-a133-input-test.c  |   3 +-
- 7 files changed, 507 insertions(+), 24 deletions(-)
- create mode 100644 hw/misc/pocketforge_a100_r_pio.c
- create mode 100644 include/hw/misc/pocketforge_a100_r_pio.h
+Rebase resolutions:
+- Runstate: use the v11 system/runstate.h shutdown interface and preserve distinct guest and host-UI causes.
+- QOM/Meson: use the v11 const class-init signature and current misc source set for the R-PIO device.
+
+
+Assisted-by: LLM
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 3e95241..1c44223 100644
+index bead5a559e..230f4ea5fe 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -106,6 +106,7 @@
+@@ -107,6 +107,7 @@
  #include "hw/i2c/allwinner-i2c.h"
  #include "hw/i2c/i2c.h"
  #include "hw/input/pocketforge_a133_input.h"
@@ -28,7 +23,7 @@ index 3e95241..1c44223 100644
  #include "hw/misc/pocketforge_a133_ccu.h"
  #include "hw/misc/pocketforge_a133_mmio_stub.h"
  #include "hw/misc/pocketforge_a133_pio.h"
-@@ -181,6 +182,7 @@ struct PocketForgeA133MachineState {
+@@ -182,6 +183,7 @@ struct PocketForgeA133MachineState {
      PocketForgeA133Input *input_device;
      DWApbUartState *gamepad_uart[2];
      DeviceState *pmic;
@@ -36,7 +31,7 @@ index 3e95241..1c44223 100644
      PfA133CcuState *ccu;
      PfA133PioState *pio;
      PocketForgeA133DisplayState *native_display;
-@@ -552,7 +554,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+@@ -553,7 +555,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
      { "pocketforge-a133.g2d_rotate",       0x064a8000, 0x100 },
      { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
      { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
@@ -44,7 +39,7 @@ index 3e95241..1c44223 100644
      { "pocketforge-a133.ir",               0x07040000, 0x400 },
  };
  
-@@ -1073,6 +1074,8 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -1074,6 +1075,8 @@ static void pocketforge_a133_init(MachineState *machine)
      pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
  
      pocketforge_a133_create_sram(s, sysmem);
@@ -53,7 +48,7 @@ index 3e95241..1c44223 100644
      pocketforge_a133_create_mmio_stubs();
      s->native_display = pocketforge_a133_display_create(
          !strcmp(s->display, "hardware"), pic[68]);
-@@ -1201,7 +1204,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -1203,7 +1206,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
      device_tail = &info->devices;
      info->abi_version = g_new0(PocketForgeAbiVersion, 1);
      info->abi_version->major = 2;
@@ -62,7 +57,7 @@ index 3e95241..1c44223 100644
      info->max_batch_events = PF_A133_INPUT_BATCH_MAX;
      s = POCKETFORGE_A133_MACHINE(current_machine);
      if (s->input_device) {
-@@ -1293,6 +1296,41 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -1295,6 +1298,41 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
      }
      QAPI_LIST_APPEND(caps_tail, cap);
      QAPI_LIST_APPEND(device_tail, device);
@@ -104,7 +99,7 @@ index 3e95241..1c44223 100644
      return info;
  }
  
-@@ -1364,6 +1402,65 @@ static void pocketforge_a133_power_key_send(
+@@ -1366,6 +1404,65 @@ static void pocketforge_a133_power_key_send(
      s->power_key_held = held;
  }
  
@@ -170,7 +165,7 @@ index 3e95241..1c44223 100644
  void pocketforge_a133_input_send_qmp(const char *device,
                                       PocketForgeInputEventList *events,
                                       Error **errp)
-@@ -1374,7 +1471,8 @@ void pocketforge_a133_input_send_qmp(const char *device,
+@@ -1376,7 +1473,8 @@ void pocketforge_a133_input_send_qmp(const char *device,
      size_t count = 0;
      size_t i = 0;
  
@@ -180,7 +175,7 @@ index 3e95241..1c44223 100644
          error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
                           "PocketForge input device '%s' was not found", device);
          return;
-@@ -1390,6 +1488,10 @@ void pocketforge_a133_input_send_qmp(const char *device,
+@@ -1392,6 +1490,10 @@ void pocketforge_a133_input_send_qmp(const char *device,
          pocketforge_a133_power_key_send(s, events, errp);
          return;
      }
@@ -192,14 +187,14 @@ index 3e95241..1c44223 100644
          error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
                    "PocketForge input device 'gamepad' is disabled");
 diff --git a/hw/misc/axp2xx.c b/hw/misc/axp2xx.c
-index fbea78e..34dae30 100644
+index 890099bdfb..c1a8fbed4a 100644
 --- a/hw/misc/axp2xx.c
 +++ b/hw/misc/axp2xx.c
 @@ -37,6 +37,7 @@
  #include "hw/misc/axp2xx.h"
  #include "migration/vmstate.h"
  #include "qemu/timer.h"
-+#include "sysemu/runstate.h"
++#include "system/runstate.h"
  
  #define TYPE_AXP2XX     "axp2xx_pmu"
  #define TYPE_AXP209_PMU "axp209_pmu"
@@ -411,6 +406,15 @@ index fbea78e..34dae30 100644
          axp717_update_irq(s);
      }
      return 0;
+@@ -330,7 +457,7 @@ static int axp2xx_post_load(void *opaque, int version_id)
+ 
+ static const VMStateDescription vmstate_axp2xx = {
+     .name = TYPE_AXP2XX,
+-    .version_id = 2,
++    .version_id = 3,
+     .minimum_version_id = 1,
+     .post_load = axp2xx_post_load,
+     .fields = (const VMStateField[]) {
 @@ -339,6 +466,10 @@ static const VMStateDescription vmstate_axp2xx = {
          VMSTATE_UINT8(count, AXP2xxI2CState),
          VMSTATE_BOOL_V(pek_pressed, AXP2xxI2CState, 2),
@@ -450,7 +454,7 @@ index fbea78e..34dae30 100644
      .class_init = axp2xx_class_init,
      .abstract = true,
 diff --git a/hw/misc/meson.build b/hw/misc/meson.build
-index 6cbe9ed..432a87d 100644
+index 6cbe9ed041..432a87d397 100644
 --- a/hw/misc/meson.build
 +++ b/hw/misc/meson.build
 @@ -171,4 +171,5 @@ system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
@@ -461,7 +465,7 @@ index 6cbe9ed..432a87d 100644
  system_ss.add(when: 'CONFIG_POCKETFORGE_A133_MMIO_STUB', if_true: files('pocketforge_a133_mmio_stub.c'))
 diff --git a/hw/misc/pocketforge_a100_r_pio.c b/hw/misc/pocketforge_a100_r_pio.c
 new file mode 100644
-index 0000000..5a00088
+index 0000000000..dd26954e31
 --- /dev/null
 +++ b/hw/misc/pocketforge_a100_r_pio.c
 @@ -0,0 +1,215 @@
@@ -682,7 +686,7 @@ index 0000000..5a00088
 +}
 diff --git a/include/hw/misc/pocketforge_a100_r_pio.h b/include/hw/misc/pocketforge_a100_r_pio.h
 new file mode 100644
-index 0000000..369766c
+index 0000000000..2da5099621
 --- /dev/null
 +++ b/include/hw/misc/pocketforge_a100_r_pio.h
 @@ -0,0 +1,21 @@
@@ -708,7 +712,7 @@ index 0000000..369766c
 +
 +#endif
 diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
-index ee0c772..fc45c4f 100644
+index c885360fd8..126afdbee8 100644
 --- a/tests/qtest/pocketforge-a133-axp717-test.c
 +++ b/tests/qtest/pocketforge-a133-axp717-test.c
 @@ -328,8 +328,7 @@ static void test_pek_offlevel_force_poweroff(void)
@@ -742,7 +746,7 @@ index ee0c772..fc45c4f 100644
  }
  
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index b45d117..b50c25c 100644
+index 9e50868f9e..c4c905f92d 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -584,8 +584,9 @@ static void test_disabled_and_non_machine(void)
@@ -756,3 +760,6 @@ index b45d117..b50c25c 100644
      qobject_unref(response);
      response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
      g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
+-- 
+2.43.0
+

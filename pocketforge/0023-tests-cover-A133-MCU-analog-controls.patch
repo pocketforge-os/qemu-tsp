@@ -1,16 +1,12 @@
-From a82c826fc60e44ce6b558b5c135b4a153f42b3c6 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:45:28 -0400
-Subject: [PATCH] patch 0023
+From 3ba27e7c6faa3ef328a1b72ae2b4b51d5eabfaf4 Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 05:00:17 -0400
+Subject: [PATCH 23/50] tests: cover A133 MCU analog controls
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-input-test.c | 116 +++++++++++++++++++++-
- 1 file changed, 114 insertions(+), 2 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 4d5bbbb..5a0c1ec 100644
+index 367de1c81b..b1b908172b 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -68,6 +68,19 @@ static QDict *raw_send(QTestState *qts, int type, int code, int value)
@@ -164,3 +160,6 @@ index 4d5bbbb..5a0c1ec 100644
      qtest_add_func("/aarch64/pocketforge-a133-input/batch-capacity",
                     test_batch_atomic_capacity);
      qtest_add_func("/aarch64/pocketforge-a133-input/disabled-non-machine",
+-- 
+2.43.0
+

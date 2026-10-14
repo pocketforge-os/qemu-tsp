@@ -1,25 +1,16 @@
-From 8323872fd4a3aaa83ab0925b3e2f30b908df13d7 Mon Sep 17 00:00:00 2001
+From 962ba7da1567a1050443687dd319afd10434d270 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:35:42 -0400
-Subject: [PATCH] hw/arm: pocketforge-a133 complete mmio coverage
+Date: Sun, 27 Sep 2026 21:17:06 -0400
+Subject: [PATCH 06/50] hw/arm: pocketforge-a133 complete mmio coverage
 
-Pinned-DTB MMIO coverage with dedicated qtest registering every aperture the release DT probes.
-
-Manual resolution:
-- tests/qtest/meson.build: add mmio-map-test alongside a100-rtc-test in the rebased POCKETFORGE_A133 test list (context already shifted by the 0005 rebase)
+Rebase resolutions:
+- Qtest Meson: extend the rebased A133 qtests_aarch64 entry for the MMIO-map test.
 
 Assisted-by: LLM
----
- hw/arm/pocketforge_a133.c                    | 178 ++++++++--------
- hw/char/dw_apb_uart.c                        |   2 +-
- tests/qtest/meson.build                      |   2 +-
- tests/qtest/pocketforge-a133-mmio-map-test.c | 201 +++++++++++++++++++
- 4 files changed, 301 insertions(+), 82 deletions(-)
- create mode 100644 tests/qtest/pocketforge-a133-mmio-map-test.c
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 23e1826..1523f1e 100644
+index f61ba34e47..a8ff21bb54 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -49,8 +49,9 @@
@@ -34,7 +25,7 @@ index 23e1826..1523f1e 100644
   * per-peripheral audit: docs/pocketforge-a133-peripheral-stubs.md. (2) a
   * virtio-gpu + virtio-input graft, reusing deliverable-1's exact proven
   * device set (virtio-gpu-device + virtio-keyboard-device, modern
-@@ -115,6 +116,12 @@
+@@ -117,6 +118,12 @@
  
  #define PF_A133_UART0_BASE      0x05000000
  #define PF_A133_UART0_IRQ       0 /* GIC_SPI 0 */
@@ -47,7 +38,7 @@ index 23e1826..1523f1e 100644
  
  /* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
  #define PF_A133_RTC_BASE        0x07000000
-@@ -352,8 +359,8 @@
+@@ -354,8 +361,8 @@
  #define PF_A133_USBPHY_PMU1_SIZE  0x100
  
  /*
@@ -58,7 +49,7 @@ index 23e1826..1523f1e 100644
   * generic EHCI/OHCI core (drivers/usb/host/ehci-hcd.c, ohci-hcd.c) does
   * plain register init/reset writes with its own bounded jiffies-based
   * timeouts for any hardware-completion wait, so a RAM-backed stub lets
-@@ -361,10 +368,6 @@
+@@ -363,10 +370,6 @@
   * instead of hard-aborting -- confirmed via the panic call trace
   * (ehci_setup/ohci_init, both plain readl/writel, no unbounded poll).
   */
@@ -69,7 +60,7 @@ index 23e1826..1523f1e 100644
  #define PF_A133_EHCI1_BASE        0x05200000
  #define PF_A133_EHCI1_SIZE        0x100
  #define PF_A133_OHCI1_BASE        0x05200400
-@@ -395,6 +398,85 @@
+@@ -397,6 +400,85 @@
  #define PF_A133_NUM_CPUS        4
  #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
  
@@ -155,7 +146,7 @@ index 23e1826..1523f1e 100644
  static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
  {
      DeviceState *gicdev;
-@@ -519,6 +601,7 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -521,6 +603,7 @@ static void pocketforge_a133_init(MachineState *machine)
      qemu_irq pic[PF_A133_NUM_SPI];
      struct arm_boot_info *binfo = g_new0(struct arm_boot_info, 1);
      int n;
@@ -163,7 +154,7 @@ index 23e1826..1523f1e 100644
  
      for (n = 0; n < PF_A133_NUM_CPUS; n++) {
          Object *cpuobj = object_new(machine->cpu_type);
-@@ -544,81 +627,16 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -546,81 +629,16 @@ static void pocketforge_a133_init(MachineState *machine)
  
      pocketforge_a133_create_gic(machine, pic);
  
@@ -253,7 +244,7 @@ index 23e1826..1523f1e 100644
      pocketforge_a133_create_virtio_mmio(machine, pic);
  
 diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
-index d8b0b09..b507f07 100644
+index bd29af877b..3ecc3299c2 100644
 --- a/hw/char/dw_apb_uart.c
 +++ b/hw/char/dw_apb_uart.c
 @@ -55,7 +55,7 @@ DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr)
@@ -266,21 +257,21 @@ index d8b0b09..b507f07 100644
  /* LCR */
  #define UART_LCR_DLAB   0x80
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 5446fc4..2cb3d5b 100644
+index b56e7e1276..08e6604ab6 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -272,7 +272,7 @@ qtests_aarch64 = \
-   (config_all_devices.has_key('CONFIG_ASPEED_SOC') ? qtests_aspeed64 : []) + \
-   (config_all_devices.has_key('CONFIG_NPCM8XX') ? qtests_npcm8xx : []) + \
-   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
--    ['pocketforge-a100-rtc-test'] : []) +                                          \
-+    ['pocketforge-a100-rtc-test', 'pocketforge-a133-mmio-map-test'] : []) +         \
-   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+@@ -275,7 +275,7 @@ qtests_aarch64 = \
     config_all_devices.has_key('CONFIG_ARM_VIRT') ?
     ['iommu-smmuv3-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?
+-    ['pocketforge-a100-rtc-test'] : []) + \
++    ['pocketforge-a100-rtc-test', 'pocketforge-a133-mmio-map-test'] : []) + \
+   qtests_cxl +                                                                                  \
+   ['arm-cpu-features',
+    'numa-test',
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
 new file mode 100644
-index 0000000..e939756
+index 0000000000..e939756c83
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -0,0 +1,201 @@
@@ -485,3 +476,6 @@ index 0000000..e939756
 +
 +    return g_test_run();
 +}
+-- 
+2.43.0
+

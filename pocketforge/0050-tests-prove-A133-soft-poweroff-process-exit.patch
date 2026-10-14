@@ -1,17 +1,13 @@
-From 79fddaec615f0f4ba3af03c44d36bc52440ca752 Mon Sep 17 00:00:00 2001
+From 72ed02b8690297487667df107ff0f41aed2f907a Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:35 -0400
-Subject: [PATCH] tests-prove-A133-soft-poweroff-process-exit
+Date: Tue, 13 Oct 2026 15:52:00 -0400
+Subject: [PATCH 49/50] tests: prove A133 soft poweroff process exit
 
----
- tests/qtest/libqtest.c                     |  5 +++++
- tests/qtest/libqtest.h                     | 12 ++++++++++++
- tests/qtest/pocketforge-a133-axp717-test.c | 14 ++++++++++++++
- 3 files changed, 31 insertions(+)
+Assisted-by: LLM
 
 diff --git a/tests/qtest/libqtest.c b/tests/qtest/libqtest.c
-index c33c799..f6f870c 100644
+index c33c799c92..f6f870cfb3 100644
 --- a/tests/qtest/libqtest.c
 +++ b/tests/qtest/libqtest.c
 @@ -1276,6 +1276,11 @@ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value)
@@ -27,7 +23,7 @@ index c33c799..f6f870c 100644
  {
      qtest_write(s, "writeq", addr, value);
 diff --git a/tests/qtest/libqtest.h b/tests/qtest/libqtest.h
-index 45217fb..4c94ca2 100644
+index 45217fb8dc..4c94ca2acf 100644
 --- a/tests/qtest/libqtest.h
 +++ b/tests/qtest/libqtest.h
 @@ -574,6 +574,18 @@ void qtest_writew(QTestState *s, uint64_t addr, uint16_t value);
@@ -50,7 +46,7 @@ index 45217fb..4c94ca2 100644
   * qtest_writeq:
   * @s: #QTestState instance to operate on.
 diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
-index fc45c4f..670eeea 100644
+index 126afdbee8..58091cafe1 100644
 --- a/tests/qtest/pocketforge-a133-axp717-test.c
 +++ b/tests/qtest/pocketforge-a133-axp717-test.c
 @@ -90,6 +90,14 @@ static void axp717_write_on(QTestState *qts, uint8_t reg, uint8_t value)
@@ -81,3 +77,6 @@ index fc45c4f..670eeea 100644
  }
  
  static void test_pek_reset_clears_machine_state(void)
+-- 
+2.43.0
+

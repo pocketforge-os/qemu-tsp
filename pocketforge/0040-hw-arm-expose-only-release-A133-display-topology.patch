@@ -1,29 +1,29 @@
-From c2fdf64fa042dc1d6030cd092eb2cf4cd7d6714a Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:34 -0400
-Subject: [PATCH] hw-arm-expose-only-release-A133-display-topology
+From 79f0d30cec2cdb5313545b527275dfdf7584640b Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:14:00 +0000
+Subject: [PATCH 39/50] hw/arm: expose only the release A133 display topology
 
----
- hw/arm/pocketforge_a133.c                    | 92 +-------------------
- hw/display/pocketforge_a133_display.c        | 12 +--
- tests/qtest/pocketforge-a133-mmio-map-test.c |  1 -
- 3 files changed, 8 insertions(+), 97 deletions(-)
+Remove the synthetic virtio-gpu transport and its DT augmentation now that
+the release kernel drives the native DE2/TCON/DSI model. The input and PMIC
+paths remain unchanged and the guest DT is no longer display-modified.
+
+
+Assisted-by: LLM
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 8e98617..3e95241 100644
+index e1842a5b5e..bead5a559e 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -118,8 +118,6 @@
+@@ -119,8 +119,6 @@
  #include "hw/sd/allwinner-sdhost.h"
  #include "hw/sd/sd.h"
  #include "hw/core/sysbus.h"
 -#include "hw/virtio/virtio-mmio.h"
 -#include "hw/virtio/virtio-gpu.h"
- #include "exec/address-spaces.h"
+ #include "system/address-spaces.h"
+ #include "system/system.h"
  #include "migration/vmstate.h"
- #include "sysemu/device_tree.h"
-@@ -180,7 +178,6 @@ struct PocketForgeA133MachineState {
+@@ -181,7 +179,6 @@ struct PocketForgeA133MachineState {
      bool input;
      bool initialized;
      char *display;
@@ -31,7 +31,7 @@ index 8e98617..3e95241 100644
      PocketForgeA133Input *input_device;
      DWApbUartState *gamepad_uart[2];
      DeviceState *pmic;
-@@ -511,10 +508,6 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+@@ -512,10 +509,6 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
   * deliverable-1's `-M virt` recipe (pocketforge-automation
   * scripts/qemu-a133-virt.sh) does.
   */
@@ -42,7 +42,7 @@ index 8e98617..3e95241 100644
  
  #define PF_A133_NUM_CPUS        4
  #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
-@@ -995,85 +988,6 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
+@@ -996,85 +989,6 @@ static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
      }
  }
  
@@ -128,7 +128,7 @@ index 8e98617..3e95241 100644
  static void pocketforge_a133_init(MachineState *machine)
  {
      PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(machine);
-@@ -1170,14 +1084,12 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -1171,14 +1085,12 @@ static void pocketforge_a133_init(MachineState *machine)
      pocketforge_a133_create_mmc0(s, pic[PF_A133_MMC0_IRQ]);
      pocketforge_a133_create_ccu_pio(s, machine);
  
@@ -144,7 +144,7 @@ index 8e98617..3e95241 100644
      arm_load_kernel(ARM_CPU(first_cpu), machine, binfo);
  
      /*
-@@ -1198,7 +1110,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
+@@ -1199,7 +1111,7 @@ static void pocketforge_a133_machine_init(MachineClass *mc)
      };
  
      mc->desc = "PocketForge OS A133 fidelity-CI machine "
@@ -154,10 +154,10 @@ index 8e98617..3e95241 100644
      mc->max_cpus = PF_A133_NUM_CPUS;
      mc->min_cpus = PF_A133_NUM_CPUS;
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
-index f1d60ff..d20b3bd 100644
+index 419405c3e1..896bdc19f4 100644
 --- a/hw/display/pocketforge_a133_display.c
 +++ b/hw/display/pocketforge_a133_display.c
-@@ -320,12 +320,12 @@ static void pf_display_reset(DeviceState *dev)
+@@ -321,12 +321,12 @@ static void pf_display_reset(DeviceState *dev)
  static void pf_display_realize(DeviceState *dev, Error **errp)
  {
      static const char *const names[PF_BANK_COUNT] = {
@@ -177,7 +177,7 @@ index f1d60ff..d20b3bd 100644
      static const uint32_t sizes[PF_BANK_COUNT] = {
          PF_IOMMU_SIZE, PF_DE2_SIZE, PF_DSI_SIZE, PF_DPHY_SIZE,
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index 105de00..16e44e3 100644
+index 105de0082c..16e44e3f69 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -64,7 +64,6 @@ static const ExpectedRegion expected_regions[] = {
@@ -188,3 +188,6 @@ index 105de00..16e44e3 100644
  };
  
  static const ExpectedRegion stub_regions[] = {
+-- 
+2.43.0
+

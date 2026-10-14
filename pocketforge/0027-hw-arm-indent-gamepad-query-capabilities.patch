@@ -1,19 +1,19 @@
-From fd5dda4eddc2d256702607af49da86a5742119d0 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:46:38 -0400
-Subject: [PATCH] patch 0027
+From 638381beccd9ebd9ccf76fb9227dd3df1c61ed43 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 09:00:00 +0000
+Subject: [PATCH 27/50] hw/arm: indent gamepad query capabilities
+
+Keep the existing gamepad capability construction inside its device-present
+guard after the power-key query extension wrapped that path.
+
 
 Assisted-by: LLM
----
- hw/arm/pocketforge_a133.c | 74 +++++++++++++++++++--------------------
- 1 file changed, 37 insertions(+), 37 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 6896910..bb46cb3 100644
+index 9e8e7842dd..67114c4730 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -1003,45 +1003,45 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -1005,45 +1005,45 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
          device->ready = pocketforge_a133_input_is_ready(s->input_device);
          caps_tail = &device->caps;
  
@@ -96,3 +96,6 @@ index 6896910..bb46cb3 100644
          QAPI_LIST_APPEND(caps_tail, cap);
          QAPI_LIST_APPEND(device_tail, device);
      }
+-- 
+2.43.0
+

@@ -1,38 +1,40 @@
-From b8a379b892141194510a67ad162191afb27ec589 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:47:02 -0400
-Subject: [PATCH] tests: cover A133 BootROM eGON load and SRAM reset
+From f244622e4996843dfc39d5d281b079f6160d6849 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sun, 11 Oct 2026 08:45:00 +0000
+Subject: [PATCH 30/50] tests: cover A133 BootROM eGON load and SRAM reset
 
-Qtest coverage for A133 BootROM MMC0 eGON header loading.
+Add the pocketforge-a133-bootrom qtest: a forged eGON.BT0 SPL fixture
+boots from MMC0 at the 8 KiB and 128 KiB locations with an exact-length
+copy into SRAM A1, the boot-media stamp, AArch32 entry at 0x20000 and
+held secondaries, and stale-checksum, bad-magic, bad-length,
+truncated-media and no-media fixtures must be rejected without any copy
+or execution. Wired into tests/qtest/meson.build; build.sh picks the
+patch up in the same change.
 
-Manual resolution:
-- tests/qtest/meson.build: add bootrom-test to rebased A133 test list
+
+Rebase resolutions:
+- Qtest Meson: register the BootROM test in the v11 qtests_aarch64 map.
+
 
 Assisted-by: LLM
----
- tests/qtest/meson.build                     |   3 +-
- tests/qtest/pocketforge-a133-bootrom-test.c | 414 ++++++++++++++++++++
- 2 files changed, 416 insertions(+), 1 deletion(-)
- create mode 100644 tests/qtest/pocketforge-a133-bootrom-test.c
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 2cd470a..c78596d 100644
+index ca5345d89f..362aab1d81 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -274,7 +274,8 @@ qtests_aarch64 = \
-   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
-     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
-      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
--     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) +         \
-+     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',                 \
-+     'pocketforge-a133-bootrom-test'] : []) +                                      \
-   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?        \
-     ['pocketforge-a133-display-test'] : []) +                                      \
-   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+@@ -277,7 +277,8 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',
+-     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test'] : []) + \
++     'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',
++     'pocketforge-a133-bootrom-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') and dbus_display ?
+     ['pocketforge-a133-display-test'] : []) + \
+   qtests_cxl +                                                                                  \
 diff --git a/tests/qtest/pocketforge-a133-bootrom-test.c b/tests/qtest/pocketforge-a133-bootrom-test.c
 new file mode 100644
-index 0000000..c828f31
+index 0000000000..c828f3134c
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-bootrom-test.c
 @@ -0,0 +1,414 @@
@@ -450,3 +452,6 @@ index 0000000..c828f31
 +
 +    return g_test_run();
 +}
+-- 
+2.43.0
+

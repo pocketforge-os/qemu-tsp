@@ -1,16 +1,17 @@
-From 4e5aa28ad4ace1ce33039d44affe0249829f8fbe Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:34 -0400
-Subject: [PATCH] hw-display-scan-out-advertised-A133-formats
+From c2f6fd454d516a1284f552784c5d9d031bd3dd52 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:41:00 +0000
+Subject: [PATCH 45/50] hw/display: scan out advertised A133 formats
 
----
- hw/display/pocketforge_a133_display.c       | 14 +++++-
- tests/qtest/pocketforge-a133-display-test.c | 48 +++++++++++++++++++++
- 2 files changed, 60 insertions(+), 2 deletions(-)
+Exercise every DE2 format exposed by query-pocketforge-display and convert
+the red/blue byte order of XB24 into the host x8r8g8b8 surface.  Keep AR24
+and XR24 on the direct-copy path used by the release framebuffer.
+
+
+Assisted-by: LLM
 
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
-index 2a7da68..546fd29 100644
+index 063d4dfed5..0d1ef0f801 100644
 --- a/hw/display/pocketforge_a133_display.c
 +++ b/hw/display/pocketforge_a133_display.c
 @@ -273,7 +273,7 @@ static void pf_display_scanout(PocketForgeA133DisplayState *s)
@@ -49,7 +50,7 @@ index 2a7da68..546fd29 100644
      destination = surface_data(surface);
      if (surface_stride(surface) == width * 4 &&
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 4fb68f4..6dc7154 100644
+index f8a850a6e9..4145486207 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -56,6 +56,7 @@ typedef struct DisplayTest {
@@ -128,3 +129,6 @@ index 4fb68f4..6dc7154 100644
      /* Map the observed native marker using the queried clockwise direction. */
      if (presentation_rotation == 90) {
          presented_x = PF_HEIGHT - 1;
+-- 
+2.43.0
+

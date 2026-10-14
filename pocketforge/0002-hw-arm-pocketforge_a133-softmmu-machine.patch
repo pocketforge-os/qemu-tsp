@@ -1,32 +1,18 @@
-From f8e1fb1f540f755ec0fc40221de73b669014dd37 Mon Sep 17 00:00:00 2001
+From 91d8c653767049cd8f20f27eb756d991fe36abc6 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:32:20 -0400
-Subject: [PATCH] hw/arm: pocketforge_a133 softmmu machine
+Date: Fri, 4 Sep 2026 09:39:07 -0400
+Subject: [PATCH 02/50] hw/arm: pocketforge_a133 softmmu machine
 
-Add the -M pocketforge-a133 system machine with an owned DW APB UART variant.
-
-Manual resolution:
-- hw/arm/Kconfig: insert POCKETFORGE_A133 after IDE_DEV in the expanded SBSA_REF block (v11.1.2 added IDE_BUS/IDE_DEV selects)
-- hw/arm/meson.build: port arm_ss.add to arm_common_ss.add (meson restructured between 8.2.2 and 11.1.2)
-- hw/char/meson.build: insert DW_APB_UART after CMSDK_APB_UART (ETRAXFS line removed upstream)
+Rebase resolutions:
+- Kconfig/Meson: place the machine and DW-APB UART in the v11 ARM common source sets and expanded IDE dependency block.
+- Headers/APIs: port core and system header namespaces plus the current ARM boot and address-space interfaces.
+- Machine registration: advertise the v11 AArch64 target interface so target_machine_typename() includes pocketforge-a133.
 
 Assisted-by: LLM
----
- hw/arm/Kconfig                |   7 +
- hw/arm/meson.build            |   1 +
- hw/arm/pocketforge_a133.c     | 196 +++++++++++++++++
- hw/char/Kconfig               |   3 +
- hw/char/dw_apb_uart.c         | 382 ++++++++++++++++++++++++++++++++++
- hw/char/meson.build           |   1 +
- include/hw/char/dw_apb_uart.h |  69 ++++++
- 7 files changed, 659 insertions(+)
- create mode 100644 hw/arm/pocketforge_a133.c
- create mode 100644 hw/char/dw_apb_uart.c
- create mode 100644 include/hw/char/dw_apb_uart.h
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 6f5b2ad..d80d212 100644
+index 6f5b2add66..d80d212bc5 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -192,6 +192,13 @@ config SBSA_REF
@@ -44,7 +30,7 @@ index 6f5b2ad..d80d212 100644
      bool
      default y
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 4233a80..2a90948 100644
+index 4233a800be..2a90948db3 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
 @@ -12,6 +12,7 @@ arm_common_ss.add(when: 'CONFIG_OLIMEX_STM32_H405', if_true: files('olimex-stm32
@@ -57,10 +43,10 @@ index 4233a80..2a90948 100644
  arm_common_ss.add(when: 'CONFIG_STM32VLDISCOVERY', if_true: files('stm32vldiscovery.c'))
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 new file mode 100644
-index 0000000..aa1d63c
+index 0000000000..43f16bd1f5
 --- /dev/null
 +++ b/hw/arm/pocketforge_a133.c
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,198 @@
 +/*
 + * PocketForge OS -M pocketforge-a133 QEMU softmmu machine
 + *
@@ -103,15 +89,17 @@ index 0000000..aa1d63c
 +#include "qapi/error.h"
 +#include "cpu.h"
 +#include "hw/arm/boot.h"
++#include "hw/arm/machines-qom.h"
 +#include "hw/arm/bsa.h"
 +#include "hw/core/boards.h"
 +#include "hw/char/dw_apb_uart.h"
 +#include "hw/intc/arm_gic.h"
 +#include "hw/intc/arm_gic_common.h"
 +#include "hw/core/qdev-properties.h"
++#include "hw/core/irq.h"
 +#include "hw/core/sysbus.h"
-+#include "exec/address-spaces.h"
-+#include "sysemu/sysemu.h"
++#include "system/address-spaces.h"
++#include "system/system.h"
 +#include "qemu/module.h"
 +#include "chardev/char.h"
 +
@@ -258,7 +246,7 @@ index 0000000..aa1d63c
 +
 +DEFINE_MACHINE("pocketforge-a133", pocketforge_a133_machine_init)
 diff --git a/hw/char/Kconfig b/hw/char/Kconfig
-index 020c0a8..0b6f19f 100644
+index 020c0a84bb..0b6f19fe93 100644
 --- a/hw/char/Kconfig
 +++ b/hw/char/Kconfig
 @@ -1,3 +1,6 @@
@@ -270,10 +258,10 @@ index 020c0a8..0b6f19f 100644
  
 diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
 new file mode 100644
-index 0000000..d8b0b09
+index 0000000000..bd29af877b
 --- /dev/null
 +++ b/hw/char/dw_apb_uart.c
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,381 @@
 +/*
 + * Synopsys DesignWare APB UART ("snps,dw-apb-uart") emulation
 + *
@@ -627,8 +615,8 @@ index 0000000..d8b0b09
 +    }
 +};
 +
-+static Property dw_apb_uart_properties[] = {
-+    {},
++static const Property dw_apb_uart_properties[] = {
++    DEFINE_PROP_CHR("chardev", DWApbUartState, chr),
 +};
 +
 +static void dw_apb_uart_class_init(ObjectClass *oc, const void *data)
@@ -638,6 +626,7 @@ index 0000000..d8b0b09
 +    dc->realize = dw_apb_uart_realize;
 +    device_class_set_legacy_reset(dc, dw_apb_uart_reset);
 +    dc->vmsd = &vmstate_dw_apb_uart;
++    device_class_set_props(dc, dw_apb_uart_properties);
 +}
 +
 +static const TypeInfo dw_apb_uart_info = {
@@ -655,7 +644,7 @@ index 0000000..d8b0b09
 +
 +type_init(dw_apb_uart_register_types)
 diff --git a/hw/char/meson.build b/hw/char/meson.build
-index fc3d7ee..016f480 100644
+index fc3d7ee506..016f48017e 100644
 --- a/hw/char/meson.build
 +++ b/hw/char/meson.build
 @@ -1,5 +1,6 @@
@@ -667,7 +656,7 @@ index fc3d7ee..016f480 100644
  system_ss.add(when: 'CONFIG_IBEX', if_true: files('ibex_uart.c'))
 diff --git a/include/hw/char/dw_apb_uart.h b/include/hw/char/dw_apb_uart.h
 new file mode 100644
-index 0000000..0d91852
+index 0000000000..bf96498147
 --- /dev/null
 +++ b/include/hw/char/dw_apb_uart.h
 @@ -0,0 +1,69 @@
@@ -740,3 +729,6 @@ index 0000000..0d91852
 +DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr);
 +
 +#endif /* HW_DW_APB_UART_H */
+-- 
+2.43.0
+

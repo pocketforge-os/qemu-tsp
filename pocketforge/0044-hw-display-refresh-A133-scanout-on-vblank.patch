@@ -1,16 +1,12 @@
-From ece085bdef40677e4e50156e5813c32b25c36ade Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:34 -0400
-Subject: [PATCH] hw-display-refresh-A133-scanout-on-vblank
+From 3ac9e67abf41107a6358e51c18b6fe84c65cd3d7 Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:19:32 +0000
+Subject: [PATCH 43/50] hw/display: refresh A133 scanout on vblank
 
----
- hw/display/pocketforge_a133_display.c       | 5 +++++
- tests/qtest/pocketforge-a133-display-test.c | 3 ++-
- 2 files changed, 7 insertions(+), 1 deletion(-)
+Assisted-by: LLM
 
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
-index 54389a0..2a7da68 100644
+index b08f33fe5f..063d4dfed5 100644
 --- a/hw/display/pocketforge_a133_display.c
 +++ b/hw/display/pocketforge_a133_display.c
 @@ -126,6 +126,7 @@ static void pf_display_vblank(void *opaque)
@@ -33,7 +29,7 @@ index 54389a0..2a7da68 100644
          memcpy(destination + y * surface_stride(surface),
                 s->frame + y * width * 4, width * 4);
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index b128ef7..4fb68f4 100644
+index 2afffeac8e..f8a850a6e9 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -99,7 +99,8 @@ static void report_frame_cost(QTestState *qts)
@@ -46,3 +42,6 @@ index b128ef7..4fb68f4 100644
                     "p50_us=%" PRId64 " p95_us=%" PRId64 " max_us=%" PRId64,
                     idle[149], idle[284], idle[299]);
  }
+-- 
+2.43.0
+

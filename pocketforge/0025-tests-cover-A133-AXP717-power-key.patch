@@ -1,24 +1,24 @@
-From 598b45078287b8fab9ea7c280f97439fa1b8442e Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:45:28 -0400
-Subject: [PATCH] patch 0025
+From e8c536b43187be27c97490f4d3f577b1a774f5d9 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sat, 10 Oct 2026 00:00:00 +0000
+Subject: [PATCH 25/50] tests: cover A133 AXP717 power-key injection
+
+Add RED coverage for the AXP717 PEK IRQ path, the A100 NMI controller,
+ABI 2.2 capability discovery, short/long holds, and masked/invalid
+negative controls.
+
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-axp717-test.c | 92 ++++++++++++++++++++++
- tests/qtest/pocketforge-a133-input-test.c  | 57 +++++++++++---
- 2 files changed, 139 insertions(+), 10 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
-index 4fd051c..9876854 100644
+index 4fd051ce4c..8b67a89ebe 100644
 --- a/tests/qtest/pocketforge-a133-axp717-test.c
 +++ b/tests/qtest/pocketforge-a133-axp717-test.c
 @@ -6,6 +6,8 @@
  
  #include "qemu/osdep.h"
  #include "libqtest-single.h"
-+#include "qapi/qmp/qdict.h"
++#include "qobject/qdict.h"
 +#include "standard-headers/linux/input.h"
  
  #define R_I2C0_BASE 0x07081400
@@ -142,7 +142,7 @@ index 4fd051c..9876854 100644
      qtest_end();
  
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 5a0c1ec..8bc3fd1 100644
+index b1b908172b..dd92b5989c 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -89,15 +89,20 @@ static void assert_error_prefix(QDict *response, const char *prefix)
@@ -258,3 +258,6 @@ index 5a0c1ec..8bc3fd1 100644
      qtest_add_func("/aarch64/pocketforge-a133-input/uart-component-parameters",
                     test_uart_component_parameters);
      qtest_add_func("/aarch64/pocketforge-a133-input/uart-8n1-eps-ignored",
+-- 
+2.43.0
+

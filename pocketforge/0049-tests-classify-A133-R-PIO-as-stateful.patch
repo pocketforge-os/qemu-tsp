@@ -1,15 +1,13 @@
-From d7504ebe3333ff660b153b2d0f33d76ddedd08cf Mon Sep 17 00:00:00 2001
+From c6a47e8a37afa40b90874dd4b9e20782421e01c1 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:35 -0400
-Subject: [PATCH] tests-classify-A133-R-PIO-as-stateful
+Date: Tue, 13 Oct 2026 15:51:00 -0400
+Subject: [PATCH 48/50] tests: classify A133 R-PIO as stateful
 
----
- tests/qtest/pocketforge-a133-mmio-map-test.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+Assisted-by: LLM
 
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index 16e44e3..4bf76e1 100644
+index 16e44e3f69..4bf76e135f 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -67,6 +67,7 @@ static const ExpectedRegion expected_regions[] = {
@@ -28,3 +26,6 @@ index 16e44e3..4bf76e1 100644
      { "pocketforge-a133.ir",               0x07040000, 0x400 },
      { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },
  };
+-- 
+2.43.0
+

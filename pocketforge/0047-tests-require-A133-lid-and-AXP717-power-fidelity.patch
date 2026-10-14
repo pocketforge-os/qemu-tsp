@@ -1,17 +1,22 @@
-From 32c30c4af213766372e7ee24ddfb159beb787d55 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:46:38 -0400
-Subject: [PATCH] patch 0047
+From 3774c74d4b6bc88fdaa1ad37fe2384fc520a646b Mon Sep 17 00:00:00 2001
+From: qlid <qlid@pocketforge.local>
+Date: Tue, 13 Oct 2026 18:58:00 +0000
+Subject: [PATCH 46/50] tests: require A133 lid and AXP717 power fidelity
+
+Add RED coverage for the active-low PL9 hall switch, the AXP717
+IRQLEVEL and OFFLEVEL timers, and both observable and process-exit
+soft-poweroff paths.
+
+The positive and negative controls share each invocation: invalid and
+idempotent lid reports cannot create edges, all four IRQLEVEL settings
+are checked immediately below and at their boundary, the OFFLEVEL gate
+is proved disabled and enabled, and a zero REG27 write cannot shut down.
+
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-axp717-test.c | 231 ++++++++++++++++++---
- tests/qtest/pocketforge-a133-input-test.c  |  94 ++++++++-
- 2 files changed, 296 insertions(+), 29 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
-index 5c2b2e7..ee0c772 100644
+index dce0af713b..c885360fd8 100644
 --- a/tests/qtest/pocketforge-a133-axp717-test.c
 +++ b/tests/qtest/pocketforge-a133-axp717-test.c
 @@ -30,6 +30,9 @@
@@ -226,7 +231,7 @@ index 5c2b2e7..ee0c772 100644
 +{
 +    QTestState *qts = qtest_init(
 +        "-machine pocketforge-a133,pocketforge-display=off -no-shutdown");
-+    ShutdownEvents events = {NULL};
++    ShutdownEvents events = { 0 };
 +
 +    qtest_qmp_set_event_callback(qts, count_shutdown_events, &events);
 +    power_path_enable_on(qts, AXP717_PEK_LONG);
@@ -274,7 +279,7 @@ index 5c2b2e7..ee0c772 100644
 +{
 +    QTestState *qts = qtest_init(
 +        "-machine pocketforge-a133,pocketforge-display=off -no-shutdown");
-+    ShutdownEvents events = {NULL};
++    ShutdownEvents events = { 0 };
 +
 +    qtest_qmp_set_event_callback(qts, count_shutdown_events, &events);
 +    axp717_write_on(qts, AXP717_SOFT_POWEROFF, 0x04);
@@ -313,7 +318,7 @@ index 5c2b2e7..ee0c772 100644
                     test_pek_reset_clears_machine_state);
      qtest_add_func("/pocketforge-a133/axp717/migration-idle",
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 8f715ec..b45d117 100644
+index 3180d2ccfe..9e50868f9e 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -16,6 +16,17 @@
@@ -445,3 +450,6 @@ index 8f715ec..b45d117 100644
      qtest_add_func("/aarch64/pocketforge-a133-input/uart-component-parameters",
                     test_uart_component_parameters);
      qtest_add_func("/aarch64/pocketforge-a133-input/uart-8n1-eps-ignored",
+-- 
+2.43.0
+

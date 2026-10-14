@@ -1,19 +1,15 @@
-From 1aecd4a862b2c29268c2173ed5c14be9e278326f Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:47:23 -0400
-Subject: [PATCH] patch 0042
+From 84a5d78cefa9e7473531ff7667f7bd61b92eda5b Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:16:16 +0000
+Subject: [PATCH 41/50] tests: measure A133 full and static frame costs
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-display-test.c | 47 +++++++++++++++++++++
- 1 file changed, 47 insertions(+)
 
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 5568798..135a354 100644
+index 8ee7566d31..23199f4b02 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
-@@ -53,6 +53,52 @@ typedef struct DisplayTest {
+@@ -56,6 +56,52 @@ typedef struct DisplayTest {
      uint8_t update_pixel[4];
  } DisplayTest;
  
@@ -66,7 +62,7 @@ index 5568798..135a354 100644
  static void native_map_framebuffer(QTestState *qts)
  {
      const size_t framebuffer_size = PF_WIDTH * PF_HEIGHT * 4;
-@@ -208,6 +254,7 @@ static void test_native_scanout(void)
+@@ -211,6 +257,7 @@ static void test_native_scanout(void)
      qts = qtest_init("-machine pocketforge-a133 -nodefaults "
                       "-display dbus,p2p=yes");
      native_map_framebuffer(qts);
@@ -74,3 +70,6 @@ index 5568798..135a354 100644
      g_assert_cmpint(qemu_socketpair(AF_UNIX, SOCK_STREAM, 0, dbus_pair), ==, 0);
      qtest_qmp_add_client(qts, "@dbus-display", dbus_pair[1]);
      conn = p2p_from_fd(dbus_pair[0]);
+-- 
+2.43.0
+

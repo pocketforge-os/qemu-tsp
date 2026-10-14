@@ -1,20 +1,12 @@
-From b3b85a3a0b4ff6dd7125b3a8e43a3d857a7f94a4 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:38:35 -0400
-Subject: [PATCH] hw/arm: cover build-6 A133 probe apertures
-
-Build-6 A133 probe apertures (G2D clock, etc.) with MMIO map coverage updates.
+From 8f864b02814d809b351c79ee0e015f0e9de764ee Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 19:44:12 -0400
+Subject: [PATCH 12/50] hw/arm: cover build-6 A133 probe apertures
 
 Assisted-by: LLM
----
- docs/pocketforge-a133-peripheral-stubs.md    |  5 ++++-
- hw/arm/pocketforge_a133.c                    |  9 +++++++--
- tests/qtest/pocketforge-a133-mmio-map-test.c | 16 +++++++++++-----
- 3 files changed, 22 insertions(+), 8 deletions(-)
 
 diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
-index dff3152..311c650 100644
+index dff31527a1..311c650409 100644
 --- a/docs/pocketforge-a133-peripheral-stubs.md
 +++ b/docs/pocketforge-a133-peripheral-stubs.md
 @@ -41,12 +41,15 @@ reg range) found FOURTEEN more peripherals between there and userspace:
@@ -35,10 +27,10 @@ index dff3152..311c650 100644
  ### R-I2C0 and AXP717 promotion
  
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index fc0c9ee..3b03d48 100644
+index 1a111ab927..b7885b7117 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -372,7 +372,8 @@ struct PocketForgeA133MachineState {
+@@ -374,7 +374,8 @@ struct PocketForgeA133MachineState {
  #define PF_A133_USBPHY_PMU1_SIZE  0x100
  
  /*
@@ -48,7 +40,7 @@ index fc0c9ee..3b03d48 100644
   * Same USB-SKIP class as MUSB/PHY above: the
   * generic EHCI/OHCI core (drivers/usb/host/ehci-hcd.c, ohci-hcd.c) does
   * plain register init/reset writes with its own bounded jiffies-based
-@@ -445,14 +446,18 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+@@ -447,14 +448,18 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
      { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
      { "pocketforge-a133.ledc",             0x05018000, 0x400 },
      { "pocketforge-a133.ths",              0x05070400, 0x100 },
@@ -69,7 +61,7 @@ index fc0c9ee..3b03d48 100644
      { "pocketforge-a133.dphy",             0x06505000, 0x1000 },
      { "pocketforge-a133.tcon_top",         0x06510000, 0x1000 },
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index 7de0cc0..ca85b91 100644
+index 7de0cc0c22..ca85b91198 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -43,14 +43,18 @@ static const ExpectedRegion expected_regions[] = {
@@ -123,3 +115,6 @@ index 7de0cc0..ca85b91 100644
      g_assert_null(strstr(map, "pocketforge-a133.de2_clk"));
      g_assert_null(strstr(map, "pocketforge-a133.mixer0"));
  
+-- 
+2.43.0
+

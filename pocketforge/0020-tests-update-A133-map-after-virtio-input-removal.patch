@@ -1,16 +1,16 @@
-From 072014ab1f5748be1844f802e536933cec8db9b5 Mon Sep 17 00:00:00 2001
+From 39a39800f9b626ae8cc354c667488b8efbb556b1 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:43:36 -0400
-Subject: [PATCH] patch 0020
+Date: Sat, 10 Oct 2026 01:44:35 -0400
+Subject: [PATCH 20/50] tests: update A133 map after virtio-input removal
+
+The machine now exposes only its display transport on virtio-mmio. Keep the exact live-map contract aligned with that intentional removal.
+
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-mmio-map-test.c | 1 -
- 1 file changed, 1 deletion(-)
 
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index b929ad5..09b272e 100644
+index b929ad5bb9..09b272ec6d 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -68,7 +68,6 @@ static const ExpectedRegion expected_regions[] = {
@@ -21,3 +21,6 @@ index b929ad5..09b272e 100644
  };
  
  static const ExpectedRegion stub_regions[] = {
+-- 
+2.43.0
+

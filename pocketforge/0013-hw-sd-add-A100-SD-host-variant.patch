@@ -1,26 +1,16 @@
-From 5e4ea38551e05e73e0a058f12fefa22033911c8b Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:39:39 -0400
-Subject: [PATCH] hw/sd: add A100 SD host variant
+From 8a5f774a4a2bac4410fe40f0e2afdd9ad7e2768a Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 19:05:19 -0400
+Subject: [PATCH 13/50] hw/sd: add A100 SD host variant
 
-A100 SD host controller variant with qtest coverage.
+Rebase resolutions:
+- QOM: use the const class-init data signature required by v11 TypeInfo callbacks.
 
-Manual resolution:
-- hw/arm/Kconfig: add ALLWINNER_SDHOST select to ALLWINNER_H3 (SERIAL->SERIAL_MM context change in v11.1.2)
-- hw/sd/meson.build: replace CONFIG_ALLWINNER_H3 with CONFIG_ALLWINNER_SDHOST for allwinner-sdhost.c
 
 Assisted-by: LLM
----
- hw/arm/Kconfig                   |  2 ++
- hw/sd/Kconfig                    |  4 ++++
- hw/sd/allwinner-sdhost.c         | 37 ++++++++++++++++++++++++++++----
- hw/sd/meson.build                |  2 +-
- include/hw/sd/allwinner-sdhost.h |  4 ++++
- 5 files changed, 44 insertions(+), 5 deletions(-)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 197b2e5..01edf1e 100644
+index 197b2e5c3c..01edf1eaa4 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -197,6 +197,7 @@ config POCKETFORGE_A133
@@ -40,7 +30,7 @@ index 197b2e5..01edf1e 100644
      select SERIAL_MM
      select ARM_TIMER
 diff --git a/hw/sd/Kconfig b/hw/sd/Kconfig
-index 633b9af..d862cde 100644
+index 633b9afec9..d862cde442 100644
 --- a/hw/sd/Kconfig
 +++ b/hw/sd/Kconfig
 @@ -10,6 +10,10 @@ config SSI_SD
@@ -55,7 +45,7 @@ index 633b9af..d862cde 100644
      bool
      select SD
 diff --git a/hw/sd/allwinner-sdhost.c b/hw/sd/allwinner-sdhost.c
-index 87bb7df..1bcad3a 100644
+index 87bb7df903..377ea94ce2 100644
 --- a/hw/sd/allwinner-sdhost.c
 +++ b/hw/sd/allwinner-sdhost.c
 @@ -325,6 +325,14 @@ static void write_descriptor(AwSdHostState *s, hwaddr desc_addr,
@@ -152,7 +142,7 @@ index 87bb7df..1bcad3a 100644
  }
  
 diff --git a/hw/sd/meson.build b/hw/sd/meson.build
-index b43d45b..7c644ca 100644
+index b43d45bc56..7c644ca40f 100644
 --- a/hw/sd/meson.build
 +++ b/hw/sd/meson.build
 @@ -7,6 +7,6 @@ system_ss.add(when: 'CONFIG_SSI_SD', if_true: files('ssi-sd.c'))
@@ -164,7 +154,7 @@ index b43d45b..7c644ca 100644
  system_ss.add(when: 'CONFIG_NPCM7XX', if_true: files('npcm7xx_sdhci.c'))
  system_ss.add(when: 'CONFIG_CADENCE_SDHCI', if_true: files('cadence_sdhci.c'))
 diff --git a/include/hw/sd/allwinner-sdhost.h b/include/hw/sd/allwinner-sdhost.h
-index d154d81..40a258c 100644
+index d154d81d24..40a258c393 100644
 --- a/include/hw/sd/allwinner-sdhost.h
 +++ b/include/hw/sd/allwinner-sdhost.h
 @@ -44,6 +44,9 @@
@@ -185,3 +175,6 @@ index d154d81..40a258c 100644
      bool   is_sun4i;
  
      /** does the IP block support autocalibration? */
+-- 
+2.43.0
+

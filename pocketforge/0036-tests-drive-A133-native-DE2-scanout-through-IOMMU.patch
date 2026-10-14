@@ -1,16 +1,22 @@
-From 722875df72c63a1532bffdd547fbe7940c42f98b Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:46:38 -0400
-Subject: [PATCH] patch 0036
+From 8b08be25d07e187843c53958a0eed5a89f1aa41c Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:12:00 +0000
+Subject: [PATCH 36/50] tests: drive A133 native DE2 scanout through IOMMU
+
+Replace the virtio-gpu proxy path in the display export test with the
+release driver's native contract: populate sun50i IOMMU tables, program
+DE2 UI channel 2, and commit via the mixer double-buffer register. Require
+finite DSI and TCON command completion rather than write-discard stubs.
+
+
+Rebase resolutions:
+- Qobject: use the v11 qobject/ QDict header after replacing the earlier virtio display fixture.
+
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-display-test.c | 248 ++++----------------
- 1 file changed, 43 insertions(+), 205 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 326846f..5568798 100644
+index 88053361e2..810c21aa1e 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -5,41 +5,30 @@
@@ -19,7 +25,7 @@ index 326846f..5568798 100644
  #include "libqtest.h"
 -#include "libqos/libqos-malloc.h"
 -#include "libqos/virtio-mmio.h"
- #include "qapi/qmp/qdict.h"
+ #include "qobject/qdict.h"
  #include "ui/dbus-display1.h"
 -#include "standard-headers/linux/virtio_config.h"
 -#include "standard-headers/linux/virtio_gpu.h"
@@ -128,7 +134,7 @@ index 326846f..5568798 100644
 -
 -static void gpu_command(GpuFixture *f, const void *command, size_t size)
 -{
--    struct virtio_gpu_ctrl_hdr response = {NULL};
+-    struct virtio_gpu_ctrl_hdr response = { 0 };
 -    uint64_t command_addr = guest_alloc(&f->alloc, size);
 -    uint64_t response_addr = guest_alloc(&f->alloc, sizeof(response));
 -    uint32_t head;
@@ -196,8 +202,8 @@ index 326846f..5568798 100644
 -        },
 -        .resource_id = cpu_to_le32(resource_id),
 -    };
-+    uint32_t dte[1024] = {NULL};
-+    uint32_t pte[4][256] = { {NULL} };
++    uint32_t dte[1024] = { 0 };
++    uint32_t pte[4][256] = { { 0 } };
 +    unsigned int page;
  
      /* Magenta at native top-left; native bottom-right remains black. */
@@ -271,7 +277,7 @@ index 326846f..5568798 100644
 @@ -344,7 +198,6 @@ static void test_native_scanout(void)
      QDict *info;
      QDict *scanout;
-     DisplayTest test = {NULL};
+     DisplayTest test = { 0 };
 -    GpuFixture gpu;
      int dbus_pair[2];
      int listener_pair[2];
@@ -336,3 +342,6 @@ index 326846f..5568798 100644
      qtest_clock_step(qts, 100 * 1000);
      g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
                      ==, 0);
+-- 
+2.43.0
+

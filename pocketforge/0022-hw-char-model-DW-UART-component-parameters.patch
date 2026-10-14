@@ -1,16 +1,16 @@
-From 4bfc7ba2f6d6d46b9b51b0143adead6cf4d8ee8e Mon Sep 17 00:00:00 2001
+From 370674fd7b64284c369a28588d82664d805bf56b Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:45:11 -0400
-Subject: [PATCH] patch 0022
+Date: Sat, 10 Oct 2026 04:07:12 -0400
+Subject: [PATCH 22/50] hw/char: model DW UART component parameters
+
+Report the 32-bit APB width and 16-byte FIFO used by the model, and accept inactive EPS selection in the release decoder 8N1 termios state.
+
 
 Assisted-by: LLM
----
- hw/char/dw_apb_uart.c | 11 ++++++++++-
- 1 file changed, 10 insertions(+), 1 deletion(-)
 
 diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
-index 26a1239..9885b18 100644
+index 18377c30b4..f23a54fb45 100644
 --- a/hw/char/dw_apb_uart.c
 +++ b/hw/char/dw_apb_uart.c
 @@ -54,6 +54,7 @@ DeviceState *dw_apb_uart_create(hwaddr addr, qemu_irq irq, Chardev *chr)
@@ -59,3 +59,6 @@ index 26a1239..9885b18 100644
          /* Read-only status register; writes are ignored. */
          break;
      default:
+-- 
+2.43.0
+

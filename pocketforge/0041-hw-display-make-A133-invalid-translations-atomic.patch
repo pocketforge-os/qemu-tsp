@@ -1,16 +1,12 @@
-From dc62d7c3a1767c68848abd9f24adb38204bab4b6 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:56:34 -0400
-Subject: [PATCH] hw-display-make-A133-invalid-translations-atomic
+From 72d5223f1d8afb2d1da0f9f4c8bb4b87953bef4d Mon Sep 17 00:00:00 2001
+From: PocketForge Maintainers <maintainers@pocketforge.invalid>
+Date: Tue, 13 Oct 2026 19:13:48 +0000
+Subject: [PATCH 40/50] hw/display: make A133 invalid translations atomic
 
----
- hw/display/pocketforge_a133_display.c       | 11 +++++-
- tests/qtest/pocketforge-a133-display-test.c | 44 +++++++++++++++++++++
- 2 files changed, 53 insertions(+), 2 deletions(-)
+Assisted-by: LLM
 
 diff --git a/hw/display/pocketforge_a133_display.c b/hw/display/pocketforge_a133_display.c
-index d20b3bd..e6ba122 100644
+index 896bdc19f4..7fd176c648 100644
 --- a/hw/display/pocketforge_a133_display.c
 +++ b/hw/display/pocketforge_a133_display.c
 @@ -74,6 +74,7 @@ struct PocketForgeA133DisplayState {
@@ -39,18 +35,18 @@ index d20b3bd..e6ba122 100644
 +        memcpy(destination + y * surface_stride(surface),
 +               s->frame + y * width * 4, width * 4);
 +    }
-     dpy_gfx_update(s->console, 0, 0, width, height);
+     qemu_console_update(s->console, 0, 0, width, height);
  }
  
-@@ -356,6 +361,7 @@ static void pf_display_realize(DeviceState *dev, Error **errp)
+@@ -357,6 +362,7 @@ static void pf_display_realize(DeviceState *dev, Error **errp)
      timer_mod_ns(s->vblank_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PF_VBLANK_NS);
      if (s->enabled) {
 +        s->frame = g_malloc(PF_NATIVE_WIDTH * PF_NATIVE_HEIGHT * 4);
-         s->console = graphic_console_init(dev, 0, &pf_display_hw_ops, s);
+         s->console = qemu_graphic_console_create(dev, 0,
+                                                  &pf_display_hw_ops, s);
          qemu_console_resize(s->console, PF_NATIVE_WIDTH, PF_NATIVE_HEIGHT);
-     }
-@@ -369,6 +375,7 @@ static void pf_display_unrealize(DeviceState *dev)
+@@ -371,6 +377,7 @@ static void pf_display_unrealize(DeviceState *dev)
      timer_free(s->dsi_transfer_timer);
      timer_free(s->tcon_transfer_timer);
      timer_free(s->vblank_timer);
@@ -59,7 +55,7 @@ index d20b3bd..e6ba122 100644
          g_free(s->bank[i].regs);
          s->bank[i].regs = NULL;
 diff --git a/tests/qtest/pocketforge-a133-display-test.c b/tests/qtest/pocketforge-a133-display-test.c
-index 135a354..584b297 100644
+index 810c21aa1e..8ee7566d31 100644
 --- a/tests/qtest/pocketforge-a133-display-test.c
 +++ b/tests/qtest/pocketforge-a133-display-test.c
 @@ -11,10 +11,13 @@
@@ -76,7 +72,7 @@ index 135a354..584b297 100644
  #define PF_IOMMU_TLB_FLUSH 0x080
  #define PF_DSI_BASIC_CTL0   0x010
  #define PF_TCON_CPU_IF      0x060
-@@ -327,9 +330,42 @@ static void test_native_register_contract(void)
+@@ -280,9 +283,42 @@ static void test_native_register_contract(void)
      QTestState *qts;
      const uint32_t flush_request = BIT(17) | BIT(16) | 0x3f;
      const uint32_t dphy_marker = 0x5a691234;
@@ -119,7 +115,7 @@ index 135a354..584b297 100644
      /* Positive control: ordinary D-PHY state is stable and readable. */
      qtest_writel(qts, PF_DPHY_BASE + 0x10, dphy_marker);
      g_assert_cmphex(qtest_readl(qts, PF_DPHY_BASE + 0x10), ==,
-@@ -362,6 +398,14 @@ static void test_native_register_contract(void)
+@@ -315,6 +351,14 @@ static void test_native_register_contract(void)
      g_assert_cmphex(qtest_readl(qts, PF_TCON_BASE + PF_TCON_CPU_IF) & BIT(1),
                      ==, 0);
  
@@ -134,3 +130,6 @@ index 135a354..584b297 100644
      qtest_quit(qts);
  }
  
+-- 
+2.43.0
+

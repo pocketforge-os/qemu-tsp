@@ -1,16 +1,12 @@
-From 2ec29cc38a586dba54b4e050ddf07fdd142094cd Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:29:13 -0400
-Subject: [PATCH] linux-user: evdev/uinput ioctl pass-through
+From 509b59f3ff24856f39f1ebd751d0b79f2589aba6 Mon Sep 17 00:00:00 2001
+From: Matt Burke <burke9077@gmail.com>
+Date: Fri, 26 Jun 2026 17:35:29 -0400
+Subject: [PATCH 01/50] linux-user: evdev/uinput ioctl pass-through
 
 Assisted-by: LLM
----
- linux-user/syscall.c | 86 ++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 86 insertions(+)
 
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index 9f45450..05b6e1d 100644
+index 9f454502cb..05b6e1d346 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
 @@ -5695,6 +5695,84 @@ IOCTLEntry ioctl_entries[] = {
@@ -113,3 +109,6 @@ index 9f45450..05b6e1d 100644
              qemu_log_mask(
                  LOG_UNIMP, "Unsupported ioctl: cmd=0x%04lx\n", (long)cmd);
              return -TARGET_ENOTTY;
+-- 
+2.43.0
+

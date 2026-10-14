@@ -1,19 +1,15 @@
-From 1803f475a5b8a7d94ba516075d1d4a1a95dd73d7 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:43:35 -0400
-Subject: [PATCH] patch 0016
+From 7b3295cf2bf489cdef1c235d93030c4318a411fc Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 00:43:34 -0400
+Subject: [PATCH 16/50] tests: cover A133 MCU input ABI 2 transport
 
 Assisted-by: LLM
----
- tests/qtest/pocketforge-a133-input-test.c | 946 +++++-----------------
- 1 file changed, 217 insertions(+), 729 deletions(-)
 
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index f7c7188..5195a1b 100644
+index d65919d76c..136d1ef752 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
-@@ -1,840 +1,328 @@
+@@ -1,839 +1,328 @@
  /*
 - * QTest coverage for the PocketForge A133 virtual input device
 + * QTest coverage for the PocketForge A133 MCU gamepad transport
@@ -27,9 +23,8 @@ index f7c7188..5195a1b 100644
  #include "libqtest.h"
 -#include "libqos/libqos-malloc.h"
 -#include "libqos/virtio-mmio.h"
- #include "qapi/qmp/qdict.h"
- #include "qapi/qmp/qlist.h"
--
+ #include "qobject/qdict.h"
+ #include "qobject/qlist.h"
  #include "standard-headers/linux/input.h"
 -#include "standard-headers/linux/virtio_config.h"
 -#include "standard-headers/linux/virtio_ids.h"
@@ -155,14 +150,11 @@ index f7c7188..5195a1b 100644
 -        qvirtio_set_driver_ok(&f->mmio.vdev);
 -    }
 -}
- 
+-
 -static void input_fixture_init(InputFixture *f, bool setup_queue)
 -{
 -    input_fixture_init_common(f, setup_queue, false);
 -}
-+#define PF_UART3_BASE 0x05000c00
-+#define PF_UART4_BASE 0x05001000
-+#define PF_VIRTIO_INPUT_BASE 0x0a000200
  
 -static void input_fixture_stop(InputFixture *f)
 -{
@@ -173,11 +165,9 @@ index f7c7188..5195a1b 100644
 -    }
 -    qtest_quit(f->qts);
 -}
-+#define UART_RBR_DLL 0x00
-+#define UART_IER_DLM 0x04
-+#define UART_LCR     0x0c
-+#define UART_LSR     0x14
-+#define UART_LSR_DR  0x01
++#define PF_UART3_BASE 0x05000c00
++#define PF_UART4_BASE 0x05001000
++#define PF_VIRTIO_INPUT_BASE 0x0a000200
  
 -static void input_fixture_destroy(InputFixture *f)
 -{
@@ -201,7 +191,12 @@ index f7c7188..5195a1b 100644
 -    g_clear_pointer(&f->trace_path, g_free);
 -    return contents;
 -}
--
++#define UART_RBR_DLL 0x00
++#define UART_IER_DLM 0x04
++#define UART_LCR     0x0c
++#define UART_LSR     0x14
++#define UART_LSR_DR  0x01
+ 
 -static void select_config(InputFixture *f, uint8_t select, uint8_t subsel)
 -{
 -    qtest_writeb(f->qts, PF_A133_INPUT_MMIO_BASE +
@@ -350,7 +345,7 @@ index f7c7188..5195a1b 100644
 -                                 unsigned int index, size_t len)
 +static bool query_has_code(QDict *device, int type, int code)
  {
--    uint8_t zero[2 * sizeof(struct virtio_input_event)] = {NULL};
+-    uint8_t zero[2 * sizeof(struct virtio_input_event)] = { 0 };
 -
 -    g_assert_cmpuint(index, <, ARRAY_SIZE(buffers->addr));
 -    g_assert_cmpuint(len, >, 0);
@@ -378,7 +373,7 @@ index f7c7188..5195a1b 100644
  
 -static EventBuffers add_event_buffers(InputFixture *f)
 -{
--    EventBuffers buffers = {NULL};
+-    EventBuffers buffers = { 0 };
 -    int i;
 +        if (qdict_get_int(cap, "type") != type ||
 +            !(codes = qdict_get_qlist(cap, "codes"))) {
@@ -432,17 +427,17 @@ index f7c7188..5195a1b 100644
 +        QDict *cap = qobject_to(QDict, qlist_entry_obj(cap_entry));
 +        QList *axes;
 +        const QListEntry *axis_entry;
- 
--    while ((trace = strstr(trace, event))) {
--        count++;
--        trace += strlen(event);
++
 +        if (qdict_get_int(cap, "type") != EV_ABS ||
 +            !(axes = qdict_get_qlist(cap, "abs"))) {
 +            continue;
 +        }
 +        QLIST_FOREACH_ENTRY(axes, axis_entry) {
 +            QDict *axis = qobject_to(QDict, qlist_entry_obj(axis_entry));
-+
+ 
+-    while ((trace = strstr(trace, event))) {
+-        count++;
+-        trace += strlen(event);
 +            if (qdict_get_int(axis, "code") == code) {
 +                g_assert_cmpint(qdict_get_int(axis, "min"), ==, min);
 +                g_assert_cmpint(qdict_get_int(axis, "max"), ==, max);
@@ -503,16 +498,12 @@ index f7c7188..5195a1b 100644
 +    g_assert_true(query_has_code(device, EV_SYN, SYN_REPORT));
      for (i = 0; i < ARRAY_SIZE(keys); i++) {
 -        assert_capability(&f, EV_KEY, keys[i]);
--    }
--    for (i = 0; i < ARRAY_SIZE(axes); i++) {
--        assert_capability(&f, EV_ABS, axes[i]);
 +        g_assert_true(query_has_code(device, EV_KEY, keys[i]));
      }
-+    g_assert_true(query_has_abs(device, ABS_HAT0X, -1, 1));
-+    g_assert_true(query_has_abs(device, ABS_HAT0Y, -1, 1));
-+    g_assert_false(query_has_abs(device, ABS_X, 0, 4095));
-+    qobject_unref(response);
- 
+-    for (i = 0; i < ARRAY_SIZE(axes); i++) {
+-        assert_capability(&f, EV_ABS, axes[i]);
+-    }
+-
 -    assert_abs_range(&f, ABS_X, 0, 4095);
 -    assert_abs_range(&f, ABS_Y, 0, 4095);
 -    assert_abs_range(&f, ABS_RX, 0, 4095);
@@ -521,7 +512,11 @@ index f7c7188..5195a1b 100644
 -    assert_abs_range(&f, ABS_RZ, 0, 255);
 -    assert_abs_range(&f, ABS_HAT0X, -1, 1);
 -    assert_abs_range(&f, ABS_HAT0Y, -1, 1);
--
++    g_assert_true(query_has_abs(device, ABS_HAT0X, -1, 1));
++    g_assert_true(query_has_abs(device, ABS_HAT0Y, -1, 1));
++    g_assert_false(query_has_abs(device, ABS_X, 0, 4095));
++    qobject_unref(response);
+ 
 -    input_fixture_destroy(&f);
 +    /* The former machine-owned virtio-input transport is gone. */
 +    g_assert_cmphex(qtest_readl(qts, PF_VIRTIO_INPUT_BASE + 0x008), ==, 0);
@@ -619,7 +614,7 @@ index f7c7188..5195a1b 100644
 -static void test_one_buffer_atomicity(void)
 -{
 -    InputFixture f;
--    EventBuffers buffers = {NULL};
+-    EventBuffers buffers = { 0 };
 -    QDict *response;
 -    QDict *error;
 -    char *trace;
@@ -673,7 +668,7 @@ index f7c7188..5195a1b 100644
 -static void test_undersized_buffer_atomicity(void)
 -{
 -    InputFixture f;
--    EventBuffers buffers = {NULL};
+-    EventBuffers buffers = { 0 };
 -    QDict *response;
 -    QDict *error;
 +    /* Negative and positive controls share one invocation. */
@@ -1071,3 +1066,6 @@ index f7c7188..5195a1b 100644
 +                   test_disabled_and_non_machine);
      return g_test_run();
  }
+-- 
+2.43.0
+

@@ -1,26 +1,19 @@
-From a3944f045f111969c67e1e8153c740ec3ad1d288 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:38:18 -0400
-Subject: [PATCH] hw/misc: add bounded AXP717 register bank
+From fb1599b02eb920bad33203794b2074ff65d3f1aa Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Fri, 9 Oct 2026 18:46:54 -0400
+Subject: [PATCH 10/50] hw/misc: add bounded AXP717 register bank
 
-Bounded AXP717 PMIC register bank with power-on defaults and qtest coverage.
+Expose only the IRQ and regulator registers required by the mainline AXP717 MFD/regulator drivers, attach the PMIC at the board DT address, and cover positive register paths plus an adjacent-address NACK in one qtest invocation.
 
-Manual resolution:
-- tests/qtest/meson.build: add axp717-test to rebased A133 test list
+
+Rebase resolutions:
+- Qtest Meson: register the AXP717 test in the v11 qtests_aarch64 map.
+
 
 Assisted-by: LLM
----
- hw/arm/Kconfig                             |   1 +
- hw/arm/pocketforge_a133.c                  |   2 +
- hw/misc/axp2xx.c                           |  68 ++++++++++++-
- tests/qtest/meson.build                    |   3 +-
- tests/qtest/pocketforge-a133-axp717-test.c | 108 +++++++++++++++++++++
- 5 files changed, 179 insertions(+), 3 deletions(-)
- create mode 100644 tests/qtest/pocketforge-a133-axp717-test.c
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index efdc96b..197b2e5 100644
+index efdc96b9ca..197b2e5c3c 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -198,6 +198,7 @@ config POCKETFORGE_A133
@@ -32,10 +25,10 @@ index efdc96b..197b2e5 100644
      select POCKETFORGE_A100_RTC
      select POCKETFORGE_A133_INPUT
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index d656230..b58cbde 100644
+index 1c993518e4..c6464f6a47 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -92,6 +92,7 @@
+@@ -93,6 +93,7 @@
  #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
  #include "hw/i2c/allwinner-i2c.h"
@@ -43,7 +36,7 @@ index d656230..b58cbde 100644
  #include "hw/input/pocketforge_a133_input.h"
  #include "hw/misc/pocketforge_a133_mmio_stub.h"
  #include "hw/intc/arm_gic.h"
-@@ -505,6 +506,7 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+@@ -507,6 +508,7 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
                                  &s->r_i2c0_container);
      sysbus_connect_irq(sbd, 0, irq);
      s->r_i2c0_bus = AW_I2C(dev)->bus;
@@ -52,7 +45,7 @@ index d656230..b58cbde 100644
  
  static void pocketforge_a133_create_gic(MachineState *machine, qemu_irq *pic)
 diff --git a/hw/misc/axp2xx.c b/hw/misc/axp2xx.c
-index 46d1771..0ef46aa 100644
+index 46d17712dd..d5b5c2be5a 100644
 --- a/hw/misc/axp2xx.c
 +++ b/hw/misc/axp2xx.c
 @@ -2,6 +2,7 @@
@@ -188,22 +181,22 @@ index 46d1771..0ef46aa 100644
  
  type_init(axp2xx_register_devices);
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 0b96351..f238fea 100644
+index 5445a10c11..aa4a95dfaf 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
-@@ -273,7 +273,8 @@ qtests_aarch64 = \
-   (config_all_devices.has_key('CONFIG_NPCM8XX') ? qtests_npcm8xx : []) + \
-   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?                         \
-     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',                   \
--     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test'] : []) +    \
-+     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',              \
-+     'pocketforge-a133-axp717-test'] : []) +                                      \
-   (config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
-    config_all_devices.has_key('CONFIG_ARM_VIRT') ?
+@@ -276,7 +276,8 @@ qtests_aarch64 = \
     ['iommu-smmuv3-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
+-     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test'] : []) + \
++     'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',
++     'pocketforge-a133-axp717-test'] : []) + \
+   qtests_cxl +                                                                                  \
+   ['arm-cpu-features',
+    'numa-test',
 diff --git a/tests/qtest/pocketforge-a133-axp717-test.c b/tests/qtest/pocketforge-a133-axp717-test.c
 new file mode 100644
-index 0000000..4fd051c
+index 0000000000..4fd051ce4c
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-axp717-test.c
 @@ -0,0 +1,108 @@
@@ -315,3 +308,6 @@ index 0000000..4fd051c
 +
 +    return ret;
 +}
+-- 
+2.43.0
+

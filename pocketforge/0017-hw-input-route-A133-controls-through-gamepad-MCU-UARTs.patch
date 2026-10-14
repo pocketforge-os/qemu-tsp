@@ -1,29 +1,22 @@
-From 2ba60a3296af5eca66efc552229dc78fc45a852f Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:44:53 -0400
-Subject: [PATCH] hw/input: route A133 controls through gamepad MCU UARTs
+From 3194d10e9da544279e8a8c6d43d6bc7099ace6ce Mon Sep 17 00:00:00 2001
+From: PocketForge Worker <worker@pocketforge.invalid>
+Date: Sat, 10 Oct 2026 00:48:12 -0400
+Subject: [PATCH 17/50] hw/input: route A133 controls through gamepad MCU UARTs
 
-Bidirectional MCU UART model with FIFO, gamepad scan-out, and capacitive detection.
+Replace the synthetic virtio-input transport with the release hardware path:
+bounded gamepad-MCU frame sources feeding the existing UART3 and UART4 RX
+FIFOs. Negotiate input ABI 2.0 for per-UART ordering and readiness, and expose
+only the exact digital and hat codes implemented by this revision.
 
-Manual resolution:
-- qapi/misc-arm.json: port PocketForgeInputAbsInfo fuzz/flat fields from qapi/misc-target.json (target QAPI restructured in v11.1.2)
+
+Rebase resolutions:
+- QAPI: carry the input fuzz/flat fields in v11 misc-arm.json after the target-schema split.
+
 
 Assisted-by: LLM
----
- hw/arm/Kconfig                            |   1 -
- hw/arm/pocketforge_a133.c                 |  43 +-
- hw/char/dw_apb_uart.c                     |  56 ++-
- hw/input/Kconfig                          |   2 +-
- hw/input/pocketforge_a133_input.c         | 460 ++++++++++++----------
- include/hw/char/dw_apb_uart.h             |   9 +
- include/hw/input/pocketforge_a133_input.h |   9 +-
- qapi/misc-arm.json                        |   9 +-
- tests/qtest/pocketforge-a133-input-test.c |   5 +
- 9 files changed, 353 insertions(+), 241 deletions(-)
 
 diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
-index 01edf1e..d7715b4 100644
+index 01edf1eaa4..d7715b4acb 100644
 --- a/hw/arm/Kconfig
 +++ b/hw/arm/Kconfig
 @@ -204,7 +204,6 @@ config POCKETFORGE_A133
@@ -35,10 +28,10 @@ index 01edf1e..d7715b4 100644
  config SABRELITE
      bool
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 115255c..c064a3b 100644
+index ad9c04dcce..51ac15e7d3 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
-@@ -135,6 +135,7 @@ struct PocketForgeA133MachineState {
+@@ -137,6 +137,7 @@ struct PocketForgeA133MachineState {
      char *display;
      VirtIOGPUBase *gpu;
      PocketForgeA133Input *input_device;
@@ -46,7 +39,7 @@ index 115255c..c064a3b 100644
  };
  
  #define PF_A133_NATIVE_WIDTH 720
-@@ -431,7 +432,7 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+@@ -433,7 +434,7 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
  #define PF_A133_RAM_BASE        0x40000000
  
  /*
@@ -55,7 +48,7 @@ index 115255c..c064a3b 100644
   * slots at addresses/IRQs entirely outside the real SoC's MMIO map (real
   * DT's highest declared reg end is well under 0x08000000; highest GIC_SPI
   * is 143) -- these are QEMU-only synthetic devices with no real-hardware
-@@ -448,7 +449,7 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+@@ -450,7 +451,7 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
  #define PF_A133_VIRTIO_MMIO_BASE   0x0a000000
  #define PF_A133_VIRTIO_MMIO_SIZE   0x200
  #define PF_A133_VIRTIO_MMIO_IRQ0   150 /* GIC_SPI 150: virtio-gpu */
@@ -64,7 +57,7 @@ index 115255c..c064a3b 100644
  
  #define PF_A133_NUM_CPUS        4
  #define PF_A133_NUM_SPI         224 /* real DT's highest GIC_SPI is 143 */
-@@ -684,15 +685,6 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
+@@ -686,15 +687,6 @@ static void pocketforge_a133_create_virtio_mmio(MachineState *machine,
              object_unref(OBJECT(gpu));
          }
  
@@ -80,7 +73,7 @@ index 115255c..c064a3b 100644
      }
  }
  
-@@ -772,8 +764,27 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -774,8 +766,27 @@ static void pocketforge_a133_init(MachineState *machine)
      for (i = 0; i < ARRAY_SIZE(pf_a133_uart_regions); i++) {
          const PfA133UartRegion *uart = &pf_a133_uart_regions[i];
  
@@ -110,7 +103,7 @@ index 115255c..c064a3b 100644
      }
  
      pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
-@@ -891,7 +902,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -894,7 +905,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
      info = g_new0(PocketForgeInputInfo, 1);
      device_tail = &info->devices;
      info->abi_version = g_new0(PocketForgeAbiVersion, 1);
@@ -119,7 +112,7 @@ index 115255c..c064a3b 100644
      info->abi_version->minor = 0;
      info->max_batch_events = PF_A133_INPUT_BATCH_MAX;
      s = POCKETFORGE_A133_MACHINE(current_machine);
-@@ -906,7 +917,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -909,7 +920,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
      device->vendor = 0x045e;
      device->product = 0x028e;
      device->version = 0x0110;
@@ -128,7 +121,7 @@ index 115255c..c064a3b 100644
      caps_tail = &device->caps;
  
      cap = g_new0(PocketForgeInputCaps, 1);
-@@ -944,6 +955,8 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -947,6 +958,8 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
          axis->name = g_strdup(pocketforge_a133_input_axes[i].name);
          axis->min = pocketforge_a133_input_axes[i].minimum;
          axis->max = pocketforge_a133_input_axes[i].maximum;
@@ -138,7 +131,7 @@ index 115255c..c064a3b 100644
      }
      QAPI_LIST_APPEND(caps_tail, cap);
 diff --git a/hw/char/dw_apb_uart.c b/hw/char/dw_apb_uart.c
-index b507f07..26a1239 100644
+index 3ecc3299c2..18377c30b4 100644
 --- a/hw/char/dw_apb_uart.c
 +++ b/hw/char/dw_apb_uart.c
 @@ -115,6 +115,45 @@ static void dw_apb_uart_update_lsr(DWApbUartState *s)
@@ -257,7 +250,7 @@ index b507f07..26a1239 100644
  
  static void dw_apb_uart_realize(DeviceState *dev, Error **errp)
 diff --git a/hw/input/Kconfig b/hw/input/Kconfig
-index 70c9ba2..1365abb 100644
+index 70c9ba2a32..1365abbd3c 100644
 --- a/hw/input/Kconfig
 +++ b/hw/input/Kconfig
 @@ -28,7 +28,7 @@ config VIRTIO_INPUT_HOST
@@ -270,7 +263,7 @@ index 70c9ba2..1365abb 100644
  config VHOST_USER_INPUT
      bool
 diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
-index d259e4c..b6262ee 100644
+index 4bc2bfd056..507ec3e0c7 100644
 --- a/hw/input/pocketforge_a133_input.c
 +++ b/hw/input/pocketforge_a133_input.c
 @@ -1,5 +1,5 @@
@@ -910,8 +903,8 @@ index d259e4c..b6262ee 100644
      object_property_add_str(obj, "event", NULL,
                              pocketforge_a133_input_set_event);
      object_property_add_bool(obj, "ready", pocketforge_a133_input_ready, NULL);
-@@ -466,16 +505,15 @@ static void pocketforge_a133_input_init(Object *obj)
- static void pocketforge_a133_input_class_init(ObjectClass *klass, const void *data)
+@@ -467,16 +506,15 @@ static void pocketforge_a133_input_class_init(ObjectClass *klass,
+                                               const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
 -    VirtIOInputClass *vic = VIRTIO_INPUT_CLASS(klass);
@@ -931,7 +924,7 @@ index d259e4c..b6262ee 100644
      .instance_init = pocketforge_a133_input_init,
      .class_init = pocketforge_a133_input_class_init,
 diff --git a/include/hw/char/dw_apb_uart.h b/include/hw/char/dw_apb_uart.h
-index 0d91852..c5824e6 100644
+index bf96498147..30d0e2b4bf 100644
 --- a/include/hw/char/dw_apb_uart.h
 +++ b/include/hw/char/dw_apb_uart.h
 @@ -39,6 +39,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(DWApbUartState, DW_APB_UART)
@@ -960,7 +953,7 @@ index 0d91852..c5824e6 100644
  
  #endif /* HW_DW_APB_UART_H */
 diff --git a/include/hw/input/pocketforge_a133_input.h b/include/hw/input/pocketforge_a133_input.h
-index 9b50213..e05f219 100644
+index 9b50213244..e88b795a0c 100644
 --- a/include/hw/input/pocketforge_a133_input.h
 +++ b/include/hw/input/pocketforge_a133_input.h
 @@ -7,7 +7,8 @@
@@ -968,7 +961,7 @@ index 9b50213..e05f219 100644
  #define HW_INPUT_POCKETFORGE_A133_INPUT_H
  
 -#include "hw/virtio/virtio-input.h"
-+#include "hw/qdev-core.h"
++#include "hw/core/qdev.h"
 +#include "hw/char/dw_apb_uart.h"
  
  #define TYPE_POCKETFORGE_A133_INPUT "pocketforge-a133-input"
@@ -992,39 +985,8 @@ index 9b50213..e05f219 100644
 +bool pocketforge_a133_input_is_ready(PocketForgeA133Input *input);
  
  #endif
-diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
-index f742318..47db0ac 100644
---- a/qapi/misc-arm.json
-+++ b/qapi/misc-arm.json
-@@ -121,11 +121,14 @@
- # @name: diagnostic symbolic name
- # @min: inclusive minimum
- # @max: inclusive maximum
-+# @fuzz: input noise tolerance
-+# @flat: input dead-zone size
- #
- # Since: 8.2
- ##
- { 'struct': 'PocketForgeInputAbsInfo',
--  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int' },
-+  'data': { 'code': 'uint16', 'name': 'str', 'min': 'int', 'max': 'int',
-+            'fuzz': 'int', 'flat': 'int' },
-   'if': 'CONFIG_TCG' }
- 
- ##
-@@ -151,8 +154,8 @@
- # @vendor: guest-visible vendor identifier
- # @product: guest-visible product identifier
- # @version: guest-visible version identifier
--# @ready: whether the guest virtio driver is active
--# @caps: advertised evdev capabilities
-+# @ready: whether all physical transports can accept an input batch
-+# @caps: exact event codes accepted by @pocketforge-input-send
- #
- # Since: 8.2
- ##
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 5195a1b..4bd1f53 100644
+index 136d1ef752..87cf4c5a30 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -16,6 +16,7 @@
@@ -1053,3 +1015,6 @@ index 5195a1b..4bd1f53 100644
      uart_assert_empty(qts, PF_UART4_BASE);
      response = qtest_qmp(qts,
          "{ 'execute': 'query-pocketforge-input' }");
+-- 
+2.43.0
+

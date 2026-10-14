@@ -1,26 +1,20 @@
-From d9ec2461257aa64530136ce7c9b653d37434c986 Mon Sep 17 00:00:00 2001
-From: "pocketforge-agent[bot]"
- <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:46:05 -0400
-Subject: [PATCH] hw: model A133 AXP717 power key
+From e78df197e90cd199c0131165c04bddbaf4ad27a6 Mon Sep 17 00:00:00 2001
+From: PocketForge CI <ci@pocketforge.local>
+Date: Sat, 10 Oct 2026 00:00:00 +0000
+Subject: [PATCH 26/50] hw: model A133 AXP717 power key interrupt path
 
-AXP717 PEK interrupt path with press/release timing and migration state.
+Route AXP717 PEK edges through the real A100 NMI register block and expose
+the separate build-6 axp20x-pek device through input ABI 2.2.
 
-Manual resolution:
-- hw/misc/axp2xx.c: port vmstate_axp2xx version change and post_load (VMStateField->const VMStateField in v11.1.2)
+
+Rebase resolutions:
+- Migration: make VMStateField storage const and retain the v11 post-load/version contract.
+
 
 Assisted-by: LLM
----
- hw/arm/pocketforge_a133.c                    | 247 +++++++++++++++++--
- hw/misc/axp2xx.c                             |  86 ++++++-
- include/hw/misc/axp2xx.h                     |  15 ++
- tests/qtest/pocketforge-a133-input-test.c    |   3 +-
- tests/qtest/pocketforge-a133-mmio-map-test.c |   1 -
- 5 files changed, 321 insertions(+), 31 deletions(-)
- create mode 100644 include/hw/misc/axp2xx.h
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
-index 5026871..6896910 100644
+index efaf6853d6..9e8e7842dd 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -61,9 +61,10 @@
@@ -37,18 +31,15 @@ index 5026871..6896910 100644
   * (4) MMC0 is QEMU's Allwinner SD host with the A100 descriptor format,
   * calibration register and DMA address shift, at the real base and SPI 39.
   * MMC1 remains an inert DT-aperture stub; disabled MMC2 is absent.
-@@ -103,8 +104,10 @@
+@@ -104,6 +105,7 @@
  #include "hw/i2c/i2c.h"
  #include "hw/input/pocketforge_a133_input.h"
  #include "hw/misc/pocketforge_a133_mmio_stub.h"
 +#include "hw/misc/axp2xx.h"
  #include "hw/intc/arm_gic.h"
  #include "hw/intc/arm_gic_common.h"
-+#include "hw/core/irq.h"
  #include "hw/core/qdev-properties.h"
- #include "hw/rtc/pocketforge_a100_rtc.h"
- #include "hw/sd/allwinner-sdhost.h"
-@@ -136,6 +139,14 @@ struct PocketForgeA133MachineState {
+@@ -138,6 +140,14 @@ struct PocketForgeA133MachineState {
      VirtIOGPUBase *gpu;
      PocketForgeA133Input *input_device;
      DWApbUartState *gamepad_uart[2];
@@ -63,7 +54,7 @@ index 5026871..6896910 100644
  };
  
  #define PF_A133_NATIVE_WIDTH 720
-@@ -505,7 +516,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+@@ -507,7 +517,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
      { "pocketforge-a133.tcon_lcd0",        0x06511000, 0x1000 },
      { "pocketforge-a133.gpu_power_domain", 0x07001000, 0x40 },
      { "pocketforge-a133.r_ccu",            0x07010000, 0x300 },
@@ -71,7 +62,7 @@ index 5026871..6896910 100644
      { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
      { "pocketforge-a133.ir",               0x07040000, 0x400 },
  };
-@@ -535,8 +545,81 @@ static void pocketforge_a133_create_mmio_stubs(void)
+@@ -537,8 +546,81 @@ static void pocketforge_a133_create_mmio_stubs(void)
      }
  }
  
@@ -154,7 +145,7 @@ index 5026871..6896910 100644
  {
      DeviceState *dev = qdev_new(TYPE_AW_I2C_SUN6I);
      SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-@@ -545,7 +628,9 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
+@@ -547,7 +629,9 @@ static void pocketforge_a133_create_r_i2c0(PocketForgeA133MachineState *s,
      sysbus_mmio_map(sbd, 0, PF_A133_R_I2C0_BASE);
      sysbus_connect_irq(sbd, 0, irq);
      s->r_i2c0_bus = AW_I2C(dev)->bus;
@@ -165,7 +156,7 @@ index 5026871..6896910 100644
  
      /* The DT reserves 0x400 bytes; the sun6i register bank ends at 0x23. */
      pocketforge_a133_mmio_stub_create(
-@@ -790,7 +875,8 @@ static void pocketforge_a133_init(MachineState *machine)
+@@ -792,7 +876,8 @@ static void pocketforge_a133_init(MachineState *machine)
      pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
  
      pocketforge_a133_create_mmio_stubs();
@@ -175,7 +166,7 @@ index 5026871..6896910 100644
      pocketforge_a133_create_mmc0(pic[PF_A133_MMC0_IRQ]);
  
      pocketforge_a133_create_virtio_mmio(machine, pic);
-@@ -903,22 +989,19 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -906,22 +991,19 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
      device_tail = &info->devices;
      info->abi_version = g_new0(PocketForgeAbiVersion, 1);
      info->abi_version->major = 2;
@@ -209,7 +200,7 @@ index 5026871..6896910 100644
  
      cap = g_new0(PocketForgeInputCaps, 1);
      cap->type = EV_SYN;
-@@ -958,12 +1041,117 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+@@ -961,12 +1043,117 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
          axis->fuzz = pocketforge_a133_input_axes[i].fuzz;
          axis->flat = pocketforge_a133_input_axes[i].flat;
          QAPI_LIST_APPEND(abs_tail, axis);
@@ -327,7 +318,7 @@ index 5026871..6896910 100644
  void pocketforge_a133_input_send_qmp(const char *device,
                                       PocketForgeInputEventList *events,
                                       Error **errp)
-@@ -974,16 +1162,25 @@ void pocketforge_a133_input_send_qmp(const char *device,
+@@ -977,16 +1164,25 @@ void pocketforge_a133_input_send_qmp(const char *device,
      size_t count = 0;
      size_t i = 0;
  
@@ -358,7 +349,7 @@ index 5026871..6896910 100644
      }
      for (item = events; item; item = item->next) {
 diff --git a/hw/misc/axp2xx.c b/hw/misc/axp2xx.c
-index 0ef46aa..fbea78e 100644
+index d5b5c2be5a..890099bdfb 100644
 --- a/hw/misc/axp2xx.c
 +++ b/hw/misc/axp2xx.c
 @@ -33,7 +33,10 @@
@@ -516,7 +507,7 @@ index 0ef46aa..fbea78e 100644
      .abstract = true,
 diff --git a/include/hw/misc/axp2xx.h b/include/hw/misc/axp2xx.h
 new file mode 100644
-index 0000000..a982a82
+index 0000000000..b3d87d32c8
 --- /dev/null
 +++ b/include/hw/misc/axp2xx.h
 @@ -0,0 +1,15 @@
@@ -529,14 +520,14 @@ index 0000000..a982a82
 +#ifndef HW_MISC_AXP2XX_H
 +#define HW_MISC_AXP2XX_H
 +
-+#include "hw/qdev-core.h"
++#include "hw/core/qdev.h"
 +
 +void axp717_pek_set(DeviceState *dev, bool pressed);
 +bool axp717_pek_is_ready(DeviceState *dev);
 +
 +#endif
 diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
-index 8bc3fd1..8f715ec 100644
+index dd92b5989c..3180d2ccfe 100644
 --- a/tests/qtest/pocketforge-a133-input-test.c
 +++ b/tests/qtest/pocketforge-a133-input-test.c
 @@ -494,7 +494,8 @@ static void test_disabled_and_non_machine(void)
@@ -550,7 +541,7 @@ index 8bc3fd1..8f715ec 100644
      response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
      g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index 09b272e..52052cb 100644
+index 09b272ec6d..52052cb0ae 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -108,7 +108,6 @@ static const ExpectedRegion stub_regions[] = {
@@ -561,3 +552,6 @@ index 09b272e..52052cb 100644
      { "pocketforge-a133.r_pio",            0x07022000, 0x400 },
      { "pocketforge-a133.ir",               0x07040000, 0x400 },
      { "pocketforge-a133.r_i2c0.reserved",  0x07081424, 0x3dc },
+-- 
+2.43.0
+

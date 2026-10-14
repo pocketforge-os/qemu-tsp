@@ -1,17 +1,13 @@
-From f41cdca044d171fa409809c2aeca1f6e4d2836a0 Mon Sep 17 00:00:00 2001
+From 501548a9bce38aec3c094f1bcc2c6621e11dbd9f Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
-Date: Tue, 13 Oct 2026 19:43:35 -0400
-Subject: [PATCH] patch 0019
+Date: Sat, 10 Oct 2026 01:33:10 -0400
+Subject: [PATCH 19/50] hw/misc: report A100 CCU PLL lock status
 
 Assisted-by: LLM
----
- hw/misc/pocketforge_a133_mmio_stub.c         | 30 ++++++++++++++++++++
- include/hw/misc/pocketforge_a133_mmio_stub.h |  9 +++---
- 2 files changed, 35 insertions(+), 4 deletions(-)
 
 diff --git a/hw/misc/pocketforge_a133_mmio_stub.c b/hw/misc/pocketforge_a133_mmio_stub.c
-index 233ee5f..f9e81b2 100644
+index fe6ea07b63..cf1d6363b3 100644
 --- a/hw/misc/pocketforge_a133_mmio_stub.c
 +++ b/hw/misc/pocketforge_a133_mmio_stub.c
 @@ -14,6 +14,25 @@
@@ -59,7 +55,7 @@ index 233ee5f..f9e81b2 100644
  }
  
 diff --git a/include/hw/misc/pocketforge_a133_mmio_stub.h b/include/hw/misc/pocketforge_a133_mmio_stub.h
-index fb83035..f33dbb4 100644
+index 17ed2c7f6d..484a9932c9 100644
 --- a/include/hw/misc/pocketforge_a133_mmio_stub.h
 +++ b/include/hw/misc/pocketforge_a133_mmio_stub.h
 @@ -9,10 +9,11 @@
@@ -78,3 +74,6 @@ index fb83035..f33dbb4 100644
   *
   * This program is free software; you can redistribute it and/or modify it
   * under the terms and conditions of the GNU General Public License,
+-- 
+2.43.0
+
