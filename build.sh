@@ -369,6 +369,21 @@ if ! grep -q 'PF_IOMMU_PC_IVLD_ADDR' \
   git apply "$ROOT/pocketforge/0051-tests-cover-A133-IOMMU-invalidation-completion.patch"
 fi
 
+echo "== apply PocketForge patch: validate virtio shared-memory descriptors =="
+if ! grep -q 'virtio_validate_shmem_regions' hw/virtio/virtio.c; then
+  git apply "$ROOT/pocketforge/0052-virtio-validate-shared-memory-descriptors.patch"
+fi
+
+echo "== apply PocketForge patch: transport-neutral virtio-gpu hostmem =="
+if ! grep -q 'virtio_gpu_hostmem_init' hw/display/virtio-gpu.c; then
+  git apply "$ROOT/pocketforge/0053-virtio-gpu-create-hostmem-transport-neutrally.patch"
+fi
+
+echo "== apply PocketForge patch: virtio-mmio shared-memory regions =="
+if [ ! -f tests/qtest/virtio-mmio-shm-test.c ]; then
+  git apply "$ROOT/pocketforge/0054-virtio-mmio-implement-shared-memory-regions.patch"
+fi
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
@@ -412,7 +427,8 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-axp717-test \
   tests/qtest/pocketforge-a133-mmc-test \
   tests/qtest/pocketforge-a133-bootrom-test \
-  tests/qtest/pocketforge-a133-ccu-test
+  tests/qtest/pocketforge-a133-ccu-test \
+  tests/qtest/virtio-mmio-shm-test
 "$SYSTEM_BUILD_DIR/pyvenv/bin/meson" test -C "$SYSTEM_BUILD_DIR" \
   --print-errorlogs \
   qemu:qtest-aarch64/pocketforge-a100-rtc-test \
@@ -423,7 +439,8 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   qemu:qtest-aarch64/pocketforge-a133-axp717-test \
   qemu:qtest-aarch64/pocketforge-a133-mmc-test \
   qemu:qtest-aarch64/pocketforge-a133-bootrom-test \
-  qemu:qtest-aarch64/pocketforge-a133-ccu-test
+  qemu:qtest-aarch64/pocketforge-a133-ccu-test \
+  qemu:qtest-aarch64/virtio-mmio-shm-test
 cp "$SYSTEM_BUILD_DIR/qemu-system-aarch64" "$OUT/qemu-system-aarch64"
 cp "$SYSTEM_BUILD_DIR/tests/qtest/pocketforge-a133-dbus-listener" \
   "$OUT/pocketforge-a133-dbus-listener"
