@@ -8,10 +8,10 @@
 set -euo pipefail
 
 QEMU_TSP="${QEMU_TSP:?set QEMU_TSP=/path/to/build/qemu-aarch64}"
-FIX="$(cd "$(dirname "$0")" && pwd)"          # regression/ dir (holds probe.c, mkuinput.c)
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+FIX="$(cd "$(dirname "$0")" && pwd)"          # regression/ dir (holds probes and guard)
+WORK="$(mktemp -d)"; trap 'find "$WORK" -mindepth 1 -delete; rmdir "$WORK"' EXIT
 cd "$WORK"
-cp "$FIX/probe.c" "$FIX/mkuinput.c" .
+cp "$FIX/probe.c" "$FIX/mkuinput.c" "$FIX/pf_uinput_domain_guard.h" .
 
 echo "== compile probes =="
 gcc -O0 -o probe.x86 probe.c
@@ -23,7 +23,7 @@ sudo modprobe uinput
 
 echo "== create virtual TRIMUI Player1 (host-native) =="
 cleanup_mk(){ sudo pkill -f "$WORK/mkuinput" 2>/dev/null || true; }
-trap 'cleanup_mk; rm -rf "$WORK"' EXIT
+trap 'cleanup_mk; find "$WORK" -mindepth 1 -delete; rmdir "$WORK"' EXIT
 sudo "$WORK/mkuinput" >/dev/null 2>&1 &
 sleep 1
 
