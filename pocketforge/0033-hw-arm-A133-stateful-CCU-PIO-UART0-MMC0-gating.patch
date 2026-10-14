@@ -1,4 +1,4 @@
-From b1708f4d5385f82cd966be1f95ac2df986115935 Mon Sep 17 00:00:00 2001
+From a0a7843c23f9e9a9d070438e891ac2821618b43e Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 11:35:00 +0000
 Subject: [PATCH 33/50] hw: arm: A133 stateful CCU and PIO gating of UART0 and

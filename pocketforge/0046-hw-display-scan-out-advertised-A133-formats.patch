@@ -1,4 +1,4 @@
-From 171eafbe22b4bc46fb250ebb5e9c3299c4af0914 Mon Sep 17 00:00:00 2001
+From b86df0cd26cde7d0407b15f5bec5179d8ffdc25e Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:41:00 +0000
 Subject: [PATCH 45/50] hw/display: scan out advertised A133 formats

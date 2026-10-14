@@ -1,4 +1,4 @@
-From 171bb853fe08a3ec1d2bccfea92fe56d49986631 Mon Sep 17 00:00:00 2001
+From a175c038f4347ae1137667cfe7b3967a9340b0e2 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 11:05:00 +0000
 Subject: [PATCH 32/50] tests: cover A133 SPL CCU pinctrl UART0 and MMC0 gating

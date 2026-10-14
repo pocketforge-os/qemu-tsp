@@ -1,4 +1,4 @@
-From 1a0b1418dafa2530e378695c3ced084fd0fd01e5 Mon Sep 17 00:00:00 2001
+From 106a547d8522040bbf82aa26dc4d10c450f7bdab Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 18:52:00 +0000
 Subject: [PATCH 34/50] tests: cover A133 native display register contract

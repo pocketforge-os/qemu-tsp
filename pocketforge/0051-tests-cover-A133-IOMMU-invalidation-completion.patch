@@ -1,4 +1,4 @@
-From 9170dc94ec5f4668ea764fc8aff9b1a24e856331 Mon Sep 17 00:00:00 2001
+From b4d25f1486328050a374c8243fff87c418c5cf13 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 21:44:00 +0000
 Subject: [PATCH 50/50] tests: cover A133 IOMMU invalidation completion

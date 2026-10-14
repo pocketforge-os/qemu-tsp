@@ -371,7 +371,7 @@ fi
 
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
-  "$ROOT/tests/pocketforge-a133-qapi-config-test.py" qapi/misc-arm.json
+  "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
 
 echo "== check applied PocketForge source whitespace =="
 git diff --check "$COMMIT" --

@@ -1,4 +1,4 @@
-From 85b946a3efb15ca8f25ecc0dbdf069c0b896d210 Mon Sep 17 00:00:00 2001
+From 49686dd1eff4de56f696288eb441c47beb73e02e Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:18:22 +0000
 Subject: [PATCH 42/50] hw/display: complete A133 DCS command state

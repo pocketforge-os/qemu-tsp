@@ -1,4 +1,4 @@
-From 29c95b73a919c18d8ff8ee943994f57e70291056 Mon Sep 17 00:00:00 2001
+From 353eab4a238517c7be56c5b81466dc70d26a6bd7 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sat, 3 Oct 2026 14:10:12 -0400
@@ -14,13 +14,11 @@ Advertise the evdev identity and capabilities consumed by PocketForge.
 Cover identity, every navigation mapping, negative controls, reset, and the
 optional no-device machine setting with qtest.
 
-
 Rebase resolutions:
 - Input Meson: place the device beside CONFIG_VIRTIO_INPUT_HOST after the v11 source-set cleanup.
 - Virtio input: port send callbacks to the v11 boolean delivery contract.
 - QOM/machine: retain the AArch64 target interface when replacing DEFINE_MACHINE with explicit TypeInfo.
 - Qtest Meson: register the input test in the v11 qtests_aarch64 map.
-
 
 Assisted-by: LLM
 

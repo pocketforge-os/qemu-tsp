@@ -1,4 +1,4 @@
-From 6e4cfb6ae64f058b2947d2b98f36e32e94f86eff Mon Sep 17 00:00:00 2001
+From 9a012fca951de415375a379161e703d17cd5d752 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:13:48 +0000
 Subject: [PATCH 40/50] hw/display: make A133 invalid translations atomic

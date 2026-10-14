@@ -1,4 +1,4 @@
-From 40d198db4ce532f17f13ab40d3f94b34354ff561 Mon Sep 17 00:00:00 2001
+From fa199bae0352f39c062f417a0838f32ae6c42e25 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sat, 10 Oct 2026 00:00:00 +0000
 Subject: [PATCH 26/50] hw: model A133 AXP717 power key interrupt path

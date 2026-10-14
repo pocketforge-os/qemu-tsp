@@ -1,4 +1,4 @@
-From 8ac40983cec58983e7aa2cffc64aa923cbe69483 Mon Sep 17 00:00:00 2001
+From 800de5eff43da0078df1ead47d5c26adb5c47214 Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Sat, 10 Oct 2026 00:43:34 -0400
 Subject: [PATCH 16/50] tests: cover A133 MCU input ABI 2 transport

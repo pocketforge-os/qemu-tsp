@@ -1,4 +1,4 @@
-From e6772d37d74372bcb17b645cc227185feb2af9ac Mon Sep 17 00:00:00 2001
+From 8268cf361b8f134a09846bc3208be37f72e4d74c Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:02:00 +0000
 Subject: [PATCH 35/50] hw/display: own A133 display register pipeline

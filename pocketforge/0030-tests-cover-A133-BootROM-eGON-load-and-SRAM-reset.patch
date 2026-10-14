@@ -1,4 +1,4 @@
-From b1be9589971805ed03d0a9e19fea850e392866d4 Mon Sep 17 00:00:00 2001
+From 5ec5e24a17ca2a51995c5a79bf507839cfcf0b3a Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sun, 11 Oct 2026 08:45:00 +0000
 Subject: [PATCH 30/50] tests: cover A133 BootROM eGON load and SRAM reset

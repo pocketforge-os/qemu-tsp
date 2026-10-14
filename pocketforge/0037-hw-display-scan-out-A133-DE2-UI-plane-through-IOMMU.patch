@@ -1,4 +1,4 @@
-From 0c2864d87b607926f773c5273eae0433b3f82bfe Mon Sep 17 00:00:00 2001
+From 46cb079dd8b1549077006624598bdcc17cc91946 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:22:00 +0000
 Subject: [PATCH 37/50] hw/display: scan out A133 DE2 UI plane through IOMMU

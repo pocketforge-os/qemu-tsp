@@ -1,11 +1,10 @@
-From 8a5f774a4a2bac4410fe40f0e2afdd9ad7e2768a Mon Sep 17 00:00:00 2001
+From 1224a89a07d9f3651dc2bdce4002b08792e7f006 Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Fri, 9 Oct 2026 19:05:19 -0400
 Subject: [PATCH 13/50] hw/sd: add A100 SD host variant
 
 Rebase resolutions:
 - QOM: use the const class-init data signature required by v11 TypeInfo callbacks.
-
 
 Assisted-by: LLM
 

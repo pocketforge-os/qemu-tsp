@@ -1,4 +1,4 @@
-From 1edcb16d4c5b3b56f2058d12234901a948ca855c Mon Sep 17 00:00:00 2001
+From 936135c8b162488289741263763228805838b8dc Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:23:31 +0000
 Subject: [PATCH 44/50] tests: add A133 Display1 frame listener

@@ -1,4 +1,4 @@
-From 0f00cc580370b2f242d4b50b82885e874a548b5a Mon Sep 17 00:00:00 2001
+From a47a8b67751642c51cceab46a70df4e707d1b505 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 23:13:12 -0400
@@ -6,25 +6,30 @@ Subject: [PATCH 15/50] hw/arm: add PocketForge display and input ABI
 
 Rebase resolutions:
 - QAPI: move the target schema additions from removed misc-target.json into v11 misc-arm.json and use the generated misc-arm headers.
-- QAPI gating: omit all three PocketForge commands from generated dispatch when CONFIG_POCKETFORGE_A133 is disabled.
-- ARM Meson: compile the QMP implementation through arm_common_ss and rely on that target selection instead of poisoned CONFIG guards.
+- QAPI dispatch: keep the commands unconditional because common generated sources poison device configuration, and provide target-specific DeviceNotFound fallbacks when the A133 model is absent.
+- ARM Meson: restore an arm_ss source set for the dispatcher so it receives the per-target CONFIG_DEVICES header.
 - Qobject: use the v11 qobject/ QDict and QList header locations in qtests.
 - Qtest Meson: wire the display test and generated D-Bus sources through the v11 test maps.
 
 Assisted-by: LLM
 
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 2a90948db3..97e850ceec 100644
+index 2a90948db3..2150057e00 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
-@@ -13,6 +13,7 @@ arm_common_ss.add(when: 'CONFIG_NPCM7XX', if_true: files('npcm7xx.c', 'npcm7xx_b
- arm_common_ss.add(when: 'CONFIG_NPCM8XX', if_true: files('npcm8xx.c', 'npcm8xx_boards.c'))
- arm_common_ss.add(when: 'CONFIG_REALVIEW', if_true: files('realview.c'))
- arm_common_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133.c'))
-+arm_common_ss.add(when: 'CONFIG_POCKETFORGE_A133', if_true: files('pocketforge_a133_qmp.c'))
- arm_common_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa-ref.c'))
- arm_common_ss.add(when: 'CONFIG_STELLARIS', if_true: files('stellaris.c'))
- arm_common_ss.add(when: 'CONFIG_STM32VLDISCOVERY', if_true: files('stm32vldiscovery.c'))
+@@ -1,3 +1,6 @@
++arm_ss = ss.source_set()
++arm_ss.add(files('pocketforge_a133_qmp.c'))
++
+ arm_common_ss = ss.source_set()
+ arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
+ arm_common_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
+@@ -113,4 +116,5 @@ arm_common_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
+ 
+ arm_common_ss.add(files('boot.c'))
+ 
++hw_arch += {'arm': arm_ss}
+ hw_common_arch += {'arm': arm_common_ss}
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index 24732bb343..ad9c04dcce 100644
 --- a/hw/arm/pocketforge_a133.c
@@ -399,10 +404,10 @@ index 24732bb343..ad9c04dcce 100644
  };
 diff --git a/hw/arm/pocketforge_a133_qmp.c b/hw/arm/pocketforge_a133_qmp.c
 new file mode 100644
-index 0000000000..413b6d2df3
+index 0000000000..14b01dfae6
 --- /dev/null
 +++ b/hw/arm/pocketforge_a133_qmp.c
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,50 @@
 +/*
 + * PocketForge A133 QMP command dispatch
 + *
@@ -410,28 +415,48 @@ index 0000000000..413b6d2df3
 + */
 +
 +#include "qemu/osdep.h"
++#include CONFIG_DEVICES
 +
 +#include "qapi/error.h"
 +#include "qapi/qapi-commands-misc-arm.h"
 +#include "qapi/qapi-types-misc-arm.h"
 +
++#ifdef CONFIG_POCKETFORGE_A133
 +#include "hw/arm/pocketforge_a133.h"
++#endif
 +
 +PocketForgeInputInfo *qmp_query_pocketforge_input(Error **errp)
 +{
++#ifdef CONFIG_POCKETFORGE_A133
 +    return pocketforge_a133_query_input(errp);
++#else
++    error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
++              "PocketForge A133 input is not present");
++    return NULL;
++#endif
 +}
 +
 +void qmp_pocketforge_input_send(const char *device,
 +                                PocketForgeInputEventList *events,
 +                                Error **errp)
 +{
++#ifdef CONFIG_POCKETFORGE_A133
 +    pocketforge_a133_input_send_qmp(device, events, errp);
++#else
++    error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
++              "PocketForge A133 input is not present");
++#endif
 +}
 +
 +PocketForgeDisplayInfo *qmp_query_pocketforge_display(Error **errp)
 +{
++#ifdef CONFIG_POCKETFORGE_A133
 +    return pocketforge_a133_query_display(errp);
++#else
++    error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
++              "PocketForge A133 display is not present");
++    return NULL;
++#endif
 +}
 diff --git a/hw/input/pocketforge_a133_input.c b/hw/input/pocketforge_a133_input.c
 index 605a6a9d39..4bc2bfd056 100644
@@ -920,10 +945,10 @@ index 19a05ee73c..571ec817b5 100644
                                virtio_input_config *config);
  virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
 diff --git a/qapi/misc-arm.json b/qapi/misc-arm.json
-index 4dc66d00e5..5e41d96a3d 100644
+index 4dc66d00e5..a2ea67bb46 100644
 --- a/qapi/misc-arm.json
 +++ b/qapi/misc-arm.json
-@@ -46,6 +46,173 @@
+@@ -46,6 +46,170 @@
  ##
  { 'command': 'query-gic-capabilities', 'returns': ['GICCapability'] }
  
@@ -1031,8 +1056,7 @@ index 4dc66d00e5..5e41d96a3d 100644
 +# Since: 8.2
 +##
 +{ 'command': 'query-pocketforge-input',
-+  'returns': 'PocketForgeInputInfo',
-+  'if': 'CONFIG_POCKETFORGE_A133' }
++  'returns': 'PocketForgeInputInfo' }
 +
 +##
 +# @pocketforge-input-send:
@@ -1043,8 +1067,7 @@ index 4dc66d00e5..5e41d96a3d 100644
 +# Since: 8.2
 +##
 +{ 'command': 'pocketforge-input-send',
-+  'data': { 'device': 'str', 'events': ['PocketForgeInputEvent'] },
-+  'if': 'CONFIG_POCKETFORGE_A133' }
++  'data': { 'device': 'str', 'events': ['PocketForgeInputEvent'] } }
 +
 +##
 +# @PocketForgeDisplayScanout:
@@ -1091,8 +1114,7 @@ index 4dc66d00e5..5e41d96a3d 100644
 +# Since: 8.2
 +##
 +{ 'command': 'query-pocketforge-display',
-+  'returns': 'PocketForgeDisplayInfo',
-+  'if': 'CONFIG_POCKETFORGE_A133' }
++  'returns': 'PocketForgeDisplayInfo' }
 +
  ##
  # @SsidSizeMode:

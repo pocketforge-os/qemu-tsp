@@ -1,4 +1,4 @@
-From 2b8d1b48faafb9ab02a6610aa077b8dfde329743 Mon Sep 17 00:00:00 2001
+From 2717d65191ebb8ce2c42ef1b474b236de48e682e Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Fri, 9 Oct 2026 19:09:58 -0400
 Subject: [PATCH 14/50] hw/arm: connect A133 MMC0 to SD media
@@ -6,7 +6,6 @@ Subject: [PATCH 14/50] hw/arm: connect A133 MMC0 to SD media
 Rebase resolutions:
 - Qtest Meson: register the MMC test in the v11 qtests_aarch64 map.
 - SD protocol test: consume v11 SD CMD3's randomized nonzero RCA and reuse it for CMD7 instead of assuming 0x4567.
-
 
 Assisted-by: LLM
 

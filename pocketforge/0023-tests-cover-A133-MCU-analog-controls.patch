@@ -1,4 +1,4 @@
-From ef47d3f1eeb6d235273fe907de0b01911049d614 Mon Sep 17 00:00:00 2001
+From ed187e635ee68c405fae6b92a339274453bbbfd8 Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Sat, 10 Oct 2026 05:00:17 -0400
 Subject: [PATCH 23/50] tests: cover A133 MCU analog controls

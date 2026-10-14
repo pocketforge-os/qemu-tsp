@@ -1,4 +1,4 @@
-From 67a62460a354051135138f7e82b4b7d801931978 Mon Sep 17 00:00:00 2001
+From 60ae4a98a576b8d513891e9ff77f421c8d2d16f3 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sun, 27 Sep 2026 10:39:49 -0400
@@ -7,7 +7,6 @@ Subject: [PATCH 05/50] hw/rtc: add PocketForge A100 RTC model
 Rebase resolutions:
 - Kconfig/Meson: place the RTC after the current LS7A entry and register its qtest through the v11 qtests_aarch64 map.
 - QOM: use the const class-init data signature required by v11 TypeInfo callbacks.
-
 
 Assisted-by: LLM
 

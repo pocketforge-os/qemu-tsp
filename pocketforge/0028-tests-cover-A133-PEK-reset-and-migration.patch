@@ -1,4 +1,4 @@
-From fdced3570a96dd4eb76dd17a08b1f8f7f0867f2a Mon Sep 17 00:00:00 2001
+From 239c9d837645fcd20eb8f04380a75dc9c714b9e6 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.local>
 Date: Sat, 10 Oct 2026 07:38:45 -0400
 Subject: [PATCH 28/50] tests: cover A133 PEK reset and migration

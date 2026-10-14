@@ -1,4 +1,4 @@
-From c46149426c6810a2f80b91080d4ce2dfae7afc03 Mon Sep 17 00:00:00 2001
+From 2acd52675bf281153c8c14a30f6990293b33fc55 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:19:32 +0000
 Subject: [PATCH 43/50] hw/display: refresh A133 scanout on vblank

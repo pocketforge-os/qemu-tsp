@@ -1,4 +1,4 @@
-From 354d3e84981d7891bc11515f48197a7004e260ff Mon Sep 17 00:00:00 2001
+From bc389b58946d1870e798b47f199706cd3eb1fdca Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Sat, 10 Oct 2026 00:48:12 -0400
 Subject: [PATCH 17/50] hw/input: route A133 controls through gamepad MCU UARTs

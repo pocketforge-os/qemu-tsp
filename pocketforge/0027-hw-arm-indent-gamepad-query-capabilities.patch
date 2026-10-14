@@ -1,4 +1,4 @@
-From 4346d5975765845a5010aa9436f8c969b80dbff9 Mon Sep 17 00:00:00 2001
+From 80f6c843fae2ea50bd7fbf799c732c22513f3696 Mon Sep 17 00:00:00 2001
 From: PocketForge CI <ci@pocketforge.invalid>
 Date: Sat, 10 Oct 2026 09:00:00 +0000
 Subject: [PATCH 27/50] hw/arm: indent gamepad query capabilities

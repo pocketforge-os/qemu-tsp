@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require PocketForge QMP commands to follow the machine's build condition."""
+"""Keep device config out of common QAPI code and in the ARM dispatcher."""
 
 import argparse
 from pathlib import Path
@@ -12,6 +12,7 @@ COMMANDS = (
     "query-pocketforge-display",
 )
 CONDITION = "CONFIG_POCKETFORGE_A133"
+DISPATCHER = "pocketforge_a133_qmp.c"
 
 
 def command_definition(schema: str, name: str) -> str:
@@ -47,43 +48,53 @@ def command_definition(schema: str, name: str) -> str:
     raise ValueError(f"definition-end-missing:{name}")
 
 
-def validate(schema: str) -> None:
-    condition = re.compile(
-        rf"'if'\s*:\s*'{re.escape(CONDITION)}'"
-    )
+def validate(schema: str, meson: str, dispatcher: str) -> None:
     for name in COMMANDS:
-        if not condition.search(command_definition(schema, name)):
-            raise ValueError(f"command-condition-missing:{name}:{CONDITION}")
+        if CONDITION in command_definition(schema, name):
+            raise ValueError(f"common-qapi-uses-device-config:{name}:{CONDITION}")
+
+    unconditional = re.compile(
+        rf"arm_ss\.add\(files\(['\"]{re.escape(DISPATCHER)}['\"]\)\)"
+    )
+    if not unconditional.search(meson):
+        raise ValueError(f"dispatcher-not-unconditionally-linked:{DISPATCHER}")
+    if "hw_arch += {'arm': arm_ss}" not in meson:
+        raise ValueError("dispatcher-not-in-target-specific-arm-source-set")
+    if "#include CONFIG_DEVICES" not in dispatcher:
+        raise ValueError("dispatcher-missing-config-devices")
+    if not re.search(rf"#if(?:def|\s+defined\()[^\n]*{CONDITION}", dispatcher):
+        raise ValueError(f"dispatcher-missing-condition:{CONDITION}")
+    if dispatcher.count("ERROR_CLASS_DEVICE_NOT_FOUND") < len(COMMANDS):
+        raise ValueError("dispatcher-missing-device-not-found-fallbacks")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("schema", type=Path)
+    parser.add_argument("source_root", type=Path)
     args = parser.parse_args()
-    schema = args.schema.read_text()
+    root = args.source_root
+    schema = (root / "qapi/misc-arm.json").read_text()
+    meson = (root / "hw/arm/meson.build").read_text()
+    dispatcher = (root / "hw/arm/pocketforge_a133_qmp.c").read_text()
 
     try:
-        validate(schema)
+        validate(schema, meson, dispatcher)
     except ValueError as error:
         print(f"QAPI_CONFIG_GATING result=FAIL reason={error}")
         return 1
 
-    negative = re.sub(
-        rf",?\s*'if'\s*:\s*'{re.escape(CONDITION)}'",
-        "",
-        schema,
-        count=1,
-    )
-    if negative == schema:
+    negative = dispatcher.replace("ERROR_CLASS_DEVICE_NOT_FOUND", "ERROR_CLASS_GENERIC_ERROR", 1)
+    if negative == dispatcher:
         print("QAPI_CONFIG_GATING result=FAIL reason=negative-control-not-mutated")
         return 1
     try:
-        validate(negative)
+        validate(schema, meson, negative)
     except ValueError as error:
-        if str(error).startswith("command-condition-missing:"):
+        if str(error) == "dispatcher-missing-device-not-found-fallbacks":
             print(
                 "QAPI_CONFIG_GATING result=PASS "
-                "positive=all-commands-conditional negative=missing-condition-rejected"
+                "positive=target-dispatcher-fallbacks "
+                "negative=missing-fallback-rejected"
             )
             return 0
         print(f"QAPI_CONFIG_GATING result=FAIL reason=negative-control:{error}")

@@ -1,4 +1,4 @@
-From f1ac2658ab88fd74114a805f8e3190fd8d10e983 Mon Sep 17 00:00:00 2001
+From 3860a350df456e072e3b43052c078d5a6a4be751 Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:12:00 +0000
 Subject: [PATCH 36/50] tests: drive A133 native DE2 scanout through IOMMU

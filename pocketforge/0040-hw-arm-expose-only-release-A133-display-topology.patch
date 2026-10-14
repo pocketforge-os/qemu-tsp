@@ -1,4 +1,4 @@
-From bf6a50831a18cdf0942b47b23e7d0d7d88590b8a Mon Sep 17 00:00:00 2001
+From e9209424b7f1ad8a03dd15072b97f787443d737e Mon Sep 17 00:00:00 2001
 From: PocketForge Maintainers <maintainers@pocketforge.invalid>
 Date: Tue, 13 Oct 2026 19:14:00 +0000
 Subject: [PATCH 39/50] hw/arm: expose only the release A133 display topology

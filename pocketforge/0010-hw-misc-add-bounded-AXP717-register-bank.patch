@@ -1,14 +1,12 @@
-From fb1599b02eb920bad33203794b2074ff65d3f1aa Mon Sep 17 00:00:00 2001
+From b491c421eb0f40d4b89d5506ccd6a9c8f179292e Mon Sep 17 00:00:00 2001
 From: PocketForge Worker <worker@pocketforge.invalid>
 Date: Fri, 9 Oct 2026 18:46:54 -0400
 Subject: [PATCH 10/50] hw/misc: add bounded AXP717 register bank
 
 Expose only the IRQ and regulator registers required by the mainline AXP717 MFD/regulator drivers, attach the PMIC at the board DT address, and cover positive register paths plus an adjacent-address NACK in one qtest invocation.
 
-
 Rebase resolutions:
 - Qtest Meson: register the AXP717 test in the v11 qtests_aarch64 map.
-
 
 Assisted-by: LLM
 
