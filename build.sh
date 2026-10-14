@@ -426,6 +426,12 @@ if ! grep -Fq 'test_venus_only_queue_contract' \
   git apply "$ROOT/pocketforge/0061-tests-exercise-Venus-only-GPU-queues.patch"
 fi
 
+echo "== apply PocketForge patch: defer Venus migration blocker =="
+if ! grep -Fq 'test_venus_only_migration_blocker' \
+    tests/qtest/virtio-gpu-venus-only-test.c; then
+  git apply "$ROOT/pocketforge/0062-virtio-gpu-defer-Venus-migration-blocker-until-render.patch"
+fi
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
