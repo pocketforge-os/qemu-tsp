@@ -45,7 +45,7 @@ index 6045915..fa94c2f 100644
 @@ -11,6 +11,8 @@
  #include "hw/display/pocketforge_a133_display.h"
  #include "exec/address-spaces.h"
- #include "hw/qdev-properties.h"
+ #include "hw/core/qdev-properties.h"
 +#include "ui/console.h"
 +#include "ui/surface.h"
  

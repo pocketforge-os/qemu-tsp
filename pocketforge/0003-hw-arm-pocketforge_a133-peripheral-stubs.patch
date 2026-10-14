@@ -153,12 +153,12 @@ index aa1d63c..eb89470 100644
   * via -dtb; this machine does not synthesize or auto-generate a device
 @@ -43,6 +62,7 @@
  #include "hw/arm/bsa.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
 +#include "hw/misc/pocketforge_a133_mmio_stub.h"
  #include "hw/intc/arm_gic.h"
  #include "hw/intc/arm_gic_common.h"
- #include "hw/qdev-properties.h"
+ #include "hw/core/qdev-properties.h"
 @@ -65,6 +85,41 @@
  #define PF_A133_UART0_BASE      0x05000000
  #define PF_A133_UART0_IRQ       0 /* GIC_SPI 0 */

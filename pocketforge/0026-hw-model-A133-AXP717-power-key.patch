@@ -45,7 +45,7 @@ index 5026871..6896910 100644
  #include "hw/intc/arm_gic.h"
  #include "hw/intc/arm_gic_common.h"
 +#include "hw/core/irq.h"
- #include "hw/qdev-properties.h"
+ #include "hw/core/qdev-properties.h"
  #include "hw/rtc/pocketforge_a100_rtc.h"
  #include "hw/sd/allwinner-sdhost.h"
 @@ -136,6 +139,14 @@ struct PocketForgeA133MachineState {

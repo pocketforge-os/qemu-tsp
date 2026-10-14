@@ -36,7 +36,7 @@ index d656230..b58cbde 100644
 --- a/hw/arm/pocketforge_a133.c
 +++ b/hw/arm/pocketforge_a133.c
 @@ -92,6 +92,7 @@
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
  #include "hw/i2c/allwinner-i2c.h"
 +#include "hw/i2c/i2c.h"

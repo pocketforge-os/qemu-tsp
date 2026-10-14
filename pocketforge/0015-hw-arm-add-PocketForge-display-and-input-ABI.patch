@@ -62,7 +62,7 @@ index d2f67a3..115255c 100644
  #include "hw/arm/boot.h"
  #include "hw/arm/bsa.h"
 +#include "hw/arm/pocketforge_a133.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
  #include "hw/i2c/allwinner-i2c.h"
 @@ -106,6 +111,7 @@

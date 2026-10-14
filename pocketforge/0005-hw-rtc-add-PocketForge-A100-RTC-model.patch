@@ -91,7 +91,7 @@ index 3d24bf3..23e1826 100644
 @@ -94,6 +94,7 @@
  #include "hw/intc/arm_gic.h"
  #include "hw/intc/arm_gic_common.h"
- #include "hw/qdev-properties.h"
+ #include "hw/core/qdev-properties.h"
 +#include "hw/rtc/pocketforge_a100_rtc.h"
  #include "hw/core/sysbus.h"
  #include "exec/address-spaces.h"

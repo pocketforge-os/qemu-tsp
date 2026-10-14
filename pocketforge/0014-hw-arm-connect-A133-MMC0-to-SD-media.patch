@@ -63,7 +63,7 @@ index 3b03d48..d2f67a3 100644
  #include "hw/arm/boot.h"
 @@ -98,10 +102,13 @@
  #include "hw/intc/arm_gic_common.h"
- #include "hw/qdev-properties.h"
+ #include "hw/core/qdev-properties.h"
  #include "hw/rtc/pocketforge_a100_rtc.h"
 +#include "hw/sd/allwinner-sdhost.h"
 +#include "hw/sd/sd.h"

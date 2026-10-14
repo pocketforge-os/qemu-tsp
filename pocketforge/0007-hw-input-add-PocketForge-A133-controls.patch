@@ -61,13 +61,13 @@ index 1523f1e..1694550 100644
   * auto-generated FDT like -M virt has) still makes virtio-mmio
 @@ -91,12 +91,14 @@
  #include "hw/arm/bsa.h"
- #include "hw/boards.h"
+ #include "hw/core/boards.h"
  #include "hw/char/dw_apb_uart.h"
 +#include "hw/input/pocketforge_a133_input.h"
  #include "hw/misc/pocketforge_a133_mmio_stub.h"
  #include "hw/intc/arm_gic.h"
  #include "hw/intc/arm_gic_common.h"
- #include "hw/qdev-properties.h"
+ #include "hw/core/qdev-properties.h"
  #include "hw/rtc/pocketforge_a100_rtc.h"
  #include "hw/core/sysbus.h"
 +#include "hw/virtio/virtio-mmio.h"
