@@ -1,6 +1,7 @@
 # Classified kernel-input creation and exposure occurrences.
-# regression/mkuinput.c has no intended builder workflow; shared transitional
+# regression/mkuinput.c has no intended builder workflow, and no scheduled one:
+# regression/run-regression.sh is unscheduled (tsp-ihne1.56.5) and the pfvd QEMU
+# guest owns its kernel half from wave 2 on. Shared transitional
 # admission is removed with the other host/CI uses by tsp-ihne1.56.5.
-regression/run-regression.sh	de73a9266a6993ee69b11cc59ff459e25efc1ddc483f8216eef20ed1eb396e4d	# regression/run-regression.sh:6 # committed baseline). Run on an x86_64 host with /dev/uinput. Needs sudo (uinput
-regression/mkuinput.c	52f0ed42dc398c93bb074703822ee68d5636df0008b41d7e43c97bf0e34c2d90	# regression/mkuinput.c:34 int fd=pf_uinput_guarded_open("/dev/uinput",O_RDWR|O_NONBLOCK,pf_uinput_real_open,NULL,&verdict);
-regression/mkuinput.c	1e90bee6e50490267cbeb2395c4cb0e18b2c0cca6973594d668e8e362434b2ed	# regression/mkuinput.c:56 if(ioctl(fd,UI_DEV_CREATE)<0) perror("UI_DEV_CREATE");
+regression/mkuinput.c	52f0ed42dc398c93bb074703822ee68d5636df0008b41d7e43c97bf0e34c2d90	# regression/mkuinput.c:36 int fd=pf_uinput_guarded_open("/dev/uinput",O_RDWR|O_NONBLOCK,pf_uinput_real_open,NULL,&verdict);
+regression/mkuinput.c	54e01f5fdd27a72c7568acd7c50cb744d5665194ef4d0d7feef3db00e0fb4461	# regression/mkuinput.c:58 if(ioctl(fd,UI_DEV_CREATE)<0){ perror("UI_DEV_CREATE"); return 2; }
