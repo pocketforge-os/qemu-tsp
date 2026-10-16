@@ -112,7 +112,11 @@ QEMU_TSP=$PWD/build/qemu-tsp/qemu-aarch64 regression/run-regression.sh
 
 It synthesizes a "TRIMUI Player1" (045e:028e) uinput gamepad, probes it natively and
 under qemu-tsp (arm64), and asserts the two are **byte-identical**
-(`regression/baseline/out.native.txt` ⇔ `regression/out.qemu-tsp.txt`).
+(`regression/baseline/out.native.txt` ⇔ `regression/out.qemu-tsp.txt`). The creator
+reports its own `UI_GET_SYSNAME` identity and the script derives the event node from it,
+so a run binds its evidence to the device that invocation created: a pre-existing or a
+concurrent same-name device cannot be probed in its place and reported as this run's
+result.
 
 This check is **unscheduled** (tsp-ihne1.56.5). A created uinput device is host-global —
 Docker's user, mount and PID namespaces do not virtualize evdev — so the kernel half of it

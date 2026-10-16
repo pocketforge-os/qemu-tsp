@@ -1,5 +1,7 @@
-// mkuinput.c — host-native uinput virtual gamepad creator. Stays alive (pause()).
+// mkuinput.c — native uinput virtual gamepad creator. Stays alive (pause()).
 // On SIGUSR1, injects a small known event sequence so a reader can be tested.
+// Prints `sysname=<inputN>` for the device it created, so the caller binds its
+// evidence to that node and not to the first same-name node it can find.
 #include <linux/uinput.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -53,7 +55,16 @@ int main(){
   ud.absmin[ABS_Z]=0; ud.absmax[ABS_Z]=255; ud.absmin[ABS_RZ]=0; ud.absmax[ABS_RZ]=255;
   ud.absmin[ABS_HAT0X]=-1; ud.absmax[ABS_HAT0X]=1; ud.absmin[ABS_HAT0Y]=-1; ud.absmax[ABS_HAT0Y]=1;
   if(write(fd,&ud,sizeof ud)<0) perror("write ud");
-  if(ioctl(fd,UI_DEV_CREATE)<0) perror("UI_DEV_CREATE");
+  if(ioctl(fd,UI_DEV_CREATE)<0){ perror("UI_DEV_CREATE"); return 2; }
+  // Report this process's own kernel identity so the caller can bind its
+  // evidence to the node THIS invocation created. A name search over
+  // /sys/class/input could match a pre-existing or a concurrent same-name
+  // device, and then both readers would probe the wrong node.
+  {
+    char sysname[64]; memset(sysname,0,sizeof sysname);
+    if(ioctl(fd,UI_GET_SYSNAME(sizeof sysname),sysname)<0) perror("UI_GET_SYSNAME");
+    else printf("sysname=%s\n",sysname);
+  }
   signal(SIGUSR1, inject);
   printf("uinput created, sleeping (pid=%d)\n", getpid()); fflush(stdout);
   for(;;) pause();

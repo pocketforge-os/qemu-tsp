@@ -59,20 +59,48 @@ if ! kill -0 "$mkpid" 2>/dev/null; then
   exit 1
 fi
 
-echo "== locate the event node by name =="
-EV=""
-for d in /sys/class/input/event*; do
-  n="$d/device/name"
-  if [ -r "$n" ] && grep -qx "TRIMUI Player1" "$n" 2>/dev/null; then
-    EV="/dev/input/$(basename "$d")"; break
-  fi
-done
-if [ -z "$EV" ]; then
+echo "== bind this run to the device this invocation created =="
+# The creator reports its own kernel identity (UI_GET_SYSNAME) and the node is
+# derived from that. Searching /sys/class/input by device name instead could
+# bind both readers to a pre-existing or a concurrent same-name device, and the
+# run could then report PASS without ever probing this invocation's node.
+sysname="$(sed -n 's/^sysname=//p' mkuinput.log | tail -n 1)"
+if [ -z "$sysname" ]; then
   cat mkuinput.log
-  echo "FAIL: could not find TRIMUI Player1 event node"
+  echo "FAIL: the uinput creator did not report its sysname"
   exit 1
 fi
-echo "   device = $EV"
+sysdir="/sys/class/input/$sysname"
+if [ ! -d "$sysdir" ]; then
+  echo "FAIL: $sysname has no directory under /sys/class/input"
+  exit 1
+fi
+node=""
+for d in "$sysdir"/event*; do
+  [ -e "$d" ] || continue
+  if [ -n "$node" ]; then
+    echo "FAIL: $sysname owns more than one event node"
+    exit 1
+  fi
+  node="$(basename "$d")"
+done
+if [ -z "$node" ]; then
+  echo "FAIL: $sysname owns no event node"
+  exit 1
+fi
+EV="/dev/input/$node"
+if [ ! -e "$EV" ]; then
+  echo "FAIL: $EV does not exist"
+  exit 1
+fi
+# Identity cross-check: the node this invocation created must still be the
+# device under test, not another device that happens to own that sysname.
+if [ "$(cat "$sysdir/name" 2>/dev/null)" != "TRIMUI Player1" ]; then
+  echo "FAIL: $sysname is not TRIMUI Player1"
+  exit 1
+fi
+echo "   sysname = $sysname"
+echo "   device  = $EV"
 
 echo "== native probe =="
 ./probe.native "$EV" | tee out.native.txt

@@ -54,4 +54,55 @@ if no_host_route "$tmp/mutant-grant.sh" 2>/dev/null; then
   echo "FAIL: a replanted device chgrp/chmod grant was accepted" >&2
   exit 1
 fi
-echo "regression-entry-point: PASS host_route=absent escalate_mutant=red grant_mutant=red guarded_creator=present"
+
+# tsp-ihne1.56.5 review round 1: each run must bind its evidence to the node
+# this invocation created. The creator reports its own UI_GET_SYSNAME and the
+# script derives /dev/input/event* from that identity, so a pre-existing or a
+# concurrent same-name device cannot be probed in its place and reported as
+# this run's result. Source-only, like every assertion here.
+reports_own_identity() {
+  local src="$1"
+  if ! grep -Fq 'UI_GET_SYSNAME' "$src"; then return 1; fi
+  if ! grep -Fq 'sysname=' "$src"; then return 1; fi
+  return 0
+}
+
+binds_own_device() {
+  local script="$1"
+  if ! grep -Fq 'sysname=' "$script"; then return 1; fi
+  if ! grep -Fq '/sys/class/input/$sysname' "$script"; then return 1; fi
+  if grep -Fq '/sys/class/input/event*' "$script"; then return 1; fi
+  return 0
+}
+
+mkuinput_src="$root/regression/mkuinput.c"
+if ! reports_own_identity "$mkuinput_src"; then
+  echo "FAIL: regression/mkuinput.c does not report the device it created" >&2
+  exit 1
+fi
+if ! binds_own_device "$regression"; then
+  echo "FAIL: run-regression.sh does not bind its evidence to this invocation's device" >&2
+  exit 1
+fi
+
+# Negative controls: strip the identity report from the creator, and replant the
+# global first-name-match discovery; each must be refused.
+grep -v 'UI_GET_SYSNAME' "$mkuinput_src" > "$tmp/mutant-mkuinput.c"
+if reports_own_identity "$tmp/mutant-mkuinput.c" 2>/dev/null; then
+  echo "FAIL: a creator that does not report its own sysname was accepted" >&2
+  exit 1
+fi
+cat > "$tmp/mutant-discovery.sh" <<'MUTANT'
+EV=""
+for d in /sys/class/input/event*; do
+  n="$d/device/name"
+  if [ -r "$n" ] && grep -qx "TRIMUI Player1" "$n" 2>/dev/null; then
+    EV="/dev/input/$(basename "$d")"; break
+  fi
+done
+MUTANT
+if binds_own_device "$tmp/mutant-discovery.sh" 2>/dev/null; then
+  echo "FAIL: a first-global-name-match discovery was accepted" >&2
+  exit 1
+fi
+echo "regression-entry-point: PASS host_route=absent escalate_mutant=red grant_mutant=red guarded_creator=present own_device=bound identity_mutant=red discovery_mutant=red"
