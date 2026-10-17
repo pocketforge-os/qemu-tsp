@@ -44,6 +44,29 @@ source_value() { # source_value <key> <file>
     sed -n "s/^$1=//p" "$2" | sed -n 1p
 }
 
+max_bytes=1048576 # every vendored canonical file is far below one MiB
+
+# A pinned input is read and hashed here, so require a bounded regular file
+# first: a symlink or a device node would let a tree-controlled name stand in
+# for the vendored bytes, and an unbounded one would be read to exhaustion.
+bounded_read() { # bounded_read <path> <missing_reason>
+    local path="$1" missing="$2" size
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+        echo "reason=symlink_or_nonregular path=$path" >&2
+        return 1
+    fi
+    if [ ! -f "$path" ]; then
+        echo "reason=$missing path=$path" >&2
+        return 1
+    fi
+    size="$(wc -c <"$path" | tr -d ' ')"
+    if [ "$size" -gt "$max_bytes" ]; then
+        echo "reason=oversized_fixture path=$path size=$size limit=$max_bytes" >&2
+        return 1
+    fi
+    return 0
+}
+
 pin_check() { # pin_check <root>: refuse the first pin that does not hold
     local root="$1" entry rel rest repo spath pin source want have key
     for entry in "${pins[@]}"; do
@@ -54,14 +77,8 @@ pin_check() { # pin_check <root>: refuse the first pin that does not hold
         spath="${rest%%|*}"
         pin="${rest#*|}"
         source="$root/$pin"
-        if [ ! -f "$root/$rel" ]; then
-            echo "reason=missing_fixture path=$rel" >&2
-            return 1
-        fi
-        if [ ! -f "$source" ]; then
-            echo "reason=missing_source path=$pin" >&2
-            return 1
-        fi
+        bounded_read "$root/$rel" missing_fixture || return 1
+        bounded_read "$source" missing_source || return 1
         for key in source_repo source_commit source_path fixture_sha256; do
             if [ -z "$(source_value "$key" "$source")" ]; then
                 echo "reason=missing_key key=$key path=$pin" >&2
@@ -144,6 +161,13 @@ mut_wrong_path() {
         tests/fixtures/host-route-policy-v1.SOURCE
 }
 mut_absent_source() { find tests/fixtures -maxdepth 1 -name 'input-runner-host-map-v1.SOURCE' -delete; }
+mut_symlink_device() {
+    find tests/fixtures -maxdepth 1 -name host-route-policy-v1.json -delete
+    ln -s /dev/zero tests/fixtures/host-route-policy-v1.json
+}
+mut_oversized() {
+    head -c "$((max_bytes + 1))" /dev/zero | tr '\0' 'x' >tests/fixtures/host-route-cases-v1.jsonl
+}
 
 pin_check "$repo_root"
 
@@ -157,7 +181,9 @@ mutant stale-commit reason=unexpected_source_commit mut_stale_commit
 mutant missing-key reason=missing_key mut_missing_key
 mutant wrong-path reason=wrong_source_path mut_wrong_path
 mutant absent-source reason=missing_source mut_absent_source
+mutant symlink-device reason=symlink_or_nonregular mut_symlink_device
+mutant oversized reason=oversized_fixture mut_oversized
 
 echo "host-route-pins: PASS pairs=${#pins[@]} repo_tree=green good_copy=green" \
     "fixture_byte=red source_sha=red stale_commit=red missing_key=red" \
-    "wrong_path=red absent_source=red"
+    "wrong_path=red absent_source=red symlink_device=red oversized=red"
