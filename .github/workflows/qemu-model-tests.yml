@@ -53,4 +53,4 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work \
             -- "qemu-tsp-test:${GITHUB_SHA}" \
-            bash -lc 'tests/test_uinput_domain_c.sh && python3 tests/uinput_inventory.py --self-test && python3 tests/uinput_inventory.py && bash tests/test-host-route-pins.sh && QEMU_TSP_SKIP_LINUX_USER=1 ./build.sh'
+            bash -lc 'bash tests/test-host-route-pins.sh && tests/test_uinput_domain_c.sh && python3 tests/uinput_inventory.py --self-test && python3 tests/uinput_inventory.py && QEMU_TSP_SKIP_LINUX_USER=1 ./build.sh'
