@@ -26,7 +26,7 @@ trap cleanup EXIT
 
 # The commits this repository is pinned to. input-coord sends these; changing one
 # is a re-pin and belongs in a reviewed commit together with the new fixtures.
-runtime_commit=9cfba117de3bac4d51061738bc6076e027f3c463
+runtime_commit=1aa5bd677efd993e34fdda54496122c79451780e
 automation_commit=e064842f7e514fd525290da6ff4352b2c1c02573
 
 # relpath|source_repo|source_path|source_pin_relpath
