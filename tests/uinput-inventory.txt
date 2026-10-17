@@ -7,7 +7,7 @@
 # Host-route rows would appear here as `# host-route rule=... class=...`. There are
 # none: this repository has no host route left to classify. The canonical policy, its
 # conformance cases, the runner-host map and its schema, and the inventory scanner are
-# vendored from runtime main 1aa5bd677efd993e34fdda54496122c79451780e and
+# vendored from runtime main 1e1e126096d2f54a56c76b10a94826a321906900 and
 # pocketforge-automation main e064842f7e514fd525290da6ff4352b2c1c02573;
 # tests/test-host-route-pins.sh refuses any drift from the recorded sha256.
 regression/mkuinput.c	52f0ed42dc398c93bb074703822ee68d5636df0008b41d7e43c97bf0e34c2d90	# regression/mkuinput.c:36 int fd=pf_uinput_guarded_open("/dev/uinput",O_RDWR|O_NONBLOCK,pf_uinput_real_open,NULL,&verdict);
