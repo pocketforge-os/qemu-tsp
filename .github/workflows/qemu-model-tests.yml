@@ -42,10 +42,15 @@ jobs:
           # refuses an unanchored bind source and a dynamic image operand in any
           # other position, because neither can be proven free of a host device,
           # input, display or clipboard route.
+          # The self-test proves the vendored port still passes the canonical
+          # conformance cases; the plain scan proves this repository, and the pin
+          # check refuses a vendored file that drifted from the sha256 its
+          # .SOURCE records. Both run in the pinned test container, in the same
+          # job, so neither can be skipped by a path filter.
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             --env HOME=/tmp \
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work \
             -- "qemu-tsp-test:${GITHUB_SHA}" \
-            bash -lc 'tests/test_uinput_domain_c.sh && python3 tests/uinput_inventory.py --self-test && QEMU_TSP_SKIP_LINUX_USER=1 ./build.sh'
+            bash -lc 'tests/test_uinput_domain_c.sh && python3 tests/uinput_inventory.py --self-test && python3 tests/uinput_inventory.py && bash tests/test-host-route-pins.sh && QEMU_TSP_SKIP_LINUX_USER=1 ./build.sh'

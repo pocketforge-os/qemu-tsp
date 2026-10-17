@@ -1,0 +1,5 @@
+# Vendored canonical host-route inventory port (tsp-ihne1.56.5). Do not edit; re-vendor.
+source_repo=runtime
+source_commit=9cfba117de3bac4d51061738bc6076e027f3c463
+source_path=tests/uinput_inventory.py
+fixture_sha256=2ab81480358a83ed8f521205539be8023c6a94e3436eb5ac6137eed28a9afca1
