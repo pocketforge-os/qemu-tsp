@@ -1,51 +1,111 @@
 #!/usr/bin/env bash
 # qemu-tsp regression: prove an aarch64 evdev probe under qemu-tsp is byte-identical
-# to the native x86_64 probe of the SAME host-synthesized uinput device.
+# to the native probe of the SAME synthesized uinput device.
 #
 # Acceptance: `diff out.native.txt out.qemu-tsp.txt` is EMPTY (and both match the
-# committed baseline). Run on an x86_64 host with /dev/uinput. Needs sudo (uinput
-# + the created event node are root-only).
+# committed baseline).
+#
+# tsp-ihne1.56.5: this script is NOT scheduled by any workflow, and its
+# host-oriented privilege-escalation and module-load wrapper is gone. A created
+# uinput device is host-global — Docker's user, mount and PID namespaces do not
+# virtualize evdev — so whatever seat the host has adopts it. The kernel half of
+# this check therefore belongs to the pfvd QEMU guest, which owns it from wave 2
+# on: a guest-runnable qemu-aarch64, with the native and the qemu-user reader
+# running against the same guest-created node inside that guest.
+#
+# Nothing here escalates, loads a kernel module, or changes a device node's
+# group or mode. The creator goes through regression/pf_uinput_domain_guard.h
+# and fails closed with reason=unsafe_uinput_domain outside an allowed domain,
+# so on a runner host this script stops at the creator and never reaches the
+# host kernel. There is no skip and no host-state branch: an unsafe domain is an
+# error, printed with its reason.
+#
+# Run it inside the guest, as the user that owns that guest's kernel:
+#
+#   QEMU_TSP=/path/to/build/qemu-aarch64 regression/run-regression.sh
 set -euo pipefail
 
 QEMU_TSP="${QEMU_TSP:?set QEMU_TSP=/path/to/build/qemu-aarch64}"
 FIX="$(cd "$(dirname "$0")" && pwd)"          # regression/ dir (holds probes and guard)
-WORK="$(mktemp -d)"; trap 'find "$WORK" -mindepth 1 -delete; rmdir "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/qemu-tsp-regression.XXXXXX")"
+mkpid=""
+cleanup() {
+  if [ -n "$mkpid" ]; then
+    kill "$mkpid" 2>/dev/null || true
+    wait "$mkpid" 2>/dev/null || true
+  fi
+  find "$WORK" -mindepth 1 -delete; rmdir "$WORK"
+}
+trap cleanup EXIT
 cd "$WORK"
 cp "$FIX/probe.c" "$FIX/mkuinput.c" "$FIX/pf_uinput_domain_guard.h" .
 
 echo "== compile probes =="
-gcc -O0 -o probe.x86 probe.c
+# The native reader is this kernel's own architecture; the qemu-tsp reader is
+# the static aarch64 build. Wave 2 builds both inside the guest.
+gcc -O0 -o probe.native probe.c
 aarch64-linux-gnu-gcc -O0 -static -o probe.arm64 probe.c
 gcc -O0 -o mkuinput mkuinput.c
 
-echo "== ensure uinput module =="
-sudo modprobe uinput
-
-echo "== create virtual TRIMUI Player1 (host-native) =="
-cleanup_mk(){ sudo pkill -f "$WORK/mkuinput" 2>/dev/null || true; }
-trap 'cleanup_mk; find "$WORK" -mindepth 1 -delete; rmdir "$WORK"' EXIT
-sudo "$WORK/mkuinput" >/dev/null 2>&1 &
+echo "== create virtual TRIMUI Player1 (native to this kernel) =="
+# Its stdout/stderr is kept: the domain guard's reason= line is the evidence
+# when this is not an allowed domain, and discarding it hid that before.
+./mkuinput > mkuinput.log 2>&1 &
+mkpid=$!
 sleep 1
+if ! kill -0 "$mkpid" 2>/dev/null; then
+  cat mkuinput.log
+  echo "FAIL: the uinput creator did not stay up; its reason= line is above"
+  exit 1
+fi
 
-echo "== locate the event node by name =="
-EV=""
-for d in /sys/class/input/event*; do
-  n="$d/device/name"
-  if [ -r "$n" ] && grep -qx "TRIMUI Player1" "$n" 2>/dev/null; then
-    EV="/dev/input/$(basename "$d")"; break
+echo "== bind this run to the device this invocation created =="
+# The creator reports its own kernel identity (UI_GET_SYSNAME) and the node is
+# derived from that. Searching /sys/class/input by device name instead could
+# bind both readers to a pre-existing or a concurrent same-name device, and the
+# run could then report PASS without ever probing this invocation's node.
+sysname="$(sed -n 's/^sysname=//p' mkuinput.log | tail -n 1)"
+if [ -z "$sysname" ]; then
+  cat mkuinput.log
+  echo "FAIL: the uinput creator did not report its sysname"
+  exit 1
+fi
+sysdir="/sys/class/input/$sysname"
+if [ ! -d "$sysdir" ]; then
+  echo "FAIL: $sysname has no directory under /sys/class/input"
+  exit 1
+fi
+node=""
+for d in "$sysdir"/event*; do
+  [ -e "$d" ] || continue
+  if [ -n "$node" ]; then
+    echo "FAIL: $sysname owns more than one event node"
+    exit 1
   fi
-  # name may be root-only; try sudo
-  if sudo grep -qx "TRIMUI Player1" "$n" 2>/dev/null; then
-    EV="/dev/input/$(basename "$d")"; break
-  fi
+  node="$(basename "$d")"
 done
-[ -n "$EV" ] || { echo "FAIL: could not find TRIMUI Player1 event node"; exit 1; }
-echo "   device = $EV"
+if [ -z "$node" ]; then
+  echo "FAIL: $sysname owns no event node"
+  exit 1
+fi
+EV="/dev/input/$node"
+if [ ! -e "$EV" ]; then
+  echo "FAIL: $EV does not exist"
+  exit 1
+fi
+# Identity cross-check: the node this invocation created must still be the
+# device under test, not another device that happens to own that sysname.
+if [ "$(cat "$sysdir/name" 2>/dev/null)" != "TRIMUI Player1" ]; then
+  echo "FAIL: $sysname is not TRIMUI Player1"
+  exit 1
+fi
+echo "   sysname = $sysname"
+echo "   device  = $EV"
 
-echo "== native x86 probe =="
-sudo ./probe.x86 "$EV" | tee out.native.txt
+echo "== native probe =="
+./probe.native "$EV" | tee out.native.txt
 echo "== aarch64 probe UNDER qemu-tsp =="
-sudo "$QEMU_TSP" ./probe.arm64 "$EV" | tee out.qemu-tsp.txt
+"$QEMU_TSP" ./probe.arm64 "$EV" | tee out.qemu-tsp.txt
 
 echo "== DIFF (must be empty) =="
 if diff -u out.native.txt out.qemu-tsp.txt; then
@@ -60,5 +120,9 @@ if [ -r "$FIX/out.native.txt" ]; then
   diff -u "$FIX/out.native.txt" out.native.txt && echo "baseline matches" \
     || echo "NOTE: baseline differs (device/kernel drift) — primary native-vs-qemu diff is authoritative"
 fi
-cp out.native.txt out.qemu-tsp.txt "$FIX/" 2>/dev/null || true
+if cp out.native.txt out.qemu-tsp.txt "$FIX/"; then
+  echo "wrote this run's outputs next to the baseline in $FIX"
+else
+  echo "NOTE: $FIX is not writable; the diff above is the authoritative result"
+fi
 echo "DONE"

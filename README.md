@@ -110,10 +110,22 @@ sunxi-mmc driver and SD model.
 QEMU_TSP=$PWD/build/qemu-tsp/qemu-aarch64 regression/run-regression.sh
 ```
 
-It synthesizes a host-native "TRIMUI Player1" (045e:028e) uinput gamepad, probes it
-natively (x86) and under qemu-tsp (arm64), and asserts the two are **byte-identical**
-(`regression/baseline/out.native.txt` ⇔ `regression/out.qemu-tsp.txt`). Needs `/dev/uinput`
-and `sudo`.
+It synthesizes a "TRIMUI Player1" (045e:028e) uinput gamepad, probes it natively and
+under qemu-tsp (arm64), and asserts the two are **byte-identical**
+(`regression/baseline/out.native.txt` ⇔ `regression/out.qemu-tsp.txt`). The creator
+reports its own `UI_GET_SYSNAME` identity and the script derives the event node from it,
+so a run binds its evidence to the device that invocation created: a pre-existing or a
+concurrent same-name device cannot be probed in its place and reported as this run's
+result.
+
+This check is **unscheduled** (tsp-ihne1.56.5). A created uinput device is host-global —
+Docker's user, mount and PID namespaces do not virtualize evdev — so the kernel half of it
+belongs to the pfvd QEMU guest, which owns it from wave 2 on: a guest-runnable
+qemu-aarch64, with the native and the qemu-user reader against the same guest-created
+node. Run it there, as the user that owns that guest's kernel. The script escalates
+nothing and loads no kernel module; its creator goes through
+`regression/pf_uinput_domain_guard.h` and fails closed with `reason=unsafe_uinput_domain`
+outside an allowed domain.
 
 ## Provenance
 
