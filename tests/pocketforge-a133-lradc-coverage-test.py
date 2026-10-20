@@ -10,10 +10,8 @@ SIZE = 0x400
 
 
 def main() -> None:
-    manifest = json.loads(
-        (Path(__file__).parents[1] / "pocketforge/a133-mmio-coverage.json")
-        .read_text()
-    )
+    root = Path(__file__).parents[1]
+    manifest = json.loads((root / "pocketforge/a133-mmio-coverage.json").read_text())
     regions = manifest["qemu_regions"]
     exact = [
         region
@@ -42,6 +40,17 @@ def main() -> None:
     assert not any(
         int(region["base"], 16) == BASE and int(region["size"], 16) != SIZE
         for region in regions
+    )
+
+    # A patch-stack entry is inert unless build.sh applies it to the pinned
+    # upstream tree. Keep the producer-side application contract alongside
+    # the manifest contract so a new aperture cannot silently disappear from
+    # the built machine.
+    build = (root / "build.sh").read_text()
+    patch_name = "0063-hw-arm-add-A133-LRADC-aperture-stub.patch"
+    assert patch_name in build, f"build.sh does not apply {patch_name}"
+    assert f'git apply "$ROOT/pocketforge/{patch_name}"' in build, (
+        f"build.sh does not apply the LRADC patch path for {patch_name}"
     )
     print("pocketforge-a133-lradc-coverage=PASS")
 
