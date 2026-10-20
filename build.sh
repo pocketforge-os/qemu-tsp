@@ -438,6 +438,10 @@ if ! grep -Fq 'pocketforge-a133.lradc' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0063-hw-arm-add-A133-LRADC-aperture-stub.patch"
 fi
 
+echo "== test A133 LRADC coverage and patch-application contract =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-lradc-coverage-test.py"
+
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-qapi-config-test.py" .
