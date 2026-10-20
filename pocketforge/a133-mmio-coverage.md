@@ -154,10 +154,14 @@ device functionality. The driver audit is:
 - `sun8i-ce` reads `CE_CTR` during probe but does not issue or poll a crypto job
   there.  Zero-backed storage removes the observed abort.  Functional crypto
   requests remain intentionally unsupported.
-- LEDC, DSI/DPHY, display, clocks, DMA, SID, thermal, pinctrl, watchdog, IOMMU,
+- LEDC, LRADC/keyboard, DSI/DPHY, display, clocks, DMA, SID, thermal, pinctrl, watchdog, IOMMU,
   USB, IR, and power-domain probe paths use ordinary register reads and
   writes or bounded timeouts; none requires an unbounded hardware completion
   transition for the accepted boot path.
+- The enabled Build 10 LRADC node is the exact `0x05070800/0x400` aperture.
+  Its `sun4i_lradc_open()` probe only needs a bounded register surface for
+  this acceptance; the stub intentionally does not synthesize keyboard,
+  conversion, battery, or IRQ behavior.
 - The audio codec and IR drivers are modules and are absent from the small
   diagnostic initramfs. Their exact apertures remain present because the real
   rootfs loads them; the build-6 codec probe reaches offset `0x324`.

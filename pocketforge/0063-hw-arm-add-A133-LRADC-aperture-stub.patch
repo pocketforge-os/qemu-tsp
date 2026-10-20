@@ -1,0 +1,73 @@
+From 069a3945ab2a3ba40e9f5618b976058528ccefcb Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 06:52:28 -0400
+Subject: [PATCH] fix: back the A133 LRADC aperture
+
+Assisted-by: LLM
+---
+ docs/pocketforge-a133-peripheral-stubs.md    | 2 ++
+ hw/arm/pocketforge_a133.c                    | 1 +
+ tests/qtest/pocketforge-a133-mmio-map-test.c | 7 +++++++
+ 3 files changed, 10 insertions(+)
+
+diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
+index cd0eb09..f0e6afe 100644
+--- a/docs/pocketforge-a133-peripheral-stubs.md
++++ b/docs/pocketforge-a133-peripheral-stubs.md
+@@ -23,6 +23,8 @@ purpose of getting past `probe()`.
+ | watchdog | `watchdog@30090a0`, `allwinner,sun50i-a100-wdt` | `0x030090a0` (`0x20`) | `drivers/watchdog/sunxi_wdt.c` | `CONFIG_SUNXI_WATCHDOG=y`, so this driver probes and (per infra-104's scoping) auto-starts. Every register access in the file is a plain `readl()`/`writel()`; no poll loop. Since the stub implements no actual countdown/reset logic, "auto-start" is a no-op write that is silently absorbed -- the watchdog can never fire, matching the "inert register stub" design intent exactly. |
+ | DMA controller | `dma-controller@3002000`, `allwinner,sun50i-a100-dma` | `0x03002000` (`0x1000`) | `drivers/dma/sun6i-dma.c`, `sun6i_dma_probe()` -> `sun6i_enable_clock_autogate_h3()` | **Not in the sub-epic's named stub list** (it was classified DT-SKIP -- "not needed for boot/DT fidelity"). Discovered necessary the same way Phase A discovered `r_intc`: once the boot advanced past `r_intc`, it panicked here instead, in `sun6i_enable_clock_autogate_h3()`'s single unconditional `writel(SUNXI_H3_DMA_GATE_ENABLE, sdev->base + SUNXI_H3_DMA_GATE)` -- a write to the DMA controller's own MMIO base, unrelated to any clock/CCU register, with no readback and no poll. The "DT-SKIP -> not needed for boot" classification was correct for what the DMA *engine itself* is needed for (nothing, at this boot depth) but did not account for its driver's unconditional probe-time register touch against completely unbacked memory. |
+ 
++| LRADC / keyboard | `lradc@5070800`, `allwinner,sun50i-a100-lradc` | `0x05070800` (`0x400`) | `drivers/input/keyboard/sun4i-lradc-keys.c`, `sun4i_lradc_open()` | The enabled Build 10 DT probes this aperture before the Venus gate. The probe's register setup is bounded and the accepted QEMU path does not claim keyboard or battery functionality, so the existing zero-reset/read-after-write stub is sufficient to prevent an external abort. No LRADC IRQ, conversion result, or power semantics are synthesized. |
++
+ ## Phase C additions (tsp-mc9m.41.925.2.3) -- reaching userspace + virtio-gpu
+ 
+ Phase B stopped at `gpu-power-domain@7001000` (see above). Phase C's own
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index d518e09..38da0e9 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -553,6 +553,7 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
++    { "pocketforge-a133.lradc",             0x05070800, 0x400 },
+     { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index 82c66a7..ce1d45a 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -48,6 +48,7 @@ static const ExpectedRegion expected_regions[] = {
+     { "dw-apb-uart",                       0x05001000, 0x400 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
++    { "pocketforge-a133.lradc",             0x05070800, 0x400 },
+     { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+@@ -92,6 +93,7 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
++    { "pocketforge-a133.lradc",             0x05070800, 0x400 },
+     { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+@@ -187,6 +189,11 @@ static void test_exact_live_map(void)
+     g_assert_null(strstr(map, "pocketforge-a133.de2_clk"));
+     g_assert_null(strstr(map, "pocketforge-a133.mixer0"));
+ 
++    /* The exact LRADC aperture is admitted; adjacent and oversized aliases are not. */
++    g_assert_null(strstr(map, "00000000050707ff-"));
++    g_assert_null(strstr(map, "0000000005070c00-"));
++    g_assert_null(strstr(map, "0000000005070800-0000000005070fff"));
++
+     qtest_quit(qts);
+ }
+ 
+-- 
+2.43.0
+
