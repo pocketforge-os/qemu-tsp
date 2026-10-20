@@ -433,6 +433,10 @@ if ! grep -Fq 'test_venus_only_migration_blocker' \
     tests/qtest/virtio-gpu-venus-only-test.c; then
   git apply "$ROOT/pocketforge/0062-virtio-gpu-defer-Venus-migration-blocker-until-render.patch"
 fi
+echo "== apply PocketForge patch: A133 LRADC aperture stub =="
+if ! grep -Fq 'pocketforge-a133.lradc' hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0063-hw-arm-add-A133-LRADC-aperture-stub.patch"
+fi
 
 echo "== test PocketForge QAPI build-configuration gating =="
 "$ROOT/scripts/run-python-fresh.sh" \
