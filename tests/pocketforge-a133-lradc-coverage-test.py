@@ -9,6 +9,12 @@ BASE = 0x05070800
 SIZE = 0x400
 
 
+def overlaps_lradc(item: dict[str, str]) -> bool:
+    start = int(item["system_address"], 16)
+    end = start + int(item["size"], 16)
+    return start < BASE + SIZE and BASE < end
+
+
 def main() -> None:
     root = Path(__file__).parents[1]
     manifest = json.loads((root / "pocketforge/a133-mmio-coverage.json").read_text())
@@ -18,12 +24,22 @@ def main() -> None:
         for item in manifest["reg_inventory"]
         if item["kind"] == "address"
     ]
-    assert not any(
-        int(item["system_address"], 16) <= BASE
-        and BASE + SIZE
-        <= int(item["system_address"], 16) + int(item["size"], 16)
-        for item in enabled
-    ), "pinned DT inventory unexpectedly contains the later LRADC aperture"
+    # Reject any enabled DT tuple that intersects the synthetic aperture,
+    # including a tuple that covers only part of it. Half-open interval
+    # comparisons keep exact adjacency outside the aperture valid.
+    assert overlaps_lradc({"system_address": hex(BASE), "size": "0x100"})
+    assert overlaps_lradc(
+        {"system_address": hex(BASE - 0x100), "size": "0x200"}
+    )
+    assert not overlaps_lradc(
+        {"system_address": hex(BASE - 0x100), "size": "0x100"}
+    )
+    assert not overlaps_lradc(
+        {"system_address": hex(BASE + SIZE), "size": "0x100"}
+    )
+    assert not any(overlaps_lradc(item) for item in enabled), (
+        "pinned DT inventory unexpectedly overlaps the later LRADC aperture"
+    )
     exact = [
         region
         for region in regions
