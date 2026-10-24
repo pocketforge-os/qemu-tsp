@@ -81,6 +81,13 @@ RAM is not a source-DTB `reg` tuple: the machine maps its configured RAM at
 `0x40000000`; the default is 1 GiB.  The machine also has exactly four
 Cortex-A53 CPUs with IDs 0 through 3.  Both facts are explicit in the manifest.
 
+Each `qemu_regions` source describes its relationship to this pinned DTB.
+`dt` regions cover an enabled tuple in `reg_inventory`; `build6` regions are
+the separately evidenced release-image union; and `synthetic` regions are
+exact QEMU compatibility apertures which must appear in the live map but may
+not satisfy coverage for an enabled tuple.  This distinction lets the model
+support a later owned DT without weakening the pinned-DTB coverage check.
+
 ## Coverage contract
 
 The gate starts the built `qemu-system-aarch64` and obtains the live flat
@@ -159,8 +166,11 @@ device functionality. The driver audit is:
   writes or bounded timeouts; none requires an unbounded hardware completion
   transition for the accepted boot path.
 - The enabled Build 10 LRADC node is the exact `0x05070800/0x400` aperture.
-  Its `sun4i_lradc_open()` probe only needs a bounded register surface for
-  this acceptance; the stub intentionally does not synthesize keyboard,
+  It is marked `synthetic` relative to this manifest because the manifest's
+  pinned older DTB has no enabled LRADC tuple; it therefore remains an exact
+  live-map requirement but cannot cover the pinned DTB.  Its
+  `sun4i_lradc_open()` probe only needs a bounded register surface for this
+  acceptance; the stub intentionally does not synthesize keyboard,
   conversion, battery, or IRQ behavior.
 - The audio codec and IR drivers are modules and are absent from the small
   diagnostic initramfs. Their exact apertures remain present because the real

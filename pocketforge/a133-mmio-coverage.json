@@ -154,7 +154,7 @@
     {"base":"0x5001000","size":"0x400","name":"dw-apb-uart","kind":"model","source":"dt"},
     {"base":"0x5018000","size":"0x400","name":"pocketforge-a133.ledc","kind":"stub","source":"dt"},
     {"base":"0x5070400","size":"0x100","name":"pocketforge-a133.ths","kind":"stub","source":"dt"},
-    {"base":"0x5070800","size":"0x400","name":"pocketforge-a133.lradc","kind":"stub","source":"dt"},
+    {"base":"0x5070800","size":"0x400","name":"pocketforge-a133.lradc","kind":"stub","source":"synthetic"},
     {"base":"0x5096000","size":"0x330","name":"pocketforge-a133.codec","kind":"stub","source":"build6"},
     {"base":"0x5100000","size":"0x400","name":"pocketforge-a133.musb","kind":"stub","source":"dt"},
     {"base":"0x5100400","size":"0x100","name":"pocketforge-a133.usbphy_ctrl","kind":"stub","source":"dt"},
