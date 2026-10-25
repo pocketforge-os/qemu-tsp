@@ -1,4 +1,4 @@
-From 027af9b0404164b2e5b3ef5377bb8d33698cea7d Mon Sep 17 00:00:00 2001
+From 52a8963af26e6a91632fbcbc506c39f61ef69e95 Mon Sep 17 00:00:00 2001
 From: "pocketforge-agent[bot]"
  <299760760+pocketforge-agent[bot]@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 05:10:49 -0400
@@ -13,8 +13,8 @@ Assisted-by: LLM
  hw/arm/pocketforge_a133.c                    |  56 +++++-
  tests/qtest/meson.build                      |   1 +
  tests/qtest/pocketforge-a133-input-test.c    |  10 +-
- tests/qtest/pocketforge-a133-mmio-map-test.c | 180 +++++++++++++++++++
- 4 files changed, 237 insertions(+), 10 deletions(-)
+ tests/qtest/pocketforge-a133-mmio-map-test.c | 181 +++++++++++++++++++
+ 4 files changed, 238 insertions(+), 10 deletions(-)
 
 diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
 index 38da0e9c..1119117b 100644
@@ -160,7 +160,7 @@ index c4c905f9..d6218e2e 100644
  }
  
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
-index ce1d45a4..d5b851fb 100644
+index ce1d45a4..db24f597 100644
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
 +++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
 @@ -10,10 +10,18 @@
@@ -182,7 +182,7 @@ index ce1d45a4..d5b851fb 100644
  
  typedef struct ExpectedRegion {
      const char *name;
-@@ -354,6 +362,176 @@ static void test_render_accelerator_contract(void)
+@@ -354,6 +362,177 @@ static void test_render_accelerator_contract(void)
      qtest_quit(qts);
  }
  
@@ -303,6 +303,7 @@ index ce1d45a4..d5b851fb 100644
 +    g_autofree char *args = NULL;
 +    g_autofree char *map = NULL;
 +    QTestState *qts;
++    QDict *dtb_args;
 +    QDict *error;
 +
 +    /* The accepted window is free; the negative control overlaps the GPU. */
@@ -345,10 +346,10 @@ index ce1d45a4..d5b851fb 100644
 +    g_assert_nonnull(strstr(qdict_get_str(error, "desc"), "virtio-bus"));
 +    qobject_unref(error);
 +
++    dtb_args = qdict_new();
++    qdict_put_str(dtb_args, "filename", output_dtb);
 +    qtest_qmp_assert_success(
-+        qts,
-+        "{ 'execute': 'dumpdtb', 'arguments': { 'filename': %s } }",
-+        output_dtb);
++        qts, "{ 'execute': 'dumpdtb', 'arguments': %p }", dtb_args);
 +    assert_application_dtb_node(output_dtb);
 +
 +    qtest_quit(qts);
@@ -359,7 +360,7 @@ index ce1d45a4..d5b851fb 100644
  int main(int argc, char **argv)
  {
      g_test_init(&argc, &argv, NULL);
-@@ -369,6 +547,8 @@ int main(int argc, char **argv)
+@@ -369,6 +548,8 @@ int main(int argc, char **argv)
                     test_ccu_pll_lock_contract);
      qtest_add_func("/pocketforge-a133-mmio/render-accelerator-contract",
                     test_render_accelerator_contract);
