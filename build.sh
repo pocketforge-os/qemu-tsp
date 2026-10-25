@@ -438,6 +438,12 @@ if ! grep -Fq 'pocketforge-a133.lradc' hw/arm/pocketforge_a133.c; then
   git apply "$ROOT/pocketforge/0063-hw-arm-add-A133-LRADC-aperture-stub.patch"
 fi
 
+echo "== apply PocketForge patch: A133 application virtio-serial =="
+if ! grep -Fq 'PF_A133_APPLICATION_MMIO_BASE' \
+    hw/arm/pocketforge_a133.c; then
+  git apply "$ROOT/pocketforge/0064-hw-arm-add-A133-application-virtio-serial.patch"
+fi
+
 echo "== test A133 LRADC coverage and patch-application contract =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-lradc-coverage-test.py"

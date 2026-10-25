@@ -1,0 +1,373 @@
+From 027af9b0404164b2e5b3ef5377bb8d33698cea7d Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 05:10:49 -0400
+Subject: [PATCH] hw/arm: add A133 application virtio-serial
+
+Reserve a second modern virtio-mmio transport for pfvd application bulk traffic. The machine owns its virtio-serial controller while pfvd attaches the named port to the stable child bus.
+
+Cover the collision-checked aperture, IRQ and appended DT node together with positive and negative qtest controls.
+
+Assisted-by: LLM
+---
+ hw/arm/pocketforge_a133.c                    |  56 +++++-
+ tests/qtest/meson.build                      |   1 +
+ tests/qtest/pocketforge-a133-input-test.c    |  10 +-
+ tests/qtest/pocketforge-a133-mmio-map-test.c | 180 +++++++++++++++++++
+ 4 files changed, 237 insertions(+), 10 deletions(-)
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 38da0e9c..1119117b 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -106,6 +106,7 @@
+ #include "hw/display/pocketforge_a133_display.h"
+ #include "hw/virtio/virtio-gpu.h"
+ #include "hw/virtio/virtio-mmio.h"
++#include "hw/virtio/virtio-serial.h"
+ #include "hw/i2c/allwinner-i2c.h"
+ #include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
+@@ -520,6 +521,10 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+ #define PF_A133_RENDER_MMIO_BASE     0x0a000000
+ #define PF_A133_RENDER_MMIO_SIZE     0x200
+ #define PF_A133_RENDER_MMIO_IRQ      150
++#define PF_A133_APPLICATION_MMIO_BASE 0x0a000200
++#define PF_A133_APPLICATION_MMIO_SIZE 0x200
++#define PF_A133_APPLICATION_MMIO_IRQ  151
++#define PF_A133_APPLICATION_BUS       "pfvd-app-serial.0"
+ #define PF_A133_RENDER_HOSTMEM_BASE  0x10000000
+ #define PF_A133_RENDER_HOSTMEM_SIZE  (256 * MiB)
+ 
+@@ -1037,23 +1042,58 @@ static void pocketforge_a133_create_render_accelerator(
+     object_unref(OBJECT(gpu));
+ }
+ 
+-static void pocketforge_a133_modify_dtb(const struct arm_boot_info *binfo,
+-                                        void *fdt)
++static void pocketforge_a133_create_application_transport(
++    MachineState *machine, qemu_irq irq)
++{
++    DeviceState *transport = qdev_new(TYPE_VIRTIO_MMIO);
++    DeviceState *serial = qdev_new(TYPE_VIRTIO_SERIAL);
++    g_autofree char *bus_name = g_strdup(PF_A133_APPLICATION_BUS);
++
++    qdev_prop_set_bit(transport, "force-legacy", false);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(transport), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(transport), 0,
++                    PF_A133_APPLICATION_MMIO_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(transport), 0, irq);
++
++    /*
++     * Keep the controller machine-owned and the child bus name independent
++     * of command-line device ordering.  pfvd supplies exactly one
++     * virtserialport on this stable bus; no second controller is needed.
++     */
++    virtio_device_set_child_bus_name(VIRTIO_DEVICE(serial), bus_name);
++    object_property_add_child(OBJECT(machine),
++                              "pocketforge-application-serial",
++                              OBJECT(serial));
++    qdev_realize(serial, BUS(&VIRTIO_MMIO(transport)->bus), &error_fatal);
++    object_unref(OBJECT(serial));
++}
++
++static void pocketforge_a133_add_virtio_mmio_dtb_node(
++    void *fdt, hwaddr base, hwaddr size, int irq)
+ {
+     g_autofree char *node = g_strdup_printf("/virtio_mmio@%" PRIx64,
+-                                             (uint64_t)PF_A133_RENDER_MMIO_BASE);
++                                             (uint64_t)base);
+ 
+     qemu_fdt_add_subnode(fdt, node);
+     qemu_fdt_setprop_string(fdt, node, "compatible", "virtio,mmio");
+-    qemu_fdt_setprop_sized_cells(fdt, node, "reg",
+-                                 2, PF_A133_RENDER_MMIO_BASE,
+-                                 2, PF_A133_RENDER_MMIO_SIZE);
++    qemu_fdt_setprop_sized_cells(fdt, node, "reg", 2, base, 2, size);
+     qemu_fdt_setprop_cells(fdt, node, "interrupts",
+-                           GIC_FDT_IRQ_TYPE_SPI, PF_A133_RENDER_MMIO_IRQ,
++                           GIC_FDT_IRQ_TYPE_SPI, irq,
+                            GIC_FDT_IRQ_FLAGS_EDGE_LO_HI);
+     qemu_fdt_setprop(fdt, node, "dma-coherent", NULL, 0);
+ }
+ 
++static void pocketforge_a133_modify_dtb(const struct arm_boot_info *binfo,
++                                        void *fdt)
++{
++    pocketforge_a133_add_virtio_mmio_dtb_node(
++        fdt, PF_A133_RENDER_MMIO_BASE, PF_A133_RENDER_MMIO_SIZE,
++        PF_A133_RENDER_MMIO_IRQ);
++    pocketforge_a133_add_virtio_mmio_dtb_node(
++        fdt, PF_A133_APPLICATION_MMIO_BASE, PF_A133_APPLICATION_MMIO_SIZE,
++        PF_A133_APPLICATION_MMIO_IRQ);
++}
++
+ static void pocketforge_a133_init(MachineState *machine)
+ {
+     PocketForgeA133MachineState *s = POCKETFORGE_A133_MACHINE(machine);
+@@ -1153,6 +1193,8 @@ static void pocketforge_a133_init(MachineState *machine)
+     pocketforge_a133_create_ccu_pio(s, machine);
+     pocketforge_a133_create_render_accelerator(
+         machine, pic[PF_A133_RENDER_MMIO_IRQ]);
++    pocketforge_a133_create_application_transport(
++        machine, pic[PF_A133_APPLICATION_MMIO_IRQ]);
+ 
+     binfo->ram_size = machine->ram_size;
+     binfo->board_id = -1; /* device-tree boot only, no ATAGS board id */
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 46290b2a..64f9f483 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -433,6 +433,7 @@ qtests = {
+ qtests += {
+   'pocketforge-a133-axp717-test': files('migration/migration-qmp.c',
+                                        'migration/migration-util.c'),
++  'pocketforge-a133-mmio-map-test': fdt,
+ }
+ 
+ if vnc.found()
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index c4c905f9..d6218e2e 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -9,12 +9,13 @@
+ #include "qobject/qdict.h"
+ #include "qobject/qlist.h"
+ #include "standard-headers/linux/input.h"
++#include "standard-headers/linux/virtio_ids.h"
+ 
+ #define PF_UART3_BASE 0x05000c00
+ #define PF_UART4_BASE 0x05001000
+ #define PF_UART_CPR 0x00f4
+ #define PF_UART_CPR_32BIT_FIFO16 0x00010002
+-#define PF_VIRTIO_INPUT_BASE 0x0a000200
++#define PF_APPLICATION_TRANSPORT_BASE 0x0a000200
+ 
+ #define PF_R_PIO_BASE       0x07022000
+ #define PF_R_PIO_PL_CFG1    0x04
+@@ -218,8 +219,11 @@ static void test_query_and_transport(void)
+     g_assert_true(query_has_abs(device, ABS_RZ, 0, 255));
+     qobject_unref(response);
+ 
+-    /* The former machine-owned virtio-input transport is gone. */
+-    g_assert_cmphex(qtest_readl(qts, PF_VIRTIO_INPUT_BASE + 0x008), ==, 0);
++    /* The reused aperture is application serial, never retired input. */
++    g_assert_cmphex(qtest_readl(qts, PF_APPLICATION_TRANSPORT_BASE + 0x008),
++                    ==, VIRTIO_ID_CONSOLE);
++    g_assert_cmphex(qtest_readl(qts, PF_APPLICATION_TRANSPORT_BASE + 0x008),
++                    !=, VIRTIO_ID_INPUT);
+     qtest_quit(qts);
+ }
+ 
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index ce1d45a4..d5b851fb 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -10,10 +10,18 @@
+ #include "qobject/qlist.h"
+ #include "standard-headers/linux/virtio_ids.h"
+ #include "standard-headers/linux/virtio_mmio.h"
++#include <libfdt.h>
+ 
+ #define PF_A133_RENDER_MMIO_BASE 0x0a000000
++#define PF_A133_RENDER_MMIO_SIZE 0x200
++#define PF_A133_RENDER_MMIO_IRQ 150
+ #define PF_A133_RENDER_HOSTMEM_BASE 0x10000000
+ #define PF_A133_RENDER_HOSTMEM_SIZE 0x10000000
++#define PF_A133_APPLICATION_MMIO_BASE 0x0a000200
++#define PF_A133_APPLICATION_MMIO_SIZE 0x200
++#define PF_A133_APPLICATION_MMIO_IRQ 151
++#define PF_A133_APPLICATION_BUS "pfvd-app-serial.0"
++#define PF_A133_REAL_MAX_SPI 143
+ 
+ typedef struct ExpectedRegion {
+     const char *name;
+@@ -354,6 +362,176 @@ static void test_render_accelerator_contract(void)
+     qtest_quit(qts);
+ }
+ 
++static bool ranges_overlap(uint64_t base, uint64_t size,
++                           uint64_t other_base, uint64_t other_size)
++{
++    return base < other_base + other_size &&
++           other_base < base + size;
++}
++
++static bool application_window_is_free(uint64_t base, uint64_t size)
++{
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(expected_regions); i++) {
++        if (ranges_overlap(base, size, expected_regions[i].base,
++                           expected_regions[i].size)) {
++            return false;
++        }
++    }
++    return !ranges_overlap(base, size, PF_A133_RENDER_MMIO_BASE,
++                           PF_A133_RENDER_MMIO_SIZE) &&
++           !ranges_overlap(base, size, PF_A133_RENDER_HOSTMEM_BASE,
++                           PF_A133_RENDER_HOSTMEM_SIZE);
++}
++
++static bool application_irq_is_free(unsigned int irq)
++{
++    return irq > PF_A133_REAL_MAX_SPI && irq != PF_A133_RENDER_MMIO_IRQ;
++}
++
++static char *create_minimal_dtb(void)
++{
++    g_autoptr(GError) error = NULL;
++    g_autofree char *path = NULL;
++    uint8_t blob[4096] = { 0 };
++    int fd;
++    int root;
++
++    fd = g_file_open_tmp("pf-a133-input-XXXXXX", &path, &error);
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    close(fd);
++
++    g_assert_cmpint(fdt_create_empty_tree(blob, sizeof(blob)), ==, 0);
++    root = fdt_path_offset(blob, "/");
++    g_assert_cmpint(root, >=, 0);
++    g_assert_cmpint(fdt_setprop_u32(blob, root, "#address-cells", 2), ==, 0);
++    g_assert_cmpint(fdt_setprop_u32(blob, root, "#size-cells", 2), ==, 0);
++    g_assert_true(g_file_set_contents(path, (char *)blob,
++                                      fdt_totalsize(blob), &error));
++    g_assert_no_error(error);
++
++    return g_steal_pointer(&path);
++}
++
++static char *create_temp_path(void)
++{
++    g_autoptr(GError) error = NULL;
++    char *path = NULL;
++    int fd = g_file_open_tmp("pf-a133-output-XXXXXX", &path, &error);
++
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    close(fd);
++    return path;
++}
++
++static void assert_application_dtb_node(const char *dtb_path)
++{
++    g_autoptr(GError) error = NULL;
++    g_autofree char *blob = NULL;
++    const fdt32_t *cells;
++    const char *compatible;
++    gsize length;
++    int node;
++    int property_length;
++
++    g_assert_true(g_file_get_contents(dtb_path, &blob, &length, &error));
++    g_assert_no_error(error);
++    g_assert_cmpint(fdt_check_header(blob), ==, 0);
++
++    node = fdt_path_offset(blob, "/virtio_mmio@a000200");
++    g_assert_cmpint(node, >=, 0);
++
++    compatible = fdt_getprop(blob, node, "compatible", &property_length);
++    g_assert_nonnull(compatible);
++    g_assert_cmpint(property_length, ==, sizeof("virtio,mmio"));
++    g_assert_cmpstr(compatible, ==, "virtio,mmio");
++
++    cells = fdt_getprop(blob, node, "reg", &property_length);
++    g_assert_nonnull(cells);
++    g_assert_cmpint(property_length, ==, 4 * sizeof(*cells));
++    g_assert_cmphex(fdt32_to_cpu(cells[0]), ==, 0);
++    g_assert_cmphex(fdt32_to_cpu(cells[1]), ==,
++                    PF_A133_APPLICATION_MMIO_BASE);
++    g_assert_cmphex(fdt32_to_cpu(cells[2]), ==, 0);
++    g_assert_cmphex(fdt32_to_cpu(cells[3]), ==,
++                    PF_A133_APPLICATION_MMIO_SIZE);
++
++    cells = fdt_getprop(blob, node, "interrupts", &property_length);
++    g_assert_nonnull(cells);
++    g_assert_cmpint(property_length, ==, 3 * sizeof(*cells));
++    g_assert_cmphex(fdt32_to_cpu(cells[0]), ==, 0);
++    g_assert_cmphex(fdt32_to_cpu(cells[1]), ==,
++                    PF_A133_APPLICATION_MMIO_IRQ);
++    g_assert_cmphex(fdt32_to_cpu(cells[2]), ==, 1);
++
++    g_assert_nonnull(fdt_getprop(blob, node, "dma-coherent",
++                                 &property_length));
++    g_assert_cmpint(property_length, ==, 0);
++}
++
++static void test_application_transport_contract(void)
++{
++    g_autofree char *input_dtb = create_minimal_dtb();
++    g_autofree char *output_dtb = create_temp_path();
++    g_autofree char *args = NULL;
++    g_autofree char *map = NULL;
++    QTestState *qts;
++    QDict *error;
++
++    /* The accepted window is free; the negative control overlaps the GPU. */
++    g_assert_true(application_window_is_free(PF_A133_APPLICATION_MMIO_BASE,
++                                             PF_A133_APPLICATION_MMIO_SIZE));
++    g_assert_false(application_window_is_free(
++        PF_A133_RENDER_MMIO_BASE + PF_A133_RENDER_MMIO_SIZE / 2,
++        PF_A133_APPLICATION_MMIO_SIZE));
++    g_assert_true(application_irq_is_free(PF_A133_APPLICATION_MMIO_IRQ));
++    g_assert_false(application_irq_is_free(PF_A133_RENDER_MMIO_IRQ));
++
++    args = g_strdup_printf(
++        "-machine pocketforge-a133 -nodefaults -display none "
++        "-dtb %s -chardev null,id=bulk", input_dtb);
++    qts = qtest_init(args);
++
++    g_assert_cmphex(qtest_readl(qts, PF_A133_APPLICATION_MMIO_BASE +
++                                VIRTIO_MMIO_MAGIC_VALUE), ==, 0x74726976);
++    g_assert_cmphex(qtest_readl(qts, PF_A133_APPLICATION_MMIO_BASE +
++                                VIRTIO_MMIO_VERSION), ==, 2);
++    g_assert_cmphex(qtest_readl(qts, PF_A133_APPLICATION_MMIO_BASE +
++                                VIRTIO_MMIO_DEVICE_ID), ==,
++                    VIRTIO_ID_CONSOLE);
++
++    map = qtest_hmp(qts, "info mtree");
++    g_assert_nonnull(strstr(map,
++        "000000000a000200-000000000a0003ff (prio 0, i/o): virtio-mmio"));
++
++    qtest_qmp_assert_success(
++        qts,
++        "{ 'execute': 'device_add', 'arguments': {"
++        " 'driver': 'virtserialport', 'id': 'bulk-port',"
++        " 'bus': '" PF_A133_APPLICATION_BUS "',"
++        " 'chardev': 'bulk', 'name': 'pfvd.app-bulk' } }");
++
++    error = qtest_qmp_assert_failure_ref(
++        qts,
++        "{ 'execute': 'device_add', 'arguments': {"
++        " 'driver': 'virtio-serial-device', 'id': 'extra-controller' } }");
++    g_assert_nonnull(strstr(qdict_get_str(error, "desc"), "virtio-bus"));
++    qobject_unref(error);
++
++    qtest_qmp_assert_success(
++        qts,
++        "{ 'execute': 'dumpdtb', 'arguments': { 'filename': %s } }",
++        output_dtb);
++    assert_application_dtb_node(output_dtb);
++
++    qtest_quit(qts);
++    g_assert_cmpint(g_remove(input_dtb), ==, 0);
++    g_assert_cmpint(g_remove(output_dtb), ==, 0);
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -369,6 +547,8 @@ int main(int argc, char **argv)
+                    test_ccu_pll_lock_contract);
+     qtest_add_func("/pocketforge-a133-mmio/render-accelerator-contract",
+                    test_render_accelerator_contract);
++    qtest_add_func("/pocketforge-a133-mmio/application-transport-contract",
++                   test_application_transport_contract);
+ 
+     return g_test_run();
+ }
+-- 
+2.43.0
+
