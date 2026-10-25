@@ -1,0 +1,30 @@
+name: ci-producer-policy
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  producer-policy:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, pf-pr-review]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Test CI producer policy guard
+        run: python3 scripts/tests/ci-producer-policy-test.py
+
+      - name: Enforce CI producer policy
+        run: python3 scripts/ci-producer-policy.py --root . --default-branch main
