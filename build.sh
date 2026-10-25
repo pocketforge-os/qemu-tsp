@@ -444,6 +444,11 @@ if ! grep -Fq 'PF_A133_APPLICATION_MMIO_BASE' \
   git apply "$ROOT/pocketforge/0064-hw-arm-add-A133-application-virtio-serial.patch"
 fi
 
+echo "== apply PocketForge patch: require A133 release MMC2 host =="
+if ! grep -Fq 'MMC2_BASE' tests/qtest/pocketforge-a133-mmc-test.c; then
+  git apply "$ROOT/pocketforge/0065-tests-require-A133-release-MMC2-host.patch"
+fi
+
 echo "== test A133 LRADC coverage and patch-application contract =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-lradc-coverage-test.py"
