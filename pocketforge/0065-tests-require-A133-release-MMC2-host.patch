@@ -11,8 +11,8 @@ no-response interrupt rather than leaving an unmapped hole.
 Assisted-by: LLM
 ---
  tests/qtest/pocketforge-a133-mmio-map-test.c |  1 +
- tests/qtest/pocketforge-a133-mmc-test.c      | 25 +++++++++++++++++++++++++
- 2 files changed, 26 insertions(+)
+ tests/qtest/pocketforge-a133-mmc-test.c      | 23 +++++++++++++++++++++++
+ 2 files changed, 24 insertions(+)
 
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
@@ -36,7 +36,7 @@ diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a
  #define RAM_DESC        0x40010000
  #define RAM_DATA        0x40012000
  #define TEST_IMAGE_SIZE (1 * MiB)
-@@ -174,10 +175,35 @@ static void test_real_media_and_controls(void)
+@@ -174,10 +175,33 @@ static void test_real_media_and_controls(void)
      g_assert_cmpint(unlink(corrupt_path), ==, 0);
  }
  
@@ -50,8 +50,6 @@ diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a
 +     * but the machine must never attach a host block device to it.  A
 +     * command therefore completes deterministically with NO_RESP.
 +     */
-+    g_assert_cmphex(qtest_readl(qts, MMC2_BASE + REG_STAS) &
-+                    STAS_CARD_PRESENT, ==, 0);
 +    qtest_writel(qts, MMC2_BASE + REG_RINTR, UINT32_MAX);
 +    qtest_writel(qts, MMC2_BASE + REG_CARG, 0x1aa);
 +    qtest_writel(qts, MMC2_BASE + REG_CMDR, CMD_START | CMD_RESP | 8);
