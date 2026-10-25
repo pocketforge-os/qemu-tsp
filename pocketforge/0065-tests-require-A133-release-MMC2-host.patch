@@ -11,8 +11,8 @@ no-response interrupt rather than leaving an unmapped hole.
 Assisted-by: LLM
 ---
  tests/qtest/pocketforge-a133-mmio-map-test.c |  1 +
- tests/qtest/pocketforge-a133-mmc-test.c      | 23 +++++++++++++++++++++++
- 2 files changed, 24 insertions(+)
+ tests/qtest/pocketforge-a133-mmc-test.c      | 28 ++++++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+)
 
 diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
 --- a/tests/qtest/pocketforge-a133-mmio-map-test.c
@@ -36,7 +36,17 @@ diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a
  #define RAM_DESC        0x40010000
  #define RAM_DATA        0x40012000
  #define TEST_IMAGE_SIZE (1 * MiB)
-@@ -174,10 +175,33 @@ static void test_real_media_and_controls(void)
+@@ -168,16 +169,44 @@ static void test_real_media_and_controls(void)
+ 
+     /* Negative control: without media, commands receive no response. */
+     qts = qtest_init("-M pocketforge-a133 -m 64M");
+     enable_mmc0(qts);
++    g_assert_cmphex(qtest_readl(qts, MMC0_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, ==, 0);
+     irq = send_command(qts, CMD_RESP | 8, 0x1aa);
+     g_assert_cmphex(irq & RINTR_NO_RESP, !=, 0);
+     qtest_quit(qts);
+ 
      g_assert_cmpint(unlink(corrupt_path), ==, 0);
  }
  
@@ -44,6 +54,9 @@ diff --git a/tests/qtest/pocketforge-a133-mmc-test.c b/tests/qtest/pocketforge-a
 +{
 +    QTestState *qts = qtest_init("-M pocketforge-a133 -m 64M");
 +    uint32_t irq;
++
++    g_assert_cmphex(qtest_readl(qts, MMC2_BASE + REG_STAS) &
++                    STAS_CARD_PRESENT, ==, 0);
 +
 +    /*
 +     * The release DT's non-removable eMMC controller is a real A100 host,
