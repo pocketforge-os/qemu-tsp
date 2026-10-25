@@ -34,6 +34,20 @@ build-6 DTB use `source: "build6"`; the build-6 descriptor and DTB digest above
 are their provenance. This keeps the exact-DTB assertion meaningful while the
 live QEMU map deliberately covers the union needed by both owned images.
 
+The release-guest identity is independently pinned beside that producer
+contract and does not repin it. Build 45 descriptor
+`8564490856f9b202342be24a3ca1fc73e996e31b58c71c6116ede6489cb85820/ImageSource.json`
+identifies raw image
+`b262bc26d745215dff379e207bf1236c5534b6e2b92799991dd87b1c6bfaa122`,
+image source `64e32bd382652f5c657f3e4cf8a503e52c352872`, platform
+`eec81eff72d1147392a0eedf53863350d88355e6`, and kernel
+`0f3d791e4aec30d16ace01a866772cf2a682cdf6`. Its artifact-extracted Odyssey
+DTB has SHA-256
+`f0b776a1c163dfdba3696f22fd5f91fd912a741ca49adad5b0216e986dac3f08`.
+The automation gate builds that one DTB from the release kernel ref and
+requires it to be byte-identical to the image member before accepting the
+separate 108-entry `release_guest_acceptance.reg_inventory`.
+
 The current QEMU side is rebased on v11.1.2 commit
 `4fc49f46dc95d4a27de2509e7fceb2931e91faeb`; the coverage investigation was
 originally performed on `11aa0b1ff115b86160c4d37e7c37e6a6b13b77ea`.
@@ -81,12 +95,13 @@ RAM is not a source-DTB `reg` tuple: the machine maps its configured RAM at
 `0x40000000`; the default is 1 GiB.  The machine also has exactly four
 Cortex-A53 CPUs with IDs 0 through 3.  Both facts are explicit in the manifest.
 
-Each `qemu_regions` source describes its relationship to this pinned DTB.
-`dt` regions cover an enabled tuple in `reg_inventory`; `build6` regions are
-the separately evidenced release-image union; and `synthetic` regions are
-exact QEMU compatibility apertures which must appear in the live map but may
-not satisfy coverage for an enabled tuple.  This distinction lets the model
-support a later owned DT without weakening the pinned-DTB coverage check.
+Each `qemu_regions` source describes its provenance. `dt` regions cover an
+enabled tuple in the producer `reg_inventory`; `build6` regions are the
+separately evidenced build-6 union; `release_guest` regions are admitted only
+by the exact Build 45 release inventory; and `synthetic` regions are exact
+QEMU compatibility apertures which must appear in the live map but may not
+satisfy coverage for an enabled tuple. This distinction lets the model support
+owned release DTs without weakening or moving the producer-DTB coverage gate.
 
 ## Coverage contract
 
@@ -137,8 +152,10 @@ selecting the A100/D1 variant data: 8 KiB IDMA descriptors, calibration
 support, new timings, and a two-bit DMA address shift. The model reconstructs
 the byte addresses in DLBA, each descriptor buffer, and the next-descriptor
 field before applying the four-byte alignment mask. A raw image is attached
-with `-drive if=sd,format=raw,file=PATH`. MMC1 remains an inert stub and the
-disabled MMC2 is absent.
+with `-drive if=sd,format=raw,file=PATH`. MMC2 uses the same A100 host variant
+at the release DT's `0x04022000` and SPI 41; the binding's clock/reset IDs are
+`CLK_MMC2=64`, `CLK_BUS_MMC2=68`, and `RST_BUS_MMC2=17`. It has no card and
+never consumes a host block backend. MMC1 remains an inert stub.
 
 All other enabled resources use uniquely named, exact-size RAM-backed
 register stubs. They reset to zero and provide byte-addressable read-after-
@@ -176,7 +193,7 @@ device functionality. The driver audit is:
   diagnostic initramfs. Their exact apertures remain present because the real
   rootfs loads them; the build-6 codec probe reaches offset `0x324`.
 
-Disabled MMC2, UART2, I2C0-3, Ethernet, R-UART, and R-I2C1 are not mapped.
+Disabled UART2, I2C0-3, Ethernet, R-UART, and R-I2C1 are not mapped.
 EHCI0/OHCI0 are zero-backed only for the build-6 DT where they are enabled;
 their generic drivers fail through bounded timeouts, so USB remains SKIP.
 
@@ -186,7 +203,9 @@ stub, checks the exact UART/model boundaries, exercises R-I2C0 reset/status,
 and keeps AXP717 register positives and an unpopulated-address NACK in one
 invocation. The MMC qtest uses shifted IDMA descriptor addresses to read LBA 1
 from a valid raw image, distinguishes a corrupt-image control, and checks the
-no-media command response in that same invocation. It also proves disabled
+no-media MMC0 command response in that same invocation. A separate release
+MMC2 case requires the exact live host aperture and a deterministic no-response
+command completion without media. It also proves disabled
 resources are absent. The automation
 mutation suite independently exercises every
 fail-closed category named above.

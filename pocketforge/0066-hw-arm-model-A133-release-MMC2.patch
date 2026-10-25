@@ -1,0 +1,72 @@
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 09:45:00 -0400
+Subject: [PATCH] hw/arm: model A133 release MMC2
+
+The B45 Odyssey DT enables mmc@4022000 as a non-removable, read-only eMMC
+controller.  Map an A100-generation Allwinner SD host at its exact aperture
+and SPI, but deliberately attach no card or block backend by default.
+
+Assisted-by: LLM
+---
+ hw/arm/pocketforge_a133.c | 29 +++++++++++++++++++++++++----
+ 1 file changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -66,8 +66,9 @@
+  * register-free tail of the DT's 0x400-byte R-I2C0 reservation remains a
+  * stub. CI wiring (Phase D) remains out of scope.
+  * (4) MMC0 is QEMU's Allwinner SD host with the A100 descriptor format,
+- * calibration register and DMA address shift, at the real base and SPI 39.
+- * MMC1 remains an inert DT-aperture stub; disabled MMC2 is absent.
++ * calibration register and DMA address shift, at the real base and SPI 39;
++ * the release DT's MMC2 eMMC host uses the same A100 variant at its real
++ * base and SPI 41, with no media.  MMC1 remains an inert DT-aperture stub.
+  * The GE8300 silicon
+  * GPU / PowerVR blob is never modeled (aspirational) -- display output is
+  * entirely the open virtio-gpu graft (virgl/llvmpipe on the host side).
+@@ -247,6 +248,13 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+ /* mmc@4020000 (MMC0), exact base and GIC SPI from sun50i-a100.dtsi. */
+ #define PF_A133_MMC0_BASE       0x04020000
+ #define PF_A133_MMC0_IRQ        39
++/*
++ * B45 sun50i-a133-pocketforge-tsp.dts enables the A100 eMMC-compatible
++ * mmc@4022000 at GIC SPI 41.  Its binding uses CLK_MMC2 64,
++ * CLK_BUS_MMC2 68 and RST_BUS_MMC2 17; direct-kernel boot exposes the host.
++ */
++#define PF_A133_MMC2_BASE       0x04022000
++#define PF_A133_MMC2_IRQ        41
+ 
+ /*
+  * Phase B (tsp-mc9m.41.925.2.2) RAM-backed register-file stubs -- addresses
+@@ -902,6 +910,18 @@ static void pocketforge_a133_create_mmc0(PocketForgeA133MachineState *s,
+     qdev_realize_and_unref(card, bus, &error_fatal);
+ }
+ 
++static void pocketforge_a133_create_mmc2(qemu_irq irq)
++{
++    DeviceState *host = qdev_new(TYPE_AW_SDHOST_SUN50I_A100);
++
++    object_property_set_link(OBJECT(host), "dma-memory",
++                             OBJECT(get_system_memory()), &error_fatal);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(host), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(host), 0, PF_A133_MMC2_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(host), 0, irq);
++    /* Release eMMC identity only: never attach host media or a block device. */
++}
++
+ /*
+  * The pinned SPL opens each muxed peripheral exactly twice: the CCU bus
+  * gate/reset word (+0x90c UART0, +0x84c MMC0, gate bit 0 then release
+@@ -1191,6 +1211,7 @@ static void pocketforge_a133_init(MachineState *machine)
+     vmstate_register(NULL, 0, &vmstate_pocketforge_a133_power, s);
+     s->power_state_registered = true;
+     pocketforge_a133_create_mmc0(s, pic[PF_A133_MMC0_IRQ]);
++    pocketforge_a133_create_mmc2(pic[PF_A133_MMC2_IRQ]);
+     pocketforge_a133_create_ccu_pio(s, machine);
+     pocketforge_a133_create_render_accelerator(
+         machine, pic[PF_A133_RENDER_MMIO_IRQ]);
+-- 
+2.43.0

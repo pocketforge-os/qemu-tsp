@@ -1,0 +1,42 @@
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 15:00:00 -0400
+Subject: [PATCH] hw/sd: derive Allwinner card presence from bus
+
+CARD_PRESENT is an input state, not a fixed reset value.  Derive it from
+the attached SD bus when the guest reads STAS, and keep it clear in the
+stored reset state.  This preserves populated MMC hosts while making an
+unpopulated controller report no card.
+
+Assisted-by: LLM
+---
+ hw/sd/allwinner-sdhost.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/hw/sd/allwinner-sdhost.c b/hw/sd/allwinner-sdhost.c
+--- a/hw/sd/allwinner-sdhost.c
++++ b/hw/sd/allwinner-sdhost.c
+@@ -518,7 +518,11 @@ static uint64_t allwinner_sdhost_read(void *opaque, hwaddr offset,
+         res = s->irq_status;
+         break;
+     case REG_SD_STAR:      /* Status */
+-        res = s->status;
++        /* Card presence follows the bus, never a stale reset value. */
++        res = s->status & ~SD_STAR_CARD_PRESENT;
++        if (sdbus_get_inserted(&s->sdbus)) {
++            res |= SD_STAR_CARD_PRESENT;
++        }
+         if (sdbus_data_ready(&s->sdbus)) {
+             res |= SD_STAR_FIFO_LEVEL_1;
+         } else {
+@@ -867,7 +871,7 @@ static void allwinner_sdhost_reset(DeviceState *dev)
+ 
+     s->irq_mask = REG_SD_IMKR_RST;
+     s->irq_status = REG_SD_RISR_RST;
+-    s->status = REG_SD_STAR_RST;
++    s->status = REG_SD_STAR_RST & ~SD_STAR_CARD_PRESENT;
+ 
+     s->fifo_wlevel = REG_SD_FWLR_RST;
+     s->fifo_func_sel = REG_SD_FUNS_RST;
+-- 
+2.43.0
