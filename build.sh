@@ -478,6 +478,11 @@ if [ ! -f tests/qtest/pocketforge-a133-ledc-test.c ]; then
   git apply "$ROOT/pocketforge/0070-tests-require-A133-LEDC-transfer-status.patch"
 fi
 
+echo "== apply PocketForge patch: model A133 LEDC transfer status =="
+if [ ! -f hw/misc/pocketforge_a133_ledc.c ]; then
+  git apply "$ROOT/pocketforge/0071-hw-misc-model-A133-LEDC-transfer-status.patch"
+fi
+
 echo "== test A133 LRADC coverage and patch-application contract =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-lradc-coverage-test.py"
