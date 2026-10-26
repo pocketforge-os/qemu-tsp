@@ -19,12 +19,17 @@ def main() -> None:
     root = Path(__file__).parents[1]
     manifest = json.loads((root / "pocketforge/a133-mmio-coverage.json").read_text())
     regions = manifest["qemu_regions"]
-    enabled = [
+    producer_enabled = [
         item
         for item in manifest["reg_inventory"]
         if item["kind"] == "address"
     ]
-    # Reject any enabled DT tuple that intersects the synthetic aperture,
+    release_enabled = [
+        item
+        for item in manifest["pins"]["release_guest_acceptance"]["reg_inventory"]
+        if item["kind"] == "address"
+    ]
+    # Reject any enabled producer-DT tuple that intersects the release-only aperture,
     # including a tuple that covers only part of it. Half-open interval
     # comparisons keep exact adjacency outside the aperture valid.
     assert overlaps_lradc({"system_address": hex(BASE), "size": "0x100"})
@@ -37,9 +42,19 @@ def main() -> None:
     assert not overlaps_lradc(
         {"system_address": hex(BASE + SIZE), "size": "0x100"}
     )
-    assert not any(overlaps_lradc(item) for item in enabled), (
+    assert not any(overlaps_lradc(item) for item in producer_enabled), (
         "pinned DT inventory unexpectedly overlaps the later LRADC aperture"
     )
+    assert [item for item in release_enabled if overlaps_lradc(item)] == [
+        {
+            "path": "/soc/lradc@5070800",
+            "index": 0,
+            "kind": "address",
+            "address": "0x5070800",
+            "size": "0x400",
+            "system_address": "0x5070800",
+        }
+    ], "release-guest inventory must contain exactly the LRADC aperture"
     exact = [
         region
         for region in regions
@@ -51,7 +66,7 @@ def main() -> None:
             "size": "0x400",
             "name": "pocketforge-a133.lradc",
             "kind": "stub",
-            "source": "synthetic",
+            "source": "release_guest",
         }
     ], f"missing or non-exact LRADC region: {exact!r}"
 
