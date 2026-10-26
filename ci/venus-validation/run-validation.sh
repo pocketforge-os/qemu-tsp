@@ -114,9 +114,12 @@ for mode in sync async; do
 
       prefix=$mode_log/venus-vtest-memory-$case_name
       summary=$prefix.summary.log
-      wall_matches=$(grep -h -E \
-         'minigbm_allocation is not enabled|VK_ERROR_OUT_OF_DEVICE_MEMORY' \
+      stub_matches=$(grep -h -F 'minigbm_allocation is not enabled' \
          "$prefix".*.log 2>/dev/null | awk 'END { print NR }')
+      oom_matches=$(grep -h -E \
+         'VK_ERROR_OUT_OF_DEVICE_MEMORY|FAIL (implicit-|exportable-)?allocation: -2' \
+         "$prefix".*.log 2>/dev/null | awk 'END { print NR }')
+      wall_matches=$((stub_matches + oom_matches))
       if [ "$status" -eq 0 ]; then
          result=PASS
          outcome=expected
@@ -133,15 +136,17 @@ for mode in sync async; do
          elif [ ! -f "$summary" ]; then
             outcome=harness-or-build
             infrastructure_failures=$((infrastructure_failures + 1))
-         elif [ "$wall_matches" -gt 0 ]; then
+         elif [ "$stub_matches" -gt 0 ]; then
             outcome=gbm-stub-wall
+         elif [ "$oom_matches" -gt 0 ]; then
+            outcome=out-of-device-memory
          else
             outcome=expectation-mismatch
          fi
       fi
-      printf 'venus_vtest_summary case=%s mode=%s exit=%s result=%s outcome=%s wall_matches=%s\n' \
+      printf 'venus_vtest_summary case=%s mode=%s exit=%s result=%s outcome=%s wall_matches=%s stub_matches=%s oom_matches=%s\n' \
          "$case_name" "$mode" "$status" "$result" "$outcome" \
-         "$wall_matches"
+         "$wall_matches" "$stub_matches" "$oom_matches"
    done
 done
 
@@ -183,8 +188,13 @@ cat /venus-host-validation.json
 
 if [ "$failures" -ne 0 ]; then
    grep -R -h -E \
-      'minigbm_allocation is not enabled|VK_ERROR_OUT_OF_DEVICE_MEMORY' \
+      'minigbm_allocation is not enabled|VK_ERROR_OUT_OF_DEVICE_MEMORY|FAIL (implicit-|exportable-)?allocation: -2' \
       "$log_root" || true
+   if grep -R -q -E \
+      'VK_ERROR_OUT_OF_DEVICE_MEMORY|FAIL (implicit-|exportable-)?allocation: -2' \
+      "$log_root"; then
+      printf '%s\n' 'venus_named_wall=VK_ERROR_OUT_OF_DEVICE_MEMORY source=client-allocation'
+   fi
    printf 'venus_host_validation=FAIL cases=%s case_failures=%s infrastructure_failures=%s probes=2 probe_failures=%s\n' \
       "$case_count" "$case_failures" "$infrastructure_failures" \
       "$probe_failures"
