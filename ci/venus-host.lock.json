@@ -10,9 +10,9 @@
     "commit": "87f0227cb60147a26a1eeb4fb06e3b505e9c7261"
   },
   "mesa": {
-    "version": "25.3.6",
+    "version": "26.2.5",
     "repository": "https://gitlab.freedesktop.org/mesa/mesa.git",
-    "commit": "06f9e28304d5d3f109c33535c1c25b9df5769af2",
+    "commit": "ddaf85e353442d9d7f192fdcf1823e652e3f2ee3",
     "vulkan_drivers": ["swrast"]
   },
   "vulkan_headers": {
