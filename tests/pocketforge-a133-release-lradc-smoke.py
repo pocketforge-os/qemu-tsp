@@ -171,7 +171,16 @@ def prepare_run_disk(source: Path, work: Path) -> Path:
         "user-data": cloud_config(),
         "meta-data": "instance-id: pf-release-lradc-smoke\n"
                      "local-hostname: pocketforge-lradc\n",
-        "network-config": "version: 2\nethernets: {}\n",
+        "network-config": (
+            "version: 2\n"
+            "wifis:\n"
+            "  wlan0:\n"
+            "    dhcp4: true\n"
+            "    optional: true\n"
+            "    access-points:\n"
+            "      pf-qemu-no-radio:\n"
+            "        password: qemu-ci-placeholder\n"
+        ),
     }
     for name, contents in seeds.items():
         local = work / f"seed-{name}"
