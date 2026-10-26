@@ -214,7 +214,7 @@ def stage(args: argparse.Namespace) -> None:
             stderr=subprocess.DEVNULL,
             timeout=30,
         )
-        if probe.returncode in (126, 127):
+        if probe.returncode != args.render_probe_exit:
             raise Error("runtime_render_launcher_failed")
         check = subprocess.run(
             [str(launcher), "--version"],
@@ -238,6 +238,7 @@ def parser() -> argparse.ArgumentParser:
         "lavapipe", "llvm", "icd", "lock", "output",
     ):
         result.add_argument(f"--{name}", type=Path, required=True)
+    result.add_argument("--render-probe-exit", type=int, default=255)
     return result
 
 

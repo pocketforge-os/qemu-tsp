@@ -65,7 +65,7 @@ def main() -> None:
         }) + "\n")
 
         output = root / "runtime"
-        result = run(*arguments(root, output))
+        result = run(*arguments(root, output), "--render-probe-exit", "0")
         assert "venus_runtime_stage_status=ok" in result.stdout
         assert subprocess.run([str(output / "qemu-system-aarch64"), "--version"]).returncode == 0
         assert not any(path.is_symlink() for path in output.rglob("*"))
@@ -140,12 +140,31 @@ def main() -> None:
         assert "reason=runtime_loader_missing" in loader_missing.stderr
         assert not (root / "static-runtime").exists()
 
+        probe_root = root / "probe-fixtures"
+        probe_root.mkdir()
+        for name in (
+            "qemu",
+            "render-server",
+            "libvirglrenderer.so",
+            "libvulkan.so",
+            "libvulkan_lvp.so",
+            "libLLVM.so",
+        ):
+            shutil.copy2(fixture, probe_root / name)
+        shutil.copy2(
+            Path("/bin/false").resolve(strict=True), probe_root / "render-server"
+        )
+        shutil.copy2(root / "lvp_icd.json", probe_root / "lvp_icd.json")
+        probe_failed = run(*arguments(probe_root, root / "probe-runtime"), expect=1)
+        assert "reason=runtime_render_launcher_failed" in probe_failed.stderr
+        assert not (root / "probe-runtime").exists()
+
         collision = run(*arguments(root, output), expect=1)
         assert "reason=output_exists" in collision.stderr
 
     print(
         "PASS venus_runtime_stage positive render_server_launcher elf_routing "
-        "missing_lavapipe loader_missing output_collision"
+        "missing_lavapipe loader_missing render_probe_exit output_collision"
     )
 
 
