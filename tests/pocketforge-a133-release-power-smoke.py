@@ -456,12 +456,13 @@ def main() -> int:
 
         info = qmp.command("query-pocketforge-input").get("return", {})
         devices = {item.get("id"): item for item in info.get("devices", [])}
-        if info.get("abi_version") != {"major": 2, "minor": 3}:
+        if info.get("abi_version") != {"major": 2, "minor": 4}:
             raise RuntimeError(f"input-abi:{info}")
-        if set(devices) != {"gamepad", "power-key", "lid-switch"}:
+        if set(devices) != {"gamepad", "power-key", "lid-switch",
+                            "volume-rocker"}:
             raise RuntimeError(f"input-devices:{devices}")
         if not all(devices[name].get("ready")
-                   for name in ("power-key", "lid-switch")):
+                   for name in ("power-key", "lid-switch", "volume-rocker")):
             raise RuntimeError(f"input-not-ready:{devices}")
 
         send_report(qmp, "lid-switch", event(5, 0, 1))

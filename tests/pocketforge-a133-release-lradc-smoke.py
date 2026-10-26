@@ -227,10 +227,14 @@ def require_volume_contract(qmp: COMMON.JsonLine) -> None:
     expected = {
         "id": "volume-rocker", "name": "5070800.lradc", "bustype": 25,
         "vendor": 1, "product": 1, "version": 256, "ready": True,
-        "codes": [
-            {"type": 0, "code": 0, "name": "SYN_REPORT"},
-            {"type": 1, "code": 114, "name": "KEY_VOLUMEDOWN"},
-            {"type": 1, "code": 115, "name": "KEY_VOLUMEUP"},
+        "caps": [
+            {"type": 0, "codes": [
+                {"code": 0, "name": "SYN_REPORT"},
+            ]},
+            {"type": 1, "codes": [
+                {"code": 114, "name": "KEY_VOLUMEDOWN"},
+                {"code": 115, "name": "KEY_VOLUMEUP"},
+            ]},
         ],
     }
     if volume != expected:
@@ -305,9 +309,16 @@ def main() -> int:
         console.until(b"PF_LRADC_READY ", 300)
         require_volume_contract(qmp)
 
-        for code, value in ((115, 1), (115, 0), (114, 1), (114, 0)):
+        transitions = (
+            (115, 1, b"code=115 name=KEY_VOLUMEUP value=1"),
+            (115, 0, b"code=115 name=KEY_VOLUMEUP value=0"),
+            (114, 1, b"code=114 name=KEY_VOLUMEDOWN value=1"),
+            (114, 0, b"code=114 name=KEY_VOLUMEDOWN value=0"),
+        )
+        for code, value, marker in transitions:
             COMMON.send_report(qmp, "volume-rocker",
                                COMMON.event(1, code, value))
+            console.until(marker, 30)
         console.until(b"PF_LRADC_PASS events=4 idle=clean", 120)
         log = serial_log.read_text(errors="replace")
         required = (

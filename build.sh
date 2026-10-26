@@ -434,7 +434,8 @@ if ! grep -Fq 'test_venus_only_migration_blocker' \
   git apply "$ROOT/pocketforge/0062-virtio-gpu-defer-Venus-migration-blocker-until-render.patch"
 fi
 echo "== apply PocketForge patch: A133 LRADC aperture stub =="
-if ! grep -Fq 'pocketforge-a133.lradc' hw/arm/pocketforge_a133.c; then
+if ! grep -Fq '{ "pocketforge-a133.lradc"' \
+    tests/qtest/pocketforge-a133-mmio-map-test.c; then
   git apply "$ROOT/pocketforge/0063-hw-arm-add-A133-LRADC-aperture-stub.patch"
 fi
 
@@ -462,6 +463,11 @@ fi
 echo "== apply PocketForge patch: RED A133 LRADC volume rocker =="
 if [ ! -f tests/qtest/pocketforge-a133-lradc-test.c ]; then
   git apply "$ROOT/pocketforge/0068-tests-require-A133-LRADC-volume-rocker.patch"
+fi
+
+echo "== apply PocketForge patch: model A133 LRADC volume rocker =="
+if [ ! -f hw/input/pocketforge_a133_lradc.c ]; then
+  git apply "$ROOT/pocketforge/0069-hw-input-model-A133-LRADC-volume-rocker.patch"
 fi
 
 echo "== test A133 LRADC coverage and patch-application contract =="

@@ -86,14 +86,14 @@ XR24=`PIXMAN_x8r8g8b8`, XB24=`PIXMAN_x8b8g8r8`, and
 AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
 `reason=unsupported-format` token.
 
-## Input capability query (ABI 2.3)
+## Input capability query (ABI 2.4)
 
 `query-pocketforge-input` reports the batch limit and every injectible device:
 
 ```json
 {
   "return": {
-    "abi_version": {"major": 2, "minor": 3},
+    "abi_version": {"major": 2, "minor": 4},
     "max_batch_events": 256,
     "devices": [{
       "id": "gamepad",
@@ -159,6 +159,21 @@ AR24=`PIXMAN_a8r8g8b8`; another active format fails with the stable
         {"type": 0, "codes": [{"code": 0, "name": "SYN_REPORT"}]},
         {"type": 5, "codes": [{"code": 0, "name": "SW_LID"}]}
       ]
+    }, {
+      "id": "volume-rocker",
+      "name": "5070800.lradc",
+      "bustype": 25,
+      "vendor": 1,
+      "product": 1,
+      "version": 256,
+      "ready": true,
+      "caps": [
+        {"type": 0, "codes": [{"code": 0, "name": "SYN_REPORT"}]},
+        {"type": 1, "codes": [
+          {"code": 114, "name": "KEY_VOLUMEDOWN"},
+          {"code": 115, "name": "KEY_VOLUMEUP"}
+        ]}
+      ]
     }]
   }
 }
@@ -179,6 +194,17 @@ OPEN (electrical high, `SW_LID=0`) and CLOSED is electrical low
 (`SW_LID=1`). The stateful R_PIO model supplies the bank-L mux/data and EINT
 config/control/status/W1C/debounce cells and routes its parent interrupt to GIC
 SPI 111. Repeating the current lid value is valid and produces no new edge.
+
+ABI 2.4 additively exposes `volume-rocker`. The B45 release DT enables
+`lradc@5070800`; its `sun4i-lradc-keys` driver opens the node by enabling CTRL
+and the channel-0 DATA/KEYDOWN/KEYUP mask. Only then is `ready` true. QMP press
+and release reports drive LRADC channel 0 codes 31 (`KEY_VOLUMEUP`) and 43
+(`KEY_VOLUMEDOWN`) through the real DATA0/INTS/W1C path and GIC SPI 22. The
+A100 filter receives its required second equal DATA sample after 32 ms.
+Holding is otherwise quiet, leaving repeat behavior to the guest input core.
+The producer/build-6 DT disables LRADC, so this device remains present but
+`ready=false`, with no pending interrupt and no change to its existing input
+devices.
 
 Gamepad `ready` means both physical UART streams have been configured by the
 guest and accepted their initial centered/all-released frame. The power and
