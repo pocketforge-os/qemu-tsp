@@ -1,0 +1,486 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 06:10:00 -0400
+Subject: [PATCH] tests: require A133 LEDC transfer status
+
+Add driver-shaped red coverage for the release LED controller: a single
+PIO burst completing with TRANS_FINISH on GIC SPI 35, a 64-word transfer
+refilled through FIFO_CPUREQ and FIFO_WLW, abort by clearing LEDC_EN,
+reset, QOM led-colors for two RGB_MODE values, and migration of a
+half-finished transfer. The current inert stub fails these tests because
+it absorbs writes in RAM storage with no FIFO, no latched status, no IRQ
+and no advertised QOM path.
+
+Assisted-by: LLM
+---
+ tests/qtest/meson.build                  |   3 +
+ tests/qtest/pocketforge-a133-ledc-test.c | 436 +++++++++++++++++++++++++++++++
+ 2 files changed, 439 insertions(+)
+ create mode 100644 tests/qtest/pocketforge-a133-ledc-test.c
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 8ac4b52..860ea39 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -277,6 +277,7 @@ qtests_aarch64 = \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
+      'pocketforge-a133-lradc-test',
++     'pocketforge-a133-ledc-test',
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',
+      'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',
+      'pocketforge-a133-bootrom-test', 'pocketforge-a133-ccu-test'] : []) + \
+@@ -434,6 +435,8 @@ qtests = {
+ qtests += {
+   'pocketforge-a133-axp717-test': files('migration/migration-qmp.c',
+                                        'migration/migration-util.c'),
++  'pocketforge-a133-ledc-test': files('migration/migration-qmp.c',
++                                      'migration/migration-util.c'),
+   'pocketforge-a133-lradc-test': files('migration/migration-qmp.c',
+                                        'migration/migration-util.c'),
+   'pocketforge-a133-mmio-map-test': fdt,
+diff --git a/tests/qtest/pocketforge-a133-ledc-test.c b/tests/qtest/pocketforge-a133-ledc-test.c
+new file mode 100644
+index 0000000..1fc8afc
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-ledc-test.c
+@@ -0,0 +1,436 @@
++/*
++ * PocketForge A133 LEDC (led-controller) qtest
++ *
++ * Exercises the driver-shaped register sequence of the release guest LED
++ * controller (leds-sun50i-a100.c): a single-burst PIO transfer completing
++ * with TRANS_FINISH and GIC SPI 35, a deeper-than-FIFO refill flow through
++ * FIFO_CPUREQ/FIFO_WLW, disable and reset behaviour, the decoded LED
++ * colours exposed over QOM for two RGB_MODE values, and migration of a
++ * half-finished transfer.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest.h"
++#include "migration/migration-qmp.h"
++#include "qobject/qdict.h"
++
++#define LEDC_BASE               0x05018000
++
++/* Offsets from kernel-sunxi-7.x@d5fbc1a9 drivers/leds/leds-sun50i-a100.c
++ * lines 25-45: CTRL 0x00, T01_TIMING 0x04, RESET_TIMING 0x0c, DATA 0x14,
++ * DMA_CTRL 0x18, INT_CTRL 0x1c, INT_STS 0x20. */
++#define LEDC_CTRL               0x00
++#define LEDC_T01_TIMING         0x04
++#define LEDC_RESET_TIMING       0x0c
++#define LEDC_DATA               0x14
++#define LEDC_DMA_CTRL           0x18
++#define LEDC_INT_CTRL           0x1c
++#define LEDC_INT_STS            0x20
++
++#define LEDC_CTRL_EN            (1u << 0)
++#define LEDC_CTRL_RGB_SHIFT     6
++#define LEDC_CTRL_RGB_MASK      (7u << LEDC_CTRL_RGB_SHIFT)
++#define LEDC_CTRL_LEN_SHIFT     16
++#define LEDC_CTRL_LEN_MASK      (0x1fffu << LEDC_CTRL_LEN_SHIFT)
++
++#define LEDC_DMA_TRIG_DEFAULT   16u
++
++#define LEDC_INT_TRANS_FINISH   (1u << 0)
++#define LEDC_INT_FIFO_CPUREQ    (1u << 1)
++#define LEDC_INT_GLOBAL         (1u << 5)
++
++#define LEDC_STS_IRQ_MASK       (LEDC_INT_TRANS_FINISH | LEDC_INT_FIFO_CPUREQ)
++#define LEDC_STS_WLW_SHIFT      10
++#define LEDC_STS_WLW_MASK       (0x3fu << LEDC_STS_WLW_SHIFT)
++
++#define LEDC_FIFO_DEPTH         32u
++/* Unset T01_TIMING consumes one word per 24 cycles at the nominal 24 MHz. */
++#define LEDC_WORD_NS            1000ull
++
++#define LEDC_QOM_PATH           "/machine/pocketforge-ledc"
++#define LEDC_QOM_COLORS         "led-colors"
++
++#define GIC_DIST_BASE           0x03021000
++#define GICD_ISPENDR            0x200
++#define LEDC_GIC_INTID          (32 + 35)
++#define LEDC_GIC_PENDING_ADDR   \
++    (GIC_DIST_BASE + GICD_ISPENDR + (LEDC_GIC_INTID / 32) * 4)
++#define LEDC_GIC_PENDING_BIT    (1u << (LEDC_GIC_INTID % 32))
++
++static uint32_t ledc_readl(QTestState *qts, unsigned offset)
++{
++    return qtest_readl(qts, LEDC_BASE + offset);
++}
++
++static void ledc_writel(QTestState *qts, unsigned offset, uint32_t value)
++{
++    qtest_writel(qts, LEDC_BASE + offset, value);
++}
++
++static bool ledc_irq_pending(QTestState *qts)
++{
++    return qtest_readl(qts, LEDC_GIC_PENDING_ADDR) & LEDC_GIC_PENDING_BIT;
++}
++
++static uint32_t ledc_int_sts(QTestState *qts)
++{
++    return ledc_readl(qts, LEDC_INT_STS);
++}
++
++static unsigned ledc_fifo_level(QTestState *qts)
++{
++    return (ledc_int_sts(qts) & LEDC_STS_WLW_MASK) >> LEDC_STS_WLW_SHIFT;
++}
++
++/* The driver writes back the status it read; both IRQ bits are W1C. */
++static void ledc_w1c(QTestState *qts)
++{
++    ledc_writel(qts, LEDC_INT_STS, ledc_int_sts(qts) & LEDC_STS_IRQ_MASK);
++}
++
++static void ledc_arm(QTestState *qts, unsigned length, unsigned rgb_mode,
++                     uint32_t int_ctrl)
++{
++    ledc_writel(qts, LEDC_INT_CTRL, int_ctrl);
++    ledc_writel(qts, LEDC_DMA_CTRL, LEDC_DMA_TRIG_DEFAULT);
++    ledc_writel(qts, LEDC_CTRL,
++                ((length << LEDC_CTRL_LEN_SHIFT) & LEDC_CTRL_LEN_MASK) |
++                ((rgb_mode << LEDC_CTRL_RGB_SHIFT) & LEDC_CTRL_RGB_MASK) |
++                LEDC_CTRL_EN);
++}
++
++static char *ledc_qom_colors(QTestState *qts)
++{
++    QDict *resp = qtest_qmp(qts,
++        "{ 'execute': 'qom-get', 'arguments': { 'path': %s,"
++        " 'property': %s } }", LEDC_QOM_PATH, LEDC_QOM_COLORS);
++    char *colors;
++
++    g_assert_nonnull(resp);
++    g_assert_true(qdict_haskey(resp, "return"));
++    colors = g_strdup(qdict_get_try_str(resp, "return"));
++    g_assert_nonnull(colors);
++    qobject_unref(resp);
++    return colors;
++}
++
++/*
++ * The qtest constants must match the kernel register map cited above.
++ * Negative control: a map shifted by +4 (as once claimed in review) must
++ * match nothing, so the loop below would fail on any uniform shift.
++ */
++static void test_register_offset_table(void)
++{
++    static const struct {
++        const char *name;
++        uint32_t offset;
++    } kernel_map[] = {
++        { "CTRL", 0x00 },
++        { "T01_TIMING", 0x04 },
++        { "RESET_TIMING", 0x0c },
++        { "DATA", 0x14 },
++        { "DMA_CTRL", 0x18 },
++        { "INT_CTRL", 0x1c },
++        { "INT_STS", 0x20 },
++    };
++    const uint32_t qtest_map[] = {
++        LEDC_CTRL, LEDC_T01_TIMING, LEDC_RESET_TIMING, LEDC_DATA,
++        LEDC_DMA_CTRL, LEDC_INT_CTRL, LEDC_INT_STS,
++    };
++    size_t i;
++
++    g_assert_cmphex(G_N_ELEMENTS(qtest_map), ==, G_N_ELEMENTS(kernel_map));
++    for (i = 0; i < G_N_ELEMENTS(kernel_map); i++) {
++        g_assert_cmphex(qtest_map[i], ==, kernel_map[i].offset);
++        g_assert_cmphex(qtest_map[i], !=, kernel_map[i].offset + 4u);
++    }
++}
++
++static void test_single_burst_trans_finish(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133"
++                                 " -nodefaults -display none");
++    uint32_t sts;
++    char *colors;
++
++    /*
++     * Negative control: with GLOBAL_INT_EN clear the completion still
++     * latches in INT_STS, but SPI 35 must never rise.
++     */
++    ledc_arm(qts, 2, 0, LEDC_INT_TRANS_FINISH);
++    ledc_writel(qts, LEDC_DATA, 0x00ff0000);
++    ledc_writel(qts, LEDC_DATA, 0x0000ff00);
++    qtest_clock_step(qts, 4 * LEDC_WORD_NS);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_INT_TRANS_FINISH, !=, 0);
++    g_assert_false(ledc_irq_pending(qts));
++    ledc_w1c(qts);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_STS_IRQ_MASK, ==, 0);
++    g_assert_false(ledc_irq_pending(qts));
++
++    /* Driver resume programming: GLOBAL_INT_EN | TRANS_FINISH_INT_EN. */
++    ledc_arm(qts, 4, 0, LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH);
++    ledc_writel(qts, LEDC_DATA, 0x00112233);
++    ledc_writel(qts, LEDC_DATA, 0x00445566);
++    ledc_writel(qts, LEDC_DATA, 0x00778899);
++    ledc_writel(qts, LEDC_DATA, 0x00aabbcc);
++    /* No virtual time has passed yet: FIFO_WLW reports all four words. */
++    g_assert_cmpuint(ledc_fifo_level(qts), ==, 4);
++    qtest_clock_step(qts, 8 * LEDC_WORD_NS);
++    sts = ledc_int_sts(qts);
++    g_assert_cmphex(sts & LEDC_INT_TRANS_FINISH, !=, 0);
++    g_assert_cmpuint((sts & LEDC_STS_WLW_MASK) >> LEDC_STS_WLW_SHIFT, ==, 0);
++    g_assert_true(ledc_irq_pending(qts));
++
++    colors = ledc_qom_colors(qts);
++    g_assert_cmpstr(colors, ==, "112233,445566,778899,aabbcc");
++    g_free(colors);
++
++    /* W1C of the read status must clear the latch and drop the level IRQ. */
++    ledc_w1c(qts);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_STS_IRQ_MASK, ==, 0);
++    g_assert_false(ledc_irq_pending(qts));
++
++    qtest_quit(qts);
++}
++
++static void test_fifo_cpureq_refill(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133"
++                                 " -nodefaults -display none");
++    uint32_t sts;
++    unsigned i;
++
++    ledc_arm(qts, 64, 0,
++             LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH | LEDC_INT_FIFO_CPUREQ);
++
++    /* The first burst fills the 32-deep FIFO: burst = min(length, 32-used). */
++    for (i = 0; i < LEDC_FIFO_DEPTH; i++) {
++        ledc_writel(qts, LEDC_DATA, 0x00010101u + i);
++    }
++    g_assert_cmpuint(ledc_fifo_level(qts), ==, LEDC_FIFO_DEPTH);
++
++    /*
++     * Consume 16 words so the level falls to the programmed trigger with
++     * 48 words outstanding: FIFO_CPUREQ latches and SPI 35 rises.
++     */
++    qtest_clock_step(qts, 16 * LEDC_WORD_NS);
++    sts = ledc_int_sts(qts);
++    g_assert_cmphex(sts & LEDC_INT_FIFO_CPUREQ, !=, 0);
++    g_assert_cmphex(sts & LEDC_INT_TRANS_FINISH, ==, 0);
++    g_assert_cmpuint((sts & LEDC_STS_WLW_MASK) >> LEDC_STS_WLW_SHIFT, ==, 16);
++    g_assert_true(ledc_irq_pending(qts));
++    ledc_w1c(qts);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_STS_IRQ_MASK, ==, 0);
++    g_assert_false(ledc_irq_pending(qts));
++
++    /* Refill with the FIFO_WLW words the handler just reported. */
++    for (i = 0; i < 16; i++) {
++        ledc_writel(qts, LEDC_DATA, 0x00020202u + i);
++    }
++    g_assert_cmpuint(ledc_fifo_level(qts), ==, LEDC_FIFO_DEPTH);
++    qtest_clock_step(qts, 16 * LEDC_WORD_NS);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_INT_FIFO_CPUREQ, !=, 0);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_INT_TRANS_FINISH, ==, 0);
++    ledc_w1c(qts);
++
++    for (i = 0; i < 16; i++) {
++        ledc_writel(qts, LEDC_DATA, 0x00030303u + i);
++    }
++    /* Drain the remaining 32 words; the 64th completes the transfer. */
++    qtest_clock_step(qts, 32 * LEDC_WORD_NS);
++    sts = ledc_int_sts(qts);
++    g_assert_cmphex(sts & LEDC_INT_TRANS_FINISH, !=, 0);
++    g_assert_cmpuint((sts & LEDC_STS_WLW_MASK) >> LEDC_STS_WLW_SHIFT, ==, 0);
++    g_assert_true(ledc_irq_pending(qts));
++    ledc_w1c(qts);
++    g_assert_false(ledc_irq_pending(qts));
++
++    /* Consumption stopped at DATA_LENGTH: time passing changes nothing. */
++    qtest_clock_step(qts, 100 * LEDC_WORD_NS);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_STS_IRQ_MASK, ==, 0);
++
++    qtest_quit(qts);
++}
++
++static void test_disable_and_reset(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133"
++                                 " -nodefaults -display none");
++    char *colors;
++    unsigned i;
++
++    ledc_arm(qts, 8, 0,
++             LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH | LEDC_INT_FIFO_CPUREQ);
++    for (i = 0; i < 4; i++) {
++        ledc_writel(qts, LEDC_DATA, i + 1);
++    }
++    qtest_clock_step(qts, 2 * LEDC_WORD_NS);
++
++    /* The driver read-modify-writes CTRL; clearing LEDC_EN aborts. */
++    ledc_writel(qts, LEDC_CTRL, 8u << LEDC_CTRL_LEN_SHIFT);
++    qtest_clock_step(qts, 100 * LEDC_WORD_NS);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_INT_TRANS_FINISH, ==, 0);
++    g_assert_false(ledc_irq_pending(qts));
++    g_assert_cmpuint(ledc_fifo_level(qts), ==, 0);
++
++    /* The two words consumed before the abort stay decoded. */
++    colors = ledc_qom_colors(qts);
++    g_assert_cmpstr(colors, ==, "000001,000002");
++    g_free(colors);
++
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++    g_assert_cmphex(ledc_readl(qts, LEDC_CTRL), ==, 0);
++    g_assert_cmphex(ledc_readl(qts, LEDC_T01_TIMING), ==, 0);
++    g_assert_cmphex(ledc_readl(qts, LEDC_RESET_TIMING), ==, 0);
++    g_assert_cmphex(ledc_readl(qts, LEDC_DMA_CTRL), ==, 0);
++    g_assert_cmphex(ledc_readl(qts, LEDC_INT_CTRL), ==, 0);
++    g_assert_cmphex(ledc_int_sts(qts), ==, 0);
++    colors = ledc_qom_colors(qts);
++    g_assert_cmpstr(colors, ==, "");
++    g_free(colors);
++
++    /* The controller is fully functional again after reset. */
++    ledc_arm(qts, 2, 0, LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH);
++    ledc_writel(qts, LEDC_DATA, 0x00abcdef);
++    ledc_writel(qts, LEDC_DATA, 0x00fedcba);
++    qtest_clock_step(qts, 4 * LEDC_WORD_NS);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_INT_TRANS_FINISH, !=, 0);
++    g_assert_true(ledc_irq_pending(qts));
++    ledc_w1c(qts);
++    g_assert_false(ledc_irq_pending(qts));
++
++    qtest_quit(qts);
++}
++
++static void test_qom_colors_rgb_modes(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133"
++                                 " -nodefaults -display none");
++    uint32_t ctrl;
++    char *colors;
++
++    /* RGB_MODE 0 ("rgb"), the format the release guest DT selects. */
++    ledc_arm(qts, 3, 0, LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH);
++    ctrl = ledc_readl(qts, LEDC_CTRL);
++    g_assert_cmphex(ctrl & LEDC_CTRL_RGB_MASK, ==, 0);
++    g_assert_cmphex((ctrl & LEDC_CTRL_LEN_MASK) >> LEDC_CTRL_LEN_SHIFT, ==, 3);
++    ledc_writel(qts, LEDC_DATA, 0x00ff0000);
++    ledc_writel(qts, LEDC_DATA, 0x0000ff00);
++    ledc_writel(qts, LEDC_DATA, 0x000000ff);
++    qtest_clock_step(qts, 4 * LEDC_WORD_NS);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_INT_TRANS_FINISH, !=, 0);
++    colors = ledc_qom_colors(qts);
++    g_assert_cmpstr(colors, ==, "ff0000,00ff00,0000ff");
++    g_free(colors);
++    ledc_w1c(qts);
++
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++
++    /*
++     * RGB_MODE 2 ("grb"), the driver default: identical words decode
++     * identically because the driver always packs 0x00RRGGBB and RGB_MODE
++     * only orders the bytes on the wire.
++     */
++    ledc_arm(qts, 3, 2, LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH);
++    ctrl = ledc_readl(qts, LEDC_CTRL);
++    g_assert_cmphex((ctrl & LEDC_CTRL_RGB_MASK) >> LEDC_CTRL_RGB_SHIFT, ==, 2);
++    ledc_writel(qts, LEDC_DATA, 0x00ff0000);
++    ledc_writel(qts, LEDC_DATA, 0x0000ff00);
++    ledc_writel(qts, LEDC_DATA, 0x000000ff);
++    qtest_clock_step(qts, 4 * LEDC_WORD_NS);
++    g_assert_cmphex(ledc_int_sts(qts) & LEDC_INT_TRANS_FINISH, !=, 0);
++    colors = ledc_qom_colors(qts);
++    g_assert_cmpstr(colors, ==, "ff0000,00ff00,0000ff");
++    g_free(colors);
++
++    qtest_quit(qts);
++}
++
++static void test_migration_mid_transfer(void)
++{
++    g_autofree char *tmpdir = NULL;
++    g_autofree char *socket_path = NULL;
++    g_autofree char *uri = NULL;
++    QTestState *from;
++    QTestState *to;
++    uint32_t sts;
++    char *colors;
++    unsigned i;
++
++    tmpdir = g_dir_make_tmp("pocketforge-a133-ledc-migration-XXXXXX", NULL);
++    g_assert_nonnull(tmpdir);
++    socket_path = g_build_filename(tmpdir, "migration.sock", NULL);
++    uri = g_strdup_printf("unix:%s", socket_path);
++    from = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
++    to = qtest_init("-machine pocketforge-a133,pocketforge-display=off"
++                    " -incoming defer");
++
++    ledc_arm(from, 8, 0,
++             LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH | LEDC_INT_FIFO_CPUREQ);
++    ledc_writel(from, LEDC_DATA, 0x00112233);
++    ledc_writel(from, LEDC_DATA, 0x00445566);
++    ledc_writel(from, LEDC_DATA, 0x00778899);
++    ledc_writel(from, LEDC_DATA, 0x00aabbcc);
++    /* Two words are consumed and two are still in the FIFO. */
++    qtest_clock_step(from, 2 * LEDC_WORD_NS);
++    g_assert_cmpuint(ledc_fifo_level(from), ==, 2);
++
++    migrate_incoming_qmp(to, uri, NULL, "{}");
++    migrate_qmp(from, to, uri, NULL, "{}");
++    wait_for_migration_complete(from);
++    wait_for_migration_complete(to);
++
++    g_assert_cmphex(ledc_readl(to, LEDC_CTRL), ==,
++                    (8u << LEDC_CTRL_LEN_SHIFT) | LEDC_CTRL_EN);
++    g_assert_cmphex(ledc_readl(to, LEDC_INT_CTRL), ==,
++                    LEDC_INT_GLOBAL | LEDC_INT_TRANS_FINISH |
++                    LEDC_INT_FIFO_CPUREQ);
++    g_assert_cmpuint(ledc_fifo_level(to), ==, 2);
++    colors = ledc_qom_colors(to);
++    g_assert_cmpstr(colors, ==, "112233,445566");
++    g_free(colors);
++
++    /* The interrupted transfer finishes on the destination. */
++    for (i = 0; i < 4; i++) {
++        ledc_writel(to, LEDC_DATA, 0x00010203u + i * 0x00030303u);
++    }
++    qtest_clock_step(to, 10 * LEDC_WORD_NS);
++    sts = ledc_int_sts(to);
++    g_assert_cmphex(sts & LEDC_INT_TRANS_FINISH, !=, 0);
++    g_assert_cmpuint((sts & LEDC_STS_WLW_MASK) >> LEDC_STS_WLW_SHIFT, ==, 0);
++    colors = ledc_qom_colors(to);
++    g_assert_cmpstr(colors, ==,
++                    "112233,445566,778899,aabbcc,"
++                    "010203,040506,070809,0a0b0c");
++    g_free(colors);
++    ledc_w1c(to);
++    g_assert_false(ledc_irq_pending(to));
++
++    qtest_quit(to);
++    qtest_quit(from);
++    g_assert_cmpint(g_remove(socket_path), ==, -1);
++    g_assert_cmpint(errno, ==, ENOENT);
++    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/aarch64/pocketforge-a133-ledc/register-offset-table",
++                   test_register_offset_table);
++    qtest_add_func("/aarch64/pocketforge-a133-ledc/single-burst-trans-finish",
++                   test_single_burst_trans_finish);
++    qtest_add_func("/aarch64/pocketforge-a133-ledc/fifo-cpureq-refill",
++                   test_fifo_cpureq_refill);
++    qtest_add_func("/aarch64/pocketforge-a133-ledc/disable-and-reset",
++                   test_disable_and_reset);
++    qtest_add_func("/aarch64/pocketforge-a133-ledc/qom-colors-rgb-modes",
++                   test_qom_colors_rgb_modes);
++    qtest_add_func("/aarch64/pocketforge-a133-ledc/migration-mid-transfer",
++                   test_migration_mid_transfer);
++    return g_test_run();
++}
+-- 
+2.43.0

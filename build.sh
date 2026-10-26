@@ -473,6 +473,16 @@ if [ ! -f hw/input/pocketforge_a133_lradc.c ]; then
   git apply "$ROOT/pocketforge/0069-hw-input-model-A133-LRADC-volume-rocker.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 LEDC transfer status =="
+if [ ! -f tests/qtest/pocketforge-a133-ledc-test.c ]; then
+  git apply "$ROOT/pocketforge/0070-tests-require-A133-LEDC-transfer-status.patch"
+fi
+
+echo "== apply PocketForge patch: model A133 LEDC transfer status =="
+if [ ! -f hw/misc/pocketforge_a133_ledc.c ]; then
+  git apply "$ROOT/pocketforge/0071-hw-misc-model-A133-LEDC-transfer-status.patch"
+fi
+
 echo "== test A133 LRADC coverage and patch-application contract =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-lradc-coverage-test.py"
@@ -527,6 +537,7 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-display-test \
   tests/qtest/pocketforge-a133-input-test \
   tests/qtest/pocketforge-a133-lradc-test \
+  tests/qtest/pocketforge-a133-ledc-test \
   tests/qtest/pocketforge-a133-mmio-map-test \
   tests/qtest/pocketforge-a133-r-i2c-test \
   tests/qtest/pocketforge-a133-axp717-test \
@@ -542,6 +553,7 @@ QTEST_QEMU_ARGS="-global virtio-gpu-gl-device.virgl=off" \
   qemu:qtest-aarch64/pocketforge-a133-display-test \
   qemu:qtest-aarch64/pocketforge-a133-input-test \
   qemu:qtest-aarch64/pocketforge-a133-lradc-test \
+  qemu:qtest-aarch64/pocketforge-a133-ledc-test \
   qemu:qtest-aarch64/pocketforge-a133-mmio-map-test \
   qemu:qtest-aarch64/pocketforge-a133-r-i2c-test \
   qemu:qtest-aarch64/pocketforge-a133-axp717-test \

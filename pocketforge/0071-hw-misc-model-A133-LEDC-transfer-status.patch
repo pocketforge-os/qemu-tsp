@@ -1,0 +1,533 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 08:30:00 -0400
+Subject: [PATCH] hw/misc: model A133 LEDC transfer status
+
+Model the LED controller so release-guest PIO transfers complete: DATA
+writes fill a 32-word FIFO, a virtual-clock timer consumes one word per
+tick at the rate implied by T01_TIMING, and TRANS_FINISH and
+FIFO_CPUREQ latch into the write-one-to-clear INT_STS, which also
+reports FIFO_WLW. The level IRQ on GIC SPI 35 is raised when a latched
+status bit is enabled and GLOBAL_INT_EN is set. Clearing LEDC_EN aborts
+the transfer, flushes the FIFO and clears the latched status. The
+decoded per-LED colours are readable from the read-only "led-colors"
+string property at /machine/pocketforge-ledc.
+
+RGB_MODE only orders the bytes on the wire; the release driver always
+packs words as 0x00RRGGBB (drivers/leds/leds-sun50i-a100.c:226-228),
+so the decode is mode independent. The DMA path is unreachable in this
+machine model: the driver uses DMA only for transfers longer than the
+32-word FIFO (leds-sun50i-a100.c:149) while the release DT registers 23
+LEDs. DMA_CTRL is stored for read-back and for the FIFO trigger level
+that FIFO_CPUREQ latching uses.
+
+The aperture leaves the inert stub list, so the MMIO map test now
+counts LEDC as modelled.
+
+Assisted-by: LLM
+---
+ docs/pocketforge-a133-peripheral-stubs.md    |  13 +
+ hw/arm/Kconfig                               |   1 +
+ hw/arm/pocketforge_a133.c                    |  16 +-
+ hw/misc/Kconfig                              |   3 +
+ hw/misc/meson.build                          |   1 +
+ hw/misc/pocketforge_a133_ledc.c              | 346 +++++++++++++++++++++++++++
+ include/hw/misc/pocketforge_a133_ledc.h      |  19 ++
+ tests/qtest/pocketforge-a133-mmio-map-test.c |   1 -
+ 8 files changed, 398 insertions(+), 2 deletions(-)
+ create mode 100644 hw/misc/pocketforge_a133_ledc.c
+ create mode 100644 include/hw/misc/pocketforge_a133_ledc.h
+
+diff --git a/docs/pocketforge-a133-peripheral-stubs.md b/docs/pocketforge-a133-peripheral-stubs.md
+index f0e6afe..951ebe8 100644
+--- a/docs/pocketforge-a133-peripheral-stubs.md
++++ b/docs/pocketforge-a133-peripheral-stubs.md
+@@ -75,3 +75,16 @@ alignment mask. MMC1 remains an inert register stub and disabled MMC2 remains
+ absent. The qtest reads LBA 1 through IDMA from both a valid GPT marker and a
+ corrupt control image, and checks that a command with no attached medium gets
+ no response.
++
++### LEDC promotion
++
++The LEDC aperture at 0x05018000 is no longer an inert stub. The model
++consumes DATA FIFO words on a virtual-clock timer derived from
++T01_TIMING, latches TRANS_FINISH once DATA_LENGTH words are gone and
++FIFO_CPUREQ at the programmed water level, reports FIFO_WLW, drives GIC
++SPI 35 as a level IRQ gated by INT_CTRL and GLOBAL_INT_EN, and clears
++status bits write-one-to-clear. Clearing LEDC_EN aborts and flushes.
++RGB_MODE only orders wire bytes; decoded colours are exposed by the
++read-only /machine/pocketforge-ledc "led-colors" QOM string. The DMA
++path is unreachable (the driver needs length > 32; the release DT has 23
++LEDs), so DMA_CTRL is stored for read-back and its trigger level only.
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 360e989..9b27fc4 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -204,6 +204,7 @@ config POCKETFORGE_A133
+     select POCKETFORGE_A100_RTC
+     select POCKETFORGE_A133_INPUT
+     select POCKETFORGE_A133_LRADC
++    select POCKETFORGE_A133_LEDC
+     select POCKETFORGE_A133_CCU
+     select POCKETFORGE_A133_MMIO_STUB
+     select POCKETFORGE_A133_PIO
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 6387b3e..667410e 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -114,6 +114,7 @@
+ #include "hw/input/pocketforge_a133_lradc.h"
+ #include "hw/misc/pocketforge_a100_r_pio.h"
+ #include "hw/misc/pocketforge_a133_ccu.h"
++#include "hw/misc/pocketforge_a133_ledc.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
+ #include "hw/misc/pocketforge_a133_pio.h"
+ #include "hw/misc/axp2xx.h"
+@@ -245,6 +246,10 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+ #define PF_A133_UART4_BASE      0x05001000
+ #define PF_A133_UART4_IRQ       4 /* GIC_SPI 4 */
+ 
++/* led-controller@5018000, exact base and GIC SPI from sun50i-a100.dtsi. */
++#define PF_A133_LEDC_BASE       0x05018000
++#define PF_A133_LEDC_IRQ        35
++
+ /* lradc@5070800, exact base and GIC SPI from the B45 release DT. */
+ #define PF_A133_LRADC_BASE      0x05070800
+ #define PF_A133_LRADC_IRQ       22
+@@ -570,7 +575,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.pwm",              0x0300a000, 0x400 },
+     { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+-    { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+     { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+@@ -1206,6 +1210,16 @@ static void pocketforge_a133_init(MachineState *machine)
+     s->lradc = pocketforge_a133_lradc_create(PF_A133_LRADC_BASE,
+                                              pic[PF_A133_LRADC_IRQ]);
+ 
++    {
++        DeviceState *ledc = qdev_new(TYPE_POCKETFORGE_A133_LEDC);
++
++        object_property_add_child(OBJECT(machine), "pocketforge-ledc",
++                                  OBJECT(ledc));
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(ledc), &error_fatal);
++        sysbus_mmio_map(SYS_BUS_DEVICE(ledc), 0, PF_A133_LEDC_BASE);
++        sysbus_connect_irq(SYS_BUS_DEVICE(ledc), 0, pic[PF_A133_LEDC_IRQ]);
++    }
++
+     pocketforge_a133_create_sram(s, sysmem);
+     s->r_pio = POCKETFORGE_A100_R_PIO(pocketforge_a100_r_pio_create(
+         PF_A133_R_PIO_BASE, pic[111]));
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 48f1489..d2bb912 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -267,3 +267,6 @@ config POCKETFORGE_A133_PIO
+ 
+ config POCKETFORGE_A133_MMIO_STUB
+     bool
++
++config POCKETFORGE_A133_LEDC
++    bool
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 432a87d..0ed19a8 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -173,3 +173,4 @@ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_CCU', if_true: files('pocketforge_a
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_PIO', if_true: files('pocketforge_a133_pio.c'))
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_PIO', if_true: files('pocketforge_a100_r_pio.c'))
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_MMIO_STUB', if_true: files('pocketforge_a133_mmio_stub.c'))
++system_ss.add(when: 'CONFIG_POCKETFORGE_A133_LEDC', if_true: files('pocketforge_a133_ledc.c'))
+diff --git a/hw/misc/pocketforge_a133_ledc.c b/hw/misc/pocketforge_a133_ledc.c
+new file mode 100644
+index 0000000..6e9510f
+--- /dev/null
++++ b/hw/misc/pocketforge_a133_ledc.c
+@@ -0,0 +1,346 @@
++/*
++ * PocketForge A133 LEDC (LED controller) model.
++ *
++ * The release guest drives its status LEDs through the PIO path of
++ * leds-sun50i-a100.c: it programs the transfer length and enable in CTRL,
++ * pushes colour words into the 32-deep DATA FIFO, and waits for the
++ * TRANS_FINISH interrupt before sun50i_a100_ledc_suspend() will return and
++ * let a poweroff reach the PMIC.  Words longer than the FIFO are streamed
++ * through FIFO_CPUREQ refills at the programmed water level.
++ *
++ * The model consumes one FIFO word per virtual-clock tick.  The tick
++ * period is 24 bit-times derived from T01_TIMING at a nominal 24 MHz
++ * module clock, floored at one cycle per bit, so an unset T01_TIMING
++ * consumes exactly one word per microsecond.  TRANS_FINISH latches once
++ * DATA_LENGTH words have been consumed; FIFO_CPUREQ latches when a pop
++ * takes the FIFO to or below the DMA_CTRL trigger level while words
++ * remain.  Both INT_STS bits are write-one-to-clear, and the level
++ * interrupt (GIC SPI 35) is the latched status gated by the INT_CTRL
++ * enables and GLOBAL_INT_EN.  Clearing LEDC_EN aborts the transfer:
++ * the timer stops, the FIFO is flushed and the status is cleared.
++ *
++ * The driver always packs a word as 0x00RRGGBB; RGB_MODE only orders
++ * the bytes on the wire.  The decoded per-LED colours are therefore
++ * mode-independent and are exposed, comma separated, by the read-only
++ * "led-colors" string property.  The DMA path needs a transfer longer
++ * than the 32-word FIFO, which the 23-LED release guest never issues,
++ * so DMA_CTRL is stored for read-back and its trigger level only; the
++ * RESET_TIMING pulse width is likewise stored but not acted on.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "hw/misc/pocketforge_a133_ledc.h"
++#include "hw/core/irq.h"
++#include "migration/vmstate.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++
++/* Offsets from kernel-sunxi-7.x@d5fbc1a9 drivers/leds/leds-sun50i-a100.c
++ * lines 25-45: CTRL 0x00, T01_TIMING 0x04, RESET_TIMING 0x0c, DATA 0x14,
++ * DMA_CTRL 0x18, INT_CTRL 0x1c, INT_STS 0x20. */
++#define LEDC_CTRL           0x00
++#define LEDC_T01_TIMING     0x04
++#define LEDC_RESET_TIMING   0x0c
++#define LEDC_DATA           0x14
++#define LEDC_DMA_CTRL       0x18
++#define LEDC_INT_CTRL       0x1c
++#define LEDC_INT_STS        0x20
++
++#define LEDC_CTRL_EN        BIT(0)
++#define LEDC_CTRL_LEN_SHIFT 16
++#define LEDC_CTRL_LEN_MASK  0x1fffu
++
++#define LEDC_DMA_EN         BIT(5)
++#define LEDC_DMA_TRIG_MASK  0x1fu
++
++#define LEDC_INT_TRANS_FINISH BIT(0)
++#define LEDC_INT_FIFO_CPUREQ  BIT(1)
++#define LEDC_INT_GLOBAL       BIT(5)
++#define LEDC_INT_ENABLES      (LEDC_INT_TRANS_FINISH | LEDC_INT_FIFO_CPUREQ)
++
++#define LEDC_STS_WLW_SHIFT  10
++
++#define LEDC_FIFO_DEPTH     32
++#define LEDC_MAX_LEDS       1024
++
++#define LEDC_BITS_PER_WORD  24
++#define LEDC_MOD_CLOCK_HZ   (24 * 1000 * 1000)
++
++struct PocketForgeA133Ledc {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    qemu_irq irq;
++    QEMUTimer *word_timer;
++
++    uint32_t ctrl;
++    uint32_t t01_timing;
++    uint32_t reset_timing;
++    uint32_t dma_ctrl;
++    uint32_t int_ctrl;
++    uint32_t int_sts;
++
++    uint32_t fifo[LEDC_FIFO_DEPTH];
++    uint32_t fifo_len;
++    uint32_t consumed;
++    uint32_t data_length;
++    uint32_t high_water;
++    uint32_t colors[LEDC_MAX_LEDS];
++};
++
++static void pocketforge_a133_ledc_update_irq(PocketForgeA133Ledc *s)
++{
++    qemu_set_irq(s->irq, (s->int_ctrl & LEDC_INT_GLOBAL) &&
++                 (s->int_sts & s->int_ctrl & LEDC_INT_ENABLES));
++}
++
++static uint64_t pocketforge_a133_ledc_word_period_ns(PocketForgeA133Ledc *s)
++{
++    uint32_t t01 = s->t01_timing;
++    uint32_t bit_cycles = ((t01 >> 21) & 0x3f) + ((t01 >> 16) & 0x1f) +
++                          ((t01 >> 6) & 0x1f) + (t01 & 0x3f);
++
++    if (!bit_cycles) {
++        bit_cycles = 1;
++    }
++    return muldiv64((uint64_t)bit_cycles * LEDC_BITS_PER_WORD,
++                    NANOSECONDS_PER_SECOND, LEDC_MOD_CLOCK_HZ);
++}
++
++static void pocketforge_a133_ledc_arm(PocketForgeA133Ledc *s)
++{
++    if (!(s->ctrl & LEDC_CTRL_EN) || !s->fifo_len ||
++        s->consumed >= s->data_length || timer_pending(s->word_timer)) {
++        return;
++    }
++    timer_mod(s->word_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++              pocketforge_a133_ledc_word_period_ns(s));
++}
++
++static void pocketforge_a133_ledc_consume(void *opaque)
++{
++    PocketForgeA133Ledc *s = opaque;
++    uint32_t word;
++
++    if (!(s->ctrl & LEDC_CTRL_EN) || !s->fifo_len ||
++        s->consumed >= s->data_length) {
++        return;
++    }
++
++    word = s->fifo[0];
++    memmove(s->fifo, &s->fifo[1],
++            (LEDC_FIFO_DEPTH - 1) * sizeof(s->fifo[0]));
++    s->fifo_len--;
++
++    /* The driver packs 0x00RRGGBB; RGB_MODE only orders the wire bytes. */
++    if (s->consumed < LEDC_MAX_LEDS) {
++        s->colors[s->consumed] = word & 0xffffff;
++    }
++    s->consumed++;
++    s->high_water = MAX(s->high_water, MIN(s->consumed, LEDC_MAX_LEDS));
++
++    if (s->consumed >= s->data_length) {
++        s->int_sts |= LEDC_INT_TRANS_FINISH;
++    } else {
++        if (s->fifo_len <= (s->dma_ctrl & LEDC_DMA_TRIG_MASK)) {
++            s->int_sts |= LEDC_INT_FIFO_CPUREQ;
++        }
++        pocketforge_a133_ledc_arm(s);
++    }
++    pocketforge_a133_ledc_update_irq(s);
++}
++
++static uint64_t pocketforge_a133_ledc_read(void *opaque, hwaddr offset,
++                                           unsigned size)
++{
++    PocketForgeA133Ledc *s = opaque;
++
++    switch (offset) {
++    case LEDC_CTRL:
++        return s->ctrl;
++    case LEDC_T01_TIMING:
++        return s->t01_timing;
++    case LEDC_RESET_TIMING:
++        return s->reset_timing;
++    case LEDC_DMA_CTRL:
++        return s->dma_ctrl;
++    case LEDC_INT_CTRL:
++        return s->int_ctrl;
++    case LEDC_INT_STS:
++        return s->int_sts | (s->fifo_len << LEDC_STS_WLW_SHIFT);
++    default:
++        return 0;
++    }
++}
++
++static void pocketforge_a133_ledc_write(void *opaque, hwaddr offset,
++                                        uint64_t value, unsigned size)
++{
++    PocketForgeA133Ledc *s = opaque;
++
++    switch (offset) {
++    case LEDC_CTRL:
++        s->ctrl = value;
++        if (value & LEDC_CTRL_EN) {
++            s->data_length = (value >> LEDC_CTRL_LEN_SHIFT) &
++                             LEDC_CTRL_LEN_MASK;
++            s->consumed = 0;
++            pocketforge_a133_ledc_arm(s);
++        } else {
++            timer_del(s->word_timer);
++            s->fifo_len = 0;
++            s->consumed = 0;
++            s->int_sts = 0;
++        }
++        break;
++    case LEDC_T01_TIMING:
++        s->t01_timing = value;
++        break;
++    case LEDC_RESET_TIMING:
++        s->reset_timing = value;
++        break;
++    case LEDC_DATA:
++        if (s->fifo_len < LEDC_FIFO_DEPTH) {
++            s->fifo[s->fifo_len++] = value;
++        }
++        pocketforge_a133_ledc_arm(s);
++        break;
++    case LEDC_DMA_CTRL:
++        s->dma_ctrl = value & (LEDC_DMA_EN | LEDC_DMA_TRIG_MASK);
++        break;
++    case LEDC_INT_CTRL:
++        s->int_ctrl = value & (LEDC_INT_GLOBAL | LEDC_INT_ENABLES);
++        break;
++    case LEDC_INT_STS:
++        s->int_sts &= ~(value & LEDC_INT_ENABLES);
++        break;
++    default:
++        break;
++    }
++    pocketforge_a133_ledc_update_irq(s);
++}
++
++static const MemoryRegionOps pocketforge_a133_ledc_ops = {
++    .read = pocketforge_a133_ledc_read,
++    .write = pocketforge_a133_ledc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++static void pocketforge_a133_ledc_reset(DeviceState *dev)
++{
++    PocketForgeA133Ledc *s = POCKETFORGE_A133_LEDC(dev);
++
++    timer_del(s->word_timer);
++    s->ctrl = 0;
++    s->t01_timing = 0;
++    s->reset_timing = 0;
++    s->dma_ctrl = 0;
++    s->int_ctrl = 0;
++    s->int_sts = 0;
++    memset(s->fifo, 0, sizeof(s->fifo));
++    s->fifo_len = 0;
++    s->consumed = 0;
++    s->data_length = 0;
++    s->high_water = 0;
++    memset(s->colors, 0, sizeof(s->colors));
++    qemu_set_irq(s->irq, 0);
++}
++
++static char *pocketforge_a133_ledc_get_colors(Object *obj, Error **errp)
++{
++    PocketForgeA133Ledc *s = POCKETFORGE_A133_LEDC(obj);
++    GString *out = g_string_new(NULL);
++    uint32_t i;
++
++    for (i = 0; i < s->high_water; i++) {
++        if (i) {
++            g_string_append_c(out, ',');
++        }
++        g_string_append_printf(out, "%06x", s->colors[i]);
++    }
++    return g_string_free(out, FALSE);
++}
++
++static int pocketforge_a133_ledc_post_load(void *opaque, int version_id)
++{
++    PocketForgeA133Ledc *s = opaque;
++
++    pocketforge_a133_ledc_arm(s);
++    pocketforge_a133_ledc_update_irq(s);
++    return 0;
++}
++
++static const VMStateDescription vmstate_pocketforge_a133_ledc = {
++    .name = TYPE_POCKETFORGE_A133_LEDC,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = pocketforge_a133_ledc_post_load,
++    .fields = (VMStateField[]) {
++        VMSTATE_UINT32(ctrl, PocketForgeA133Ledc),
++        VMSTATE_UINT32(t01_timing, PocketForgeA133Ledc),
++        VMSTATE_UINT32(reset_timing, PocketForgeA133Ledc),
++        VMSTATE_UINT32(dma_ctrl, PocketForgeA133Ledc),
++        VMSTATE_UINT32(int_ctrl, PocketForgeA133Ledc),
++        VMSTATE_UINT32(int_sts, PocketForgeA133Ledc),
++        VMSTATE_UINT32_ARRAY(fifo, PocketForgeA133Ledc, LEDC_FIFO_DEPTH),
++        VMSTATE_UINT32(fifo_len, PocketForgeA133Ledc),
++        VMSTATE_UINT32(consumed, PocketForgeA133Ledc),
++        VMSTATE_UINT32(data_length, PocketForgeA133Ledc),
++        VMSTATE_UINT32(high_water, PocketForgeA133Ledc),
++        VMSTATE_UINT32_ARRAY(colors, PocketForgeA133Ledc, LEDC_MAX_LEDS),
++        VMSTATE_TIMER_PTR(word_timer, PocketForgeA133Ledc),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void pocketforge_a133_ledc_init(Object *obj)
++{
++    PocketForgeA133Ledc *s = POCKETFORGE_A133_LEDC(obj);
++
++    memory_region_init_io(&s->iomem, obj, &pocketforge_a133_ledc_ops, s,
++                          "pocketforge-a133.ledc", PF_A133_LEDC_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
++    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
++    s->word_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                 pocketforge_a133_ledc_consume, s);
++    object_property_add_str(obj, "led-colors",
++                            pocketforge_a133_ledc_get_colors, NULL);
++}
++
++static void pocketforge_a133_ledc_finalize(Object *obj)
++{
++    PocketForgeA133Ledc *s = POCKETFORGE_A133_LEDC(obj);
++
++    timer_free(s->word_timer);
++}
++
++static void pocketforge_a133_ledc_class_init(ObjectClass *klass,
++                                             const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->desc = "PocketForge A133 LEDC transfer status";
++    device_class_set_legacy_reset(dc, pocketforge_a133_ledc_reset);
++    dc->vmsd = &vmstate_pocketforge_a133_ledc;
++}
++
++static const TypeInfo pocketforge_a133_ledc_info = {
++    .name = TYPE_POCKETFORGE_A133_LEDC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PocketForgeA133Ledc),
++    .instance_init = pocketforge_a133_ledc_init,
++    .instance_finalize = pocketforge_a133_ledc_finalize,
++    .class_init = pocketforge_a133_ledc_class_init,
++};
++
++static void pocketforge_a133_ledc_register_types(void)
++{
++    type_register_static(&pocketforge_a133_ledc_info);
++}
++
++type_init(pocketforge_a133_ledc_register_types)
+diff --git a/include/hw/misc/pocketforge_a133_ledc.h b/include/hw/misc/pocketforge_a133_ledc.h
+new file mode 100644
+index 0000000..e06b4c4
+--- /dev/null
++++ b/include/hw/misc/pocketforge_a133_ledc.h
+@@ -0,0 +1,19 @@
++/*
++ * PocketForge A133 LEDC (LED controller) model.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef HW_MISC_POCKETFORGE_A133_LEDC_H
++#define HW_MISC_POCKETFORGE_A133_LEDC_H
++
++#include "hw/core/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_POCKETFORGE_A133_LEDC "pocketforge-a133-ledc"
++OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133Ledc,
++                           POCKETFORGE_A133_LEDC)
++
++#define PF_A133_LEDC_SIZE 0x400
++
++#endif
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index b2cc0d4..9f6a098 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -100,7 +100,6 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.gic_hyp_tail",     0x03025000, 0x1000 },
+     { "pocketforge-a133.iommu",            0x030f0000, 0x10000 },
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+-    { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+     { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+-- 
+2.43.0
