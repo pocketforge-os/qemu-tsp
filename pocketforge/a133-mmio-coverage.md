@@ -178,10 +178,25 @@ device functionality. The driver audit is:
 - `sun8i-ce` reads `CE_CTR` during probe but does not issue or poll a crypto job
   there.  Zero-backed storage removes the observed abort.  Functional crypto
   requests remain intentionally unsupported.
-- LEDC, DSI/DPHY, display, clocks, DMA, SID, thermal, pinctrl, watchdog, IOMMU,
+- DSI/DPHY, display, clocks, DMA, SID, thermal, pinctrl, watchdog, IOMMU,
   USB, IR, and power-domain probe paths use ordinary register reads and
   writes or bounded timeouts; none requires an unbounded hardware completion
   transition for the accepted boot path.
+- The release-guest DT enables the LEDC node at the exact
+  `0x05018000/0x400` aperture and registers 23 addressable LEDs under
+  it. The functional model implements the driver-used CTRL,
+  T01_TIMING, RESET_TIMING, DATA, DMA_CTRL, INT_CTRL and INT_STS
+  registers: PIO writes fill a 32-word FIFO that a virtual-clock timer
+  consumes at the T01_TIMING-implied rate, TRANS_FINISH and
+  FIFO_CPUREQ latch into the W1C INT_STS, which also reports FIFO_WLW,
+  and GIC SPI 35 rises as a level IRQ, so sun50i_a100_ledc_suspend()
+  returns and guest poweroff reaches AXP717/PSCI. RGB_MODE only orders
+  the bytes on the wire; decoded per-LED colours are readable from the
+  read-only `/machine/pocketforge-ledc` `led-colors` QOM property. The
+  DMA path is unreachable because the driver uses DMA only for
+  transfers longer than the 32-word FIFO, so DMA_CTRL is stored for
+  read-back and for the FIFO_CPUREQ trigger level only; clearing
+  LEDC_EN aborts the transfer and flushes the FIFO.
 - The enabled Build 10 LRADC node is the exact `0x05070800/0x400` aperture.
   It is marked `synthetic` relative to this manifest because the manifest's
   pinned older DTB has no enabled LRADC tuple; it therefore remains an exact
