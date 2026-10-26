@@ -32,10 +32,10 @@ Assisted-by: LLM
  hw/arm/pocketforge_a133.c                    |  16 +-
  hw/misc/Kconfig                              |   3 +
  hw/misc/meson.build                          |   1 +
- hw/misc/pocketforge_a133_ledc.c              | 343 +++++++++++++++++++++++++++
+ hw/misc/pocketforge_a133_ledc.c              | 346 +++++++++++++++++++++++++++
  include/hw/misc/pocketforge_a133_ledc.h      |  19 ++
  tests/qtest/pocketforge-a133-mmio-map-test.c |   1 -
- 8 files changed, 395 insertions(+), 2 deletions(-)
+ 8 files changed, 398 insertions(+), 2 deletions(-)
  create mode 100644 hw/misc/pocketforge_a133_ledc.c
  create mode 100644 include/hw/misc/pocketforge_a133_ledc.h
 
@@ -142,10 +142,10 @@ index 432a87d..0ed19a8 100644
 +system_ss.add(when: 'CONFIG_POCKETFORGE_A133_LEDC', if_true: files('pocketforge_a133_ledc.c'))
 diff --git a/hw/misc/pocketforge_a133_ledc.c b/hw/misc/pocketforge_a133_ledc.c
 new file mode 100644
-index 0000000..ceee5eb
+index 0000000..6e9510f
 --- /dev/null
 +++ b/hw/misc/pocketforge_a133_ledc.c
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,346 @@
 +/*
 + * PocketForge A133 LEDC (LED controller) model.
 + *
@@ -186,6 +186,9 @@ index 0000000..ceee5eb
 +#include "qemu/module.h"
 +#include "qemu/timer.h"
 +
++/* Offsets from kernel-sunxi-7.x@d5fbc1a9 drivers/leds/leds-sun50i-a100.c
++ * lines 25-45: CTRL 0x00, T01_TIMING 0x04, RESET_TIMING 0x0c, DATA 0x14,
++ * DMA_CTRL 0x18, INT_CTRL 0x1c, INT_STS 0x20. */
 +#define LEDC_CTRL           0x00
 +#define LEDC_T01_TIMING     0x04
 +#define LEDC_RESET_TIMING   0x0c

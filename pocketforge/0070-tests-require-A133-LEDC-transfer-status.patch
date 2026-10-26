@@ -15,8 +15,8 @@ and no advertised QOM path.
 Assisted-by: LLM
 ---
  tests/qtest/meson.build                  |   3 +
- tests/qtest/pocketforge-a133-ledc-test.c | 398 +++++++++++++++++++++++++++++++
- 2 files changed, 401 insertions(+)
+ tests/qtest/pocketforge-a133-ledc-test.c | 436 +++++++++++++++++++++++++++++++
+ 2 files changed, 439 insertions(+)
  create mode 100644 tests/qtest/pocketforge-a133-ledc-test.c
 
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
@@ -42,10 +42,10 @@ index 8ac4b52..860ea39 100644
    'pocketforge-a133-mmio-map-test': fdt,
 diff --git a/tests/qtest/pocketforge-a133-ledc-test.c b/tests/qtest/pocketforge-a133-ledc-test.c
 new file mode 100644
-index 0000000..4e7eeba
+index 0000000..1fc8afc
 --- /dev/null
 +++ b/tests/qtest/pocketforge-a133-ledc-test.c
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,436 @@
 +/*
 + * PocketForge A133 LEDC (led-controller) qtest
 + *
@@ -65,6 +65,10 @@ index 0000000..4e7eeba
 +#include "qobject/qdict.h"
 +
 +#define LEDC_BASE               0x05018000
++
++/* Offsets from kernel-sunxi-7.x@d5fbc1a9 drivers/leds/leds-sun50i-a100.c
++ * lines 25-45: CTRL 0x00, T01_TIMING 0x04, RESET_TIMING 0x0c, DATA 0x14,
++ * DMA_CTRL 0x18, INT_CTRL 0x1c, INT_STS 0x20. */
 +#define LEDC_CTRL               0x00
 +#define LEDC_T01_TIMING         0x04
 +#define LEDC_RESET_TIMING       0x0c
@@ -158,6 +162,38 @@ index 0000000..4e7eeba
 +    g_assert_nonnull(colors);
 +    qobject_unref(resp);
 +    return colors;
++}
++
++/*
++ * The qtest constants must match the kernel register map cited above.
++ * Negative control: a map shifted by +4 (as once claimed in review) must
++ * match nothing, so the loop below would fail on any uniform shift.
++ */
++static void test_register_offset_table(void)
++{
++    static const struct {
++        const char *name;
++        uint32_t offset;
++    } kernel_map[] = {
++        { "CTRL", 0x00 },
++        { "T01_TIMING", 0x04 },
++        { "RESET_TIMING", 0x0c },
++        { "DATA", 0x14 },
++        { "DMA_CTRL", 0x18 },
++        { "INT_CTRL", 0x1c },
++        { "INT_STS", 0x20 },
++    };
++    const uint32_t qtest_map[] = {
++        LEDC_CTRL, LEDC_T01_TIMING, LEDC_RESET_TIMING, LEDC_DATA,
++        LEDC_DMA_CTRL, LEDC_INT_CTRL, LEDC_INT_STS,
++    };
++    size_t i;
++
++    g_assert_cmphex(G_N_ELEMENTS(qtest_map), ==, G_N_ELEMENTS(kernel_map));
++    for (i = 0; i < G_N_ELEMENTS(kernel_map); i++) {
++        g_assert_cmphex(qtest_map[i], ==, kernel_map[i].offset);
++        g_assert_cmphex(qtest_map[i], !=, kernel_map[i].offset + 4u);
++    }
 +}
 +
 +static void test_single_burst_trans_finish(void)
@@ -432,6 +468,8 @@ index 0000000..4e7eeba
 +int main(int argc, char **argv)
 +{
 +    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/aarch64/pocketforge-a133-ledc/register-offset-table",
++                   test_register_offset_table);
 +    qtest_add_func("/aarch64/pocketforge-a133-ledc/single-burst-trans-finish",
 +                   test_single_burst_trans_finish);
 +    qtest_add_func("/aarch64/pocketforge-a133-ledc/fifo-cpureq-refill",
