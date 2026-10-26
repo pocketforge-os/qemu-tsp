@@ -1,1 +1,2 @@
 pocketforge/*.patch whitespace=-trailing-space,-blank-at-eof
+ci/venus-validation/*.patch whitespace=-trailing-space,-blank-at-eof

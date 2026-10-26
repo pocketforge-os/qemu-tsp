@@ -154,9 +154,10 @@ RUN apt-get update \
 COPY ci/venus-host.lock.json /venus-host.lock.json
 RUN set -eux; \
     test -n "$VIRGLRENDERER_CACHE_BUST"; \
+    repository=$(python3 -c 'import json; print(json.load(open("/venus-host.lock.json"))["virglrenderer"]["repository"])'); \
     commit=$(python3 -c 'import json; print(json.load(open("/venus-host.lock.json"))["virglrenderer"]["commit"])'); \
     git init -q /src/virglrenderer; \
-    git -C /src/virglrenderer remote add origin https://gitlab.freedesktop.org/virgl/virglrenderer.git; \
+    git -C /src/virglrenderer remote add origin "$repository"; \
     git -C /src/virglrenderer fetch -q --depth 1 origin "$commit"; \
     git -C /src/virglrenderer checkout -q --detach FETCH_HEAD; \
     test "$(git -C /src/virglrenderer rev-parse HEAD)" = "$commit"; \
@@ -177,7 +178,24 @@ RUN set -eux; \
     test -x /opt/venus/libexec/virgl_render_server; \
     test -f /opt/venus/share/vulkan/icd.d/lvp_icd.x86_64.json
 
+FROM virglrenderer AS venus-host-validate
+COPY ci/venus-host.lock.json /venus-host.lock.json
+COPY --chmod=0755 ci/venus-validation/run-validation.sh /validation/run-validation.sh
+COPY ci/venus-validation/gpuum-vtest-import.patch /validation/gpuum-vtest-import.patch
+COPY ci/venus-validation/venus_dmabuf_alloc_red.c /validation/venus_dmabuf_alloc_red.c
+COPY ci/venus-validation/opaque_fd_route_probe.c /validation/opaque_fd_route_probe.c
+RUN set -eux; \
+    repository=$(python3 -c 'import json; print(json.load(open("/venus-host.lock.json"))["virglrenderer_validation"]["repository"])'); \
+    commit=$(python3 -c 'import json; print(json.load(open("/venus-host.lock.json"))["virglrenderer_validation"]["commit"])'); \
+    git init -q /src/virglrenderer-validation; \
+    git -C /src/virglrenderer-validation remote add origin "$repository"; \
+    git -C /src/virglrenderer-validation fetch -q --depth 1 origin "$commit"; \
+    git -C /src/virglrenderer-validation checkout -q --detach FETCH_HEAD; \
+    test "$(git -C /src/virglrenderer-validation rev-parse HEAD)" = "$commit"
+RUN /validation/run-validation.sh
+
 FROM virglrenderer AS venus-host
+COPY --from=venus-host-validate /venus-host-validation.json /venus-host-validation.json
 
 # The fidelity workflow overrides this named context with the lock-addressed
 # venus-host image from pf-synology.  Local builds retain the source stages.
