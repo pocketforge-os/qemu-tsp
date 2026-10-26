@@ -532,6 +532,7 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a133-display-test \
   tests/qtest/pocketforge-a133-input-test \
   tests/qtest/pocketforge-a133-lradc-test \
+  tests/qtest/pocketforge-a133-ledc-test \
   tests/qtest/pocketforge-a133-mmio-map-test \
   tests/qtest/pocketforge-a133-r-i2c-test \
   tests/qtest/pocketforge-a133-axp717-test \
@@ -547,6 +548,7 @@ QTEST_QEMU_ARGS="-global virtio-gpu-gl-device.virgl=off" \
   qemu:qtest-aarch64/pocketforge-a133-display-test \
   qemu:qtest-aarch64/pocketforge-a133-input-test \
   qemu:qtest-aarch64/pocketforge-a133-lradc-test \
+  qemu:qtest-aarch64/pocketforge-a133-ledc-test \
   qemu:qtest-aarch64/pocketforge-a133-mmio-map-test \
   qemu:qtest-aarch64/pocketforge-a133-r-i2c-test \
   qemu:qtest-aarch64/pocketforge-a133-axp717-test \
