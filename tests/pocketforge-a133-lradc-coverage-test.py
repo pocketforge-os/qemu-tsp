@@ -7,12 +7,33 @@ from pathlib import Path
 
 BASE = 0x05070800
 SIZE = 0x400
+EXPECTED_REGION = {
+    "base": "0x5070800",
+    "size": "0x400",
+    "name": "pocketforge-a133.lradc",
+    "kind": "stub",
+    "source": "release_guest",
+}
 
 
 def overlaps_lradc(item: dict[str, str]) -> bool:
     start = int(item["system_address"], 16)
     end = start + int(item["size"], 16)
     return start < BASE + SIZE and BASE < end
+
+
+def validate_qemu_regions(regions: list[dict[str, str]]) -> None:
+    overlapping = [
+        region
+        for region in regions
+        if (
+            int(region["base"], 16) < BASE + SIZE
+            and int(region["base"], 16) + int(region["size"], 16) > BASE
+        )
+    ]
+    assert overlapping == [EXPECTED_REGION], (
+        f"LRADC overlap must be the single exact stub region: {overlapping!r}"
+    )
 
 
 def main() -> None:
@@ -55,34 +76,22 @@ def main() -> None:
             "system_address": "0x5070800",
         }
     ], "release-guest inventory must contain exactly the LRADC aperture"
-    exact = [
-        region
-        for region in regions
-        if int(region["base"], 16) == BASE
+    validate_qemu_regions(regions)
+    overlap_mutations = [
+        {"base": "0x5070900", "size": "0x300"},
+        {"base": "0x5070800", "size": "0x200"},
+        {"base": "0x5070a00", "size": "0x100"},
+        {"base": "0x5070700", "size": "0x200"},
+        {"base": "0x5070b00", "size": "0x200"},
+        EXPECTED_REGION,
     ]
-    assert exact == [
-        {
-            "base": "0x5070800",
-            "size": "0x400",
-            "name": "pocketforge-a133.lradc",
-            "kind": "stub",
-            "source": "release_guest",
-        }
-    ], f"missing or non-exact LRADC region: {exact!r}"
-
-    # The contract is exact: neither adjacent space nor an oversized region
-    # may be admitted as a substitute for the later-DT compatibility aperture.
-    for region in regions:
-        start = int(region["base"], 16)
-        end = start + int(region["size"], 16)
-        assert not (start < BASE < end), f"overlap before LRADC: {region!r}"
-        assert not (start < BASE + SIZE < end), (
-            f"overlap after LRADC: {region!r}"
-        )
-    assert not any(
-        int(region["base"], 16) == BASE and int(region["size"], 16) != SIZE
-        for region in regions
-    )
+    for mutation in overlap_mutations:
+        try:
+            validate_qemu_regions([*regions, mutation])
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"LRADC overlap mutation accepted: {mutation!r}")
 
     # A patch-stack entry is inert unless build.sh applies it to the pinned
     # upstream tree. Keep the producer-side application contract alongside
