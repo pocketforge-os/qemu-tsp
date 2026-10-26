@@ -12,3 +12,4 @@
 # tests/test-host-route-pins.sh refuses any drift from the recorded sha256.
 regression/mkuinput.c	52f0ed42dc398c93bb074703822ee68d5636df0008b41d7e43c97bf0e34c2d90	# regression/mkuinput.c:36 int fd=pf_uinput_guarded_open("/dev/uinput",O_RDWR|O_NONBLOCK,pf_uinput_real_open,NULL,&verdict);
 regression/mkuinput.c	54e01f5fdd27a72c7568acd7c50cb744d5665194ef4d0d7feef3db00e0fb4461	# regression/mkuinput.c:58 if(ioctl(fd,UI_DEV_CREATE)<0){ perror("UI_DEV_CREATE"); return 2; }
+tests/pocketforge-a133-release-lradc-smoke-test.py	bf698aafabe1bbab52187146961a96a5002c831a502459a74d2b2288f0bdc968	# tests/pocketforge-a133-release-lradc-smoke-test.py:36 "/dev/uinput"):
