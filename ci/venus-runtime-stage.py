@@ -143,7 +143,7 @@ def stage(args: argparse.Namespace) -> None:
         copied: dict[str, str] = {}
         explicit = {
             "qemu": staging / "bin/qemu-system-aarch64",
-            "render_server": staging / "libexec/virgl_render_server",
+            "render_server": staging / "libexec/virgl_render_server.bin",
             "virglrenderer": staging / "lib/libvirglrenderer.so.1",
             "vulkan_loader": staging / "lib/libvulkan.so.1",
             "lavapipe": staging / "lib/libvulkan_lvp.so",
@@ -151,6 +151,8 @@ def stage(args: argparse.Namespace) -> None:
         }
         for name, destination in explicit.items():
             copy_real(sources[name], destination, copied)
+        render_binary = staging / "libexec/virgl_render_server.bin"
+        render_binary.chmod(0o444)
 
         search = list(dict.fromkeys(source.parent for source in sources.values()))
         loader_names: set[str] = set()
@@ -163,6 +165,8 @@ def stage(args: argparse.Namespace) -> None:
         if len(loader_names) > 1:
             raise Error("runtime_loader_collision")
         loader_name = next(iter(loader_names), None)
+        if loader_name is None:
+            raise Error("runtime_loader_missing")
 
         icd["ICD"]["library_path"] = "../../../lib/libvulkan_lvp.so"
         icd_path = staging / "share/vulkan/icd.d/lvp_icd.x86_64.json"
@@ -180,26 +184,38 @@ def stage(args: argparse.Namespace) -> None:
             json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n"
         )
 
-        if loader_name:
-            command = (
-                f'exec "$root/lib/{loader_name}" --library-path "$root/lib" '
-                '"$root/bin/qemu-system-aarch64" "$@"'
-            )
-        else:
-            command = 'exec "$root/bin/qemu-system-aarch64" "$@"'
+        command = (
+            f'exec "$root/lib/{loader_name}" --library-path "$root/lib" '
+            '"$root/bin/qemu-system-aarch64" "$@"'
+        )
         launcher = staging / "qemu-system-aarch64"
         launcher.write_text(
             "#!/bin/sh\nset -eu\n"
             'root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
-            'export LD_LIBRARY_PATH="$root/lib"\n'
             'export RENDER_SERVER_EXEC_PATH="$root/libexec/virgl_render_server"\n'
             'export VK_DRIVER_FILES="$root/share/vulkan/icd.d/lvp_icd.x86_64.json"\n'
             + command
             + "\n"
         )
         launcher.chmod(0o755)
+        server_launcher = staging / "libexec/virgl_render_server"
+        server_launcher.write_text(
+            "#!/bin/sh\nset -eu\n"
+            'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\n'
+            f'exec "$root/lib/{loader_name}" --library-path "$root/lib" '
+            '--argv0 "$0" "$root/libexec/virgl_render_server.bin" "$@"\n'
+        )
+        server_launcher.chmod(0o755)
         if any(path.is_symlink() for path in staging.rglob("*")):
             raise Error("runtime_symlink_forbidden")
+        probe = subprocess.run(
+            [str(server_launcher)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if probe.returncode != args.render_probe_exit:
+            raise Error("runtime_render_launcher_failed")
         check = subprocess.run(
             [str(launcher), "--version"],
             stdout=subprocess.PIPE,
@@ -222,6 +238,7 @@ def parser() -> argparse.ArgumentParser:
         "lavapipe", "llvm", "icd", "lock", "output",
     ):
         result.add_argument(f"--{name}", type=Path, required=True)
+    result.add_argument("--render-probe-exit", type=int, default=255)
     return result
 
 

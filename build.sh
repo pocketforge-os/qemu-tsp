@@ -35,6 +35,9 @@ echo "== test A133 IOMMU boot-loop evidence integrity =="
 echo "== test build-6 release-smoke log gates =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-build6-smoke-test.py"
+echo "== test Venus runtime staging =="
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/venus-runtime-stage-test.py"
 STACK_PKGVERSION="pocketforge-qemu-tsp-head=$STACK_HEAD"
 REPO=$(sed -n 's/^repo *= *//p'   UPSTREAM)
 TAG=$(sed -n  's/^tag *= *//p'    UPSTREAM)
