@@ -103,6 +103,11 @@ def main() -> None:
     assert f'git apply "$ROOT/pocketforge/{patch_name}"' in build, (
         f"build.sh does not apply the LRADC patch path for {patch_name}"
     )
+    red_patch = "0068-tests-require-A133-LRADC-volume-rocker.patch"
+    assert red_patch in build, f"build.sh does not apply {red_patch}"
+    assert f'git apply "$ROOT/pocketforge/{red_patch}"' in build, (
+        f"build.sh does not apply the LRADC red-test path for {red_patch}"
+    )
     print("pocketforge-a133-lradc-coverage=PASS")
 
 

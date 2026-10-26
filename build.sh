@@ -459,6 +459,11 @@ if ! grep -Fq 'Card presence follows the bus' hw/sd/allwinner-sdhost.c; then
   git apply "$ROOT/pocketforge/0067-hw-sd-derive-card-presence-from-bus.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 LRADC volume rocker =="
+if [ ! -f tests/qtest/pocketforge-a133-lradc-test.c ]; then
+  git apply "$ROOT/pocketforge/0068-tests-require-A133-LRADC-volume-rocker.patch"
+fi
+
 echo "== test A133 LRADC coverage and patch-application contract =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-lradc-coverage-test.py"
@@ -506,6 +511,7 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-display-test \
   tests/qtest/pocketforge-a133-input-test \
+  tests/qtest/pocketforge-a133-lradc-test \
   tests/qtest/pocketforge-a133-mmio-map-test \
   tests/qtest/pocketforge-a133-r-i2c-test \
   tests/qtest/pocketforge-a133-axp717-test \
@@ -520,6 +526,7 @@ QTEST_QEMU_ARGS="-global virtio-gpu-gl-device.virgl=off" \
   qemu:qtest-aarch64/pocketforge-a100-rtc-test \
   qemu:qtest-aarch64/pocketforge-a133-display-test \
   qemu:qtest-aarch64/pocketforge-a133-input-test \
+  qemu:qtest-aarch64/pocketforge-a133-lradc-test \
   qemu:qtest-aarch64/pocketforge-a133-mmio-map-test \
   qemu:qtest-aarch64/pocketforge-a133-r-i2c-test \
   qemu:qtest-aarch64/pocketforge-a133-axp717-test \
