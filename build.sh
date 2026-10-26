@@ -494,6 +494,8 @@ echo "== test: release power-smoke provenance =="
   "$ROOT/tests/pocketforge-a133-release-power-smoke-test.py"
 
 echo "== test: release LRADC-smoke contract =="
+# The live B45 LRADC smoke is a manual laptop check until tsp-h5ed.46.65.1
+# adds the merge-gated CI job; latest evidence is on tsp-h5ed.46.65.
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-release-lradc-smoke-test.py"
 

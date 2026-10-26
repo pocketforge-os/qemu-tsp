@@ -206,6 +206,9 @@ The producer/build-6 DT disables LRADC, so this device remains present but
 `ready=false`, with no pending interrupt and no change to its existing input
 devices.
 
+The live B45 LRADC smoke is a manual laptop check until tsp-h5ed.46.65.1 adds
+the merge-gated CI job; latest evidence is on tsp-h5ed.46.65.
+
 Gamepad `ready` means both physical UART streams have been configured by the
 guest and accepted their initial centered/all-released frame. The power and
 lid devices are ready when their PMIC and R_PIO models exist. ABI major 2 fixes
