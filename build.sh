@@ -473,6 +473,11 @@ if [ ! -f hw/input/pocketforge_a133_lradc.c ]; then
   git apply "$ROOT/pocketforge/0069-hw-input-model-A133-LRADC-volume-rocker.patch"
 fi
 
+echo "== apply PocketForge patch: RED A133 LEDC transfer status =="
+if [ ! -f tests/qtest/pocketforge-a133-ledc-test.c ]; then
+  git apply "$ROOT/pocketforge/0070-tests-require-A133-LEDC-transfer-status.patch"
+fi
+
 echo "== test A133 LRADC coverage and patch-application contract =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-lradc-coverage-test.py"
