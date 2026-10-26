@@ -434,7 +434,8 @@ if ! grep -Fq 'test_venus_only_migration_blocker' \
   git apply "$ROOT/pocketforge/0062-virtio-gpu-defer-Venus-migration-blocker-until-render.patch"
 fi
 echo "== apply PocketForge patch: A133 LRADC aperture stub =="
-if ! grep -Fq 'pocketforge-a133.lradc' hw/arm/pocketforge_a133.c; then
+if ! grep -Fq '{ "pocketforge-a133.lradc"' \
+    tests/qtest/pocketforge-a133-mmio-map-test.c; then
   git apply "$ROOT/pocketforge/0063-hw-arm-add-A133-LRADC-aperture-stub.patch"
 fi
 
@@ -457,6 +458,16 @@ fi
 echo "== apply PocketForge patch: derive Allwinner card presence from bus =="
 if ! grep -Fq 'Card presence follows the bus' hw/sd/allwinner-sdhost.c; then
   git apply "$ROOT/pocketforge/0067-hw-sd-derive-card-presence-from-bus.patch"
+fi
+
+echo "== apply PocketForge patch: RED A133 LRADC volume rocker =="
+if [ ! -f tests/qtest/pocketforge-a133-lradc-test.c ]; then
+  git apply "$ROOT/pocketforge/0068-tests-require-A133-LRADC-volume-rocker.patch"
+fi
+
+echo "== apply PocketForge patch: model A133 LRADC volume rocker =="
+if [ ! -f hw/input/pocketforge_a133_lradc.c ]; then
+  git apply "$ROOT/pocketforge/0069-hw-input-model-A133-LRADC-volume-rocker.patch"
 fi
 
 echo "== test A133 LRADC coverage and patch-application contract =="
@@ -482,6 +493,12 @@ echo "== test: release power-smoke provenance =="
 "$ROOT/scripts/run-python-fresh.sh" \
   "$ROOT/tests/pocketforge-a133-release-power-smoke-test.py"
 
+echo "== test: release LRADC-smoke contract =="
+# The live B45 LRADC smoke is a manual laptop check until tsp-h5ed.46.65.1
+# adds the merge-gated CI job; latest evidence is on tsp-h5ed.46.65.
+"$ROOT/scripts/run-python-fresh.sh" \
+  "$ROOT/tests/pocketforge-a133-release-lradc-smoke-test.py"
+
 if [ "${QEMU_TSP_SKIP_LINUX_USER:-0}" != "1" ]; then
   echo "== configure + build: aarch64-linux-user (static) =="
   prepare_owned_build_dir "$LINUX_USER_BUILD_DIR"
@@ -506,6 +523,7 @@ ninja -C "$SYSTEM_BUILD_DIR" qemu-system-aarch64 \
   tests/qtest/pocketforge-a100-rtc-test \
   tests/qtest/pocketforge-a133-display-test \
   tests/qtest/pocketforge-a133-input-test \
+  tests/qtest/pocketforge-a133-lradc-test \
   tests/qtest/pocketforge-a133-mmio-map-test \
   tests/qtest/pocketforge-a133-r-i2c-test \
   tests/qtest/pocketforge-a133-axp717-test \
@@ -520,6 +538,7 @@ QTEST_QEMU_ARGS="-global virtio-gpu-gl-device.virgl=off" \
   qemu:qtest-aarch64/pocketforge-a100-rtc-test \
   qemu:qtest-aarch64/pocketforge-a133-display-test \
   qemu:qtest-aarch64/pocketforge-a133-input-test \
+  qemu:qtest-aarch64/pocketforge-a133-lradc-test \
   qemu:qtest-aarch64/pocketforge-a133-mmio-map-test \
   qemu:qtest-aarch64/pocketforge-a133-r-i2c-test \
   qemu:qtest-aarch64/pocketforge-a133-axp717-test \

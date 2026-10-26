@@ -382,6 +382,19 @@ def send_report(qmp: JsonLine, device: str, *events: dict) -> None:
         raise RuntimeError(f"input-send:{device}:{response}")
 
 
+def wait_device_ready(qmp: JsonLine, device: str, timeout: float = 30.0,
+                      poll_interval: float = 0.5) -> dict:
+    deadline = time.monotonic() + timeout
+    info = {}
+    while time.monotonic() < deadline:
+        info = qmp.command("query-pocketforge-input").get("return", {})
+        devices = {item.get("id"): item for item in info.get("devices", [])}
+        if devices.get(device, {}).get("ready"):
+            return info
+        time.sleep(poll_interval)
+    raise RuntimeError(f"input-not-ready:{device}:{info}")
+
+
 def kernel_command_line() -> str:
     return (
         "root=PARTLABEL=userdata rootwait rw console=ttyS0,115200 "
@@ -454,15 +467,16 @@ def main() -> int:
         console = Console(connect(serial_path, 20), serial_log)
         console.until(b"PF_RELEASE_READY ", 240)
 
-        info = qmp.command("query-pocketforge-input").get("return", {})
+        info = wait_device_ready(qmp, "volume-rocker")
         devices = {item.get("id"): item for item in info.get("devices", [])}
-        if info.get("abi_version") != {"major": 2, "minor": 3}:
+        if info.get("abi_version") != {"major": 2, "minor": 4}:
             raise RuntimeError(f"input-abi:{info}")
-        if set(devices) != {"gamepad", "power-key", "lid-switch"}:
+        if set(devices) != {"gamepad", "power-key", "lid-switch",
+                            "volume-rocker"}:
             raise RuntimeError(f"input-devices:{devices}")
         if not all(devices[name].get("ready")
-                   for name in ("power-key", "lid-switch")):
-            raise RuntimeError(f"input-not-ready:{devices}")
+                   for name in ("power-key", "lid-switch", "volume-rocker")):
+            raise RuntimeError(f"input-not-ready:release-devices:{devices}")
 
         send_report(qmp, "lid-switch", event(5, 0, 1))
         console.until(b"PF_RELEASE_SUSPEND phase=pre mode=suspend", 60)

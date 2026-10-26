@@ -48,7 +48,7 @@ def command_definition(schema: str, name: str) -> str:
     raise ValueError(f"definition-end-missing:{name}")
 
 
-def validate(schema: str, meson: str, dispatcher: str) -> None:
+def validate(schema: str, meson: str, dispatcher: str, machine: str) -> None:
     for name in COMMANDS:
         if CONDITION in command_definition(schema, name):
             raise ValueError(f"common-qapi-uses-device-config:{name}:{CONDITION}")
@@ -66,6 +66,16 @@ def validate(schema: str, meson: str, dispatcher: str) -> None:
         raise ValueError(f"dispatcher-missing-condition:{CONDITION}")
     if dispatcher.count("ERROR_CLASS_DEVICE_NOT_FOUND") < len(COMMANDS):
         raise ValueError("dispatcher-missing-device-not-found-fallbacks")
+    required_input_abi = (
+        "info->abi_version->minor = 4;",
+        'device->id = g_strdup("volume-rocker");',
+        'device->name = g_strdup("5070800.lradc");',
+        'strcmp(device, "volume-rocker")',
+        "pocketforge_a133_lradc_is_ready(s->lradc)",
+    )
+    for fragment in required_input_abi:
+        if fragment not in machine:
+            raise ValueError(f"input-abi-2.4-fragment-missing:{fragment}")
 
 
 def main() -> int:
@@ -76,9 +86,10 @@ def main() -> int:
     schema = (root / "qapi/misc-arm.json").read_text()
     meson = (root / "hw/arm/meson.build").read_text()
     dispatcher = (root / "hw/arm/pocketforge_a133_qmp.c").read_text()
+    machine = (root / "hw/arm/pocketforge_a133.c").read_text()
 
     try:
-        validate(schema, meson, dispatcher)
+        validate(schema, meson, dispatcher, machine)
     except ValueError as error:
         print(f"QAPI_CONFIG_GATING result=FAIL reason={error}")
         return 1
@@ -88,7 +99,7 @@ def main() -> int:
         print("QAPI_CONFIG_GATING result=FAIL reason=negative-control-not-mutated")
         return 1
     try:
-        validate(schema, meson, negative)
+        validate(schema, meson, negative, machine)
     except ValueError as error:
         if str(error) == "dispatcher-missing-device-not-found-fallbacks":
             print(

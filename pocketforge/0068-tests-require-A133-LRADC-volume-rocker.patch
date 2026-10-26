@@ -1,0 +1,339 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 22:20:00 -0400
+Subject: [PATCH] tests: require A133 LRADC volume rocker
+
+Add driver-shaped red coverage for the release LRADC register bank, SPI 22,
+input ABI 2.4, validation errors, reset, and migration. The current inert
+stub fails these tests because it has neither the advertised device nor any
+conversion/IRQ behavior.
+
+Assisted-by: LLM
+---
+ tests/qtest/meson.build                         |   3 +
+ tests/qtest/pocketforge-a133-lradc-test.c      | 292 +++++++++++++++++
+ 2 files changed, 295 insertions(+)
+ create mode 100644 tests/qtest/pocketforge-a133-lradc-test.c
+
+diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
+index 64f9f48..1315fa8 100644
+--- a/tests/qtest/meson.build
++++ b/tests/qtest/meson.build
+@@ -276,6 +276,7 @@ qtests_aarch64 = \
+    ['iommu-smmuv3-test'] : []) + \
+   (config_all_devices.has_key('CONFIG_POCKETFORGE_A133') ?
+     ['pocketforge-a100-rtc-test', 'pocketforge-a133-input-test',
++     'pocketforge-a133-lradc-test',
+      'pocketforge-a133-mmio-map-test', 'pocketforge-a133-r-i2c-test',
+      'pocketforge-a133-axp717-test', 'pocketforge-a133-mmc-test',
+      'pocketforge-a133-bootrom-test', 'pocketforge-a133-ccu-test'] : []) + \
+@@ -434,6 +435,8 @@ qtests = {
+ qtests += {
+   'pocketforge-a133-axp717-test': files('migration/migration-qmp.c',
+                                        'migration/migration-util.c'),
++  'pocketforge-a133-lradc-test': files('migration/migration-qmp.c',
++                                       'migration/migration-util.c'),
+   'pocketforge-a133-mmio-map-test': fdt,
+ }
+ 
+diff --git a/tests/qtest/pocketforge-a133-lradc-test.c b/tests/qtest/pocketforge-a133-lradc-test.c
+new file mode 100644
+index 0000000..3a3cbad
+--- /dev/null
++++ b/tests/qtest/pocketforge-a133-lradc-test.c
+@@ -0,0 +1,292 @@
++/*
++ * PocketForge A133 LRADC volume-rocker qtest
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "libqtest.h"
++#include "migration/migration-qmp.h"
++#include "qobject/qdict.h"
++#include "qobject/qlist.h"
++#include "standard-headers/linux/input.h"
++
++#define LRADC_BASE              0x05070800
++#define LRADC_CTRL              0x00
++#define LRADC_INTC              0x04
++#define LRADC_INTS              0x08
++#define LRADC_DATA0             0x0c
++#define LRADC_CTRL_OPEN         0x01000169
++#define LRADC_CTRL_CLOSED       0x01000168
++#define LRADC_INTC_DRIVER       0x13
++#define LRADC_IRQ_DATA          (1u << 0)
++#define LRADC_IRQ_KEYDOWN       (1u << 1)
++#define LRADC_IRQ_KEYUP         (1u << 4)
++#define LRADC_CODE_VOLUMEUP     31
++#define LRADC_CODE_VOLUMEDOWN   43
++
++#define GIC_DIST_BASE           0x03021000
++#define GICD_ISPENDR            0x200
++#define LRADC_GIC_INTID         (32 + 22)
++#define LRADC_GIC_PENDING_ADDR  \
++    (GIC_DIST_BASE + GICD_ISPENDR + (LRADC_GIC_INTID / 32) * 4)
++#define LRADC_GIC_PENDING_BIT   (1u << (LRADC_GIC_INTID % 32))
++
++static QDict *volume_send(QTestState *qts, int code, int value)
++{
++    return qtest_qmp(qts,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'volume-rocker', 'events': ["
++        " { 'type': 1, 'code': %d, 'value': %d },"
++        " { 'type': 0, 'code': 0, 'value': 0 } ] } }",
++        code, value);
++}
++
++static void assert_success(QDict *response)
++{
++    g_assert_true(qdict_haskey(response, "return"));
++    qobject_unref(response);
++}
++
++static void assert_error(QDict *response, const char *class,
++                         const char *description)
++{
++    QDict *error = qdict_get_qdict(response, "error");
++
++    g_assert_nonnull(error);
++    g_assert_cmpstr(qdict_get_str(error, "class"), ==, class);
++    g_assert_cmpstr(qdict_get_str(error, "desc"), ==, description);
++    qobject_unref(response);
++}
++
++static QDict *query_device_by_id(QDict *response, const char *id)
++{
++    QDict *result = qdict_get_qdict(response, "return");
++    QList *devices = qdict_get_qlist(result, "devices");
++    const QListEntry *entry;
++
++    QLIST_FOREACH_ENTRY(devices, entry) {
++        QDict *device = qobject_to(QDict, qlist_entry_obj(entry));
++
++        if (!strcmp(qdict_get_str(device, "id"), id)) {
++            return device;
++        }
++    }
++    g_assert_not_reached();
++}
++
++static bool query_has_code(QDict *device, int type, int code,
++                           const char *name)
++{
++    QList *caps = qdict_get_qlist(device, "caps");
++    const QListEntry *cap_entry;
++
++    QLIST_FOREACH_ENTRY(caps, cap_entry) {
++        QDict *cap = qobject_to(QDict, qlist_entry_obj(cap_entry));
++        QList *codes;
++        const QListEntry *code_entry;
++
++        if (qdict_get_int(cap, "type") != type ||
++            !(codes = qdict_get_qlist(cap, "codes"))) {
++            continue;
++        }
++        QLIST_FOREACH_ENTRY(codes, code_entry) {
++            QDict *item = qobject_to(QDict, qlist_entry_obj(code_entry));
++
++            if (qdict_get_int(item, "code") == code) {
++                g_assert_cmpstr(qdict_get_str(item, "name"), ==, name);
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
++static bool lradc_irq_pending(QTestState *qts)
++{
++    return qtest_readl(qts, LRADC_GIC_PENDING_ADDR) & LRADC_GIC_PENDING_BIT;
++}
++
++static void lradc_open(QTestState *qts)
++{
++    qtest_writel(qts, LRADC_BASE + LRADC_CTRL, LRADC_CTRL_OPEN);
++    qtest_writel(qts, LRADC_BASE + LRADC_INTC, LRADC_INTC_DRIVER);
++}
++
++static void test_query_and_disabled_no_irq(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults "
++                                 "-display none");
++    QDict *response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    QDict *result = qdict_get_qdict(response, "return");
++    QDict *version = qdict_get_qdict(result, "abi_version");
++    QDict *device = query_device_by_id(response, "volume-rocker");
++
++    g_assert_cmpint(qdict_get_int(version, "major"), ==, 2);
++    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 4);
++    g_assert_cmpuint(qlist_size(qdict_get_qlist(result, "devices")), ==, 4);
++    g_assert_cmpstr(qdict_get_str(device, "name"), ==, "5070800.lradc");
++    g_assert_cmpint(qdict_get_int(device, "bustype"), ==, BUS_HOST);
++    g_assert_cmpint(qdict_get_int(device, "vendor"), ==, 1);
++    g_assert_cmpint(qdict_get_int(device, "product"), ==, 1);
++    g_assert_cmpint(qdict_get_int(device, "version"), ==, 0x0100);
++    g_assert_false(qdict_get_bool(device, "ready"));
++    g_assert_true(query_has_code(device, EV_SYN, SYN_REPORT, "SYN_REPORT"));
++    g_assert_true(query_has_code(device, EV_KEY, KEY_VOLUMEDOWN,
++                                 "KEY_VOLUMEDOWN"));
++    g_assert_true(query_has_code(device, EV_KEY, KEY_VOLUMEUP,
++                                 "KEY_VOLUMEUP"));
++    qobject_unref(response);
++
++    assert_error(volume_send(qts, KEY_VOLUMEUP, 1), "DeviceNotActive",
++                 "PocketForge input device 'volume-rocker' is not active");
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_CTRL), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTC), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==, 0);
++    g_assert_false(lradc_irq_pending(qts));
++    qtest_quit(qts);
++}
++
++static void test_driver_sequence_and_errors(void)
++{
++    QTestState *qts = qtest_init("-machine pocketforge-a133 -nodefaults "
++                                 "-display none");
++    QDict *response;
++    QDict *device;
++
++    lradc_open(qts);
++    response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    device = query_device_by_id(response, "volume-rocker");
++    g_assert_true(qdict_get_bool(device, "ready"));
++    qobject_unref(response);
++
++    assert_error(volume_send(qts, KEY_VOLUMEUP, 0), "GenericError",
++        "pocketforge-input: reason=invalid-parameter index=0: "
++        "release before press code=115");
++    assert_error(volume_send(qts, KEY_POWER, 1), "GenericError",
++        "pocketforge-input: reason=invalid-parameter index=0: "
++        "key code=116 is not advertised by volume-rocker");
++    assert_error(volume_send(qts, KEY_VOLUMEUP, 2), "GenericError",
++        "pocketforge-input: reason=invalid-parameter index=0: "
++        "unsupported value=2 code=115");
++    response = qtest_qmp(qts,
++        "{ 'execute': 'pocketforge-input-send', 'arguments': {"
++        " 'device': 'volume-rocker', 'events': ["
++        " { 'type': 1, 'code': 115, 'value': 1 } ] } }");
++    assert_error(response, "GenericError",
++        "pocketforge-input: reason=invalid-parameter: volume-rocker batch "
++        "must contain one EV_KEY transition followed by SYN_REPORT");
++
++    assert_success(volume_send(qts, KEY_VOLUMEUP, 1));
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_DATA0), ==,
++                    LRADC_CODE_VOLUMEUP);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==,
++                    LRADC_IRQ_KEYDOWN | LRADC_IRQ_DATA);
++    g_assert_true(lradc_irq_pending(qts));
++
++    assert_error(volume_send(qts, KEY_VOLUMEUP, 1), "GenericError",
++        "pocketforge-input: reason=invalid-parameter index=0: "
++        "duplicate press code=115");
++    assert_error(volume_send(qts, KEY_VOLUMEDOWN, 1), "GenericError",
++        "pocketforge-input: reason=invalid-parameter index=0: "
++        "cross-button press code=114 held=115");
++
++    qtest_writel(qts, LRADC_BASE + LRADC_INTS,
++                 LRADC_IRQ_KEYDOWN | LRADC_IRQ_DATA);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==, 0);
++    g_assert_false(lradc_irq_pending(qts));
++    /* Holding is quiet: no timer or repeat status is invented. */
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==, 0);
++
++    assert_success(volume_send(qts, KEY_VOLUMEUP, 0));
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==,
++                    LRADC_IRQ_KEYUP);
++    g_assert_true(lradc_irq_pending(qts));
++    qtest_writel(qts, LRADC_BASE + LRADC_INTS, LRADC_IRQ_KEYUP);
++    g_assert_false(lradc_irq_pending(qts));
++
++    assert_success(volume_send(qts, KEY_VOLUMEDOWN, 1));
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_DATA0), ==,
++                    LRADC_CODE_VOLUMEDOWN);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==,
++                    LRADC_IRQ_KEYDOWN | LRADC_IRQ_DATA);
++    qtest_writel(qts, LRADC_BASE + LRADC_INTS,
++                 LRADC_IRQ_KEYDOWN | LRADC_IRQ_DATA);
++    assert_success(volume_send(qts, KEY_VOLUMEDOWN, 0));
++    qtest_writel(qts, LRADC_BASE + LRADC_INTS, LRADC_IRQ_KEYUP);
++
++    qtest_writel(qts, LRADC_BASE + LRADC_INTC, 0);
++    qtest_writel(qts, LRADC_BASE + LRADC_CTRL, LRADC_CTRL_CLOSED);
++    response = qtest_qmp(qts,
++        "{ 'execute': 'query-pocketforge-input' }");
++    device = query_device_by_id(response, "volume-rocker");
++    g_assert_false(qdict_get_bool(device, "ready"));
++    qobject_unref(response);
++    assert_error(volume_send(qts, KEY_VOLUMEUP, 1), "DeviceNotActive",
++                 "PocketForge input device 'volume-rocker' is not active");
++    g_assert_false(lradc_irq_pending(qts));
++
++    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
++    qtest_qmp_eventwait(qts, "RESET");
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_CTRL), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTC), ==, 0);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==, 0);
++    qtest_quit(qts);
++}
++
++static void test_migration_held_pending(void)
++{
++    g_autofree char *tmpdir = NULL;
++    g_autofree char *socket_path = NULL;
++    g_autofree char *uri = NULL;
++    QTestState *from;
++    QTestState *to;
++
++    tmpdir = g_dir_make_tmp("pocketforge-a133-lradc-migration-XXXXXX", NULL);
++    g_assert_nonnull(tmpdir);
++    socket_path = g_build_filename(tmpdir, "migration.sock", NULL);
++    uri = g_strdup_printf("unix:%s", socket_path);
++    from = qtest_init("-machine pocketforge-a133,pocketforge-display=off");
++    to = qtest_init("-machine pocketforge-a133,pocketforge-display=off "
++                    "-incoming defer");
++
++    lradc_open(from);
++    assert_success(volume_send(from, KEY_VOLUMEUP, 1));
++    migrate_incoming_qmp(to, uri, NULL, "{}");
++    migrate_qmp(from, to, uri, NULL, "{}");
++    wait_for_migration_complete(from);
++    wait_for_migration_complete(to);
++
++    g_assert_cmphex(qtest_readl(to, LRADC_BASE + LRADC_CTRL), ==,
++                    LRADC_CTRL_OPEN);
++    g_assert_cmphex(qtest_readl(to, LRADC_BASE + LRADC_INTC), ==,
++                    LRADC_INTC_DRIVER);
++    g_assert_cmphex(qtest_readl(to, LRADC_BASE + LRADC_INTS), ==,
++                    LRADC_IRQ_KEYDOWN | LRADC_IRQ_DATA);
++    g_assert_cmphex(qtest_readl(to, LRADC_BASE + LRADC_DATA0), ==,
++                    LRADC_CODE_VOLUMEUP);
++    assert_error(volume_send(to, KEY_VOLUMEUP, 1), "GenericError",
++        "pocketforge-input: reason=invalid-parameter index=0: "
++        "duplicate press code=115");
++    assert_success(volume_send(to, KEY_VOLUMEUP, 0));
++
++    qtest_quit(to);
++    qtest_quit(from);
++    g_assert_cmpint(g_remove(socket_path), ==, -1);
++    g_assert_cmpint(errno, ==, ENOENT);
++    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    qtest_add_func("/aarch64/pocketforge-a133-lradc/query-disabled-no-irq",
++                   test_query_and_disabled_no_irq);
++    qtest_add_func("/aarch64/pocketforge-a133-lradc/driver-sequence-errors",
++                   test_driver_sequence_and_errors);
++    qtest_add_func("/aarch64/pocketforge-a133-lradc/migration-held-pending",
++                   test_migration_held_pending);
++    return g_test_run();
++}
+-- 
+2.43.0

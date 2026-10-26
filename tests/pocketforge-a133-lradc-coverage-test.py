@@ -11,7 +11,7 @@ EXPECTED_REGION = {
     "base": "0x5070800",
     "size": "0x400",
     "name": "pocketforge-a133.lradc",
-    "kind": "stub",
+    "kind": "model",
     "source": "release_guest",
 }
 
@@ -32,7 +32,7 @@ def validate_qemu_regions(regions: list[dict[str, str]]) -> None:
         )
     ]
     assert overlapping == [EXPECTED_REGION], (
-        f"LRADC overlap must be the single exact stub region: {overlapping!r}"
+        f"LRADC overlap must be the single exact model region: {overlapping!r}"
     )
 
 
@@ -102,6 +102,16 @@ def main() -> None:
     assert patch_name in build, f"build.sh does not apply {patch_name}"
     assert f'git apply "$ROOT/pocketforge/{patch_name}"' in build, (
         f"build.sh does not apply the LRADC patch path for {patch_name}"
+    )
+    red_patch = "0068-tests-require-A133-LRADC-volume-rocker.patch"
+    assert red_patch in build, f"build.sh does not apply {red_patch}"
+    assert f'git apply "$ROOT/pocketforge/{red_patch}"' in build, (
+        f"build.sh does not apply the LRADC red-test path for {red_patch}"
+    )
+    model_patch = "0069-hw-input-model-A133-LRADC-volume-rocker.patch"
+    assert model_patch in build, f"build.sh does not apply {model_patch}"
+    assert f'git apply "$ROOT/pocketforge/{model_patch}"' in build, (
+        f"build.sh does not apply the LRADC model patch path for {model_patch}"
     )
     print("pocketforge-a133-lradc-coverage=PASS")
 

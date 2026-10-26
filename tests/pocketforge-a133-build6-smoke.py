@@ -814,15 +814,20 @@ def main() -> int:
         else:
             raise RuntimeError(f"input-not-ready:{info}")
 
-        if info.get("abi_version") != {"major": 2, "minor": 2}:
+        if info.get("abi_version") != {"major": 2, "minor": 4}:
             raise RuntimeError(f"input-abi:{info}")
         devices = {item.get("id"): item for item in info.get("devices", [])}
-        if (set(devices) != {"gamepad", "power-key"} or
+        if (set(devices) != {"gamepad", "power-key", "lid-switch",
+                             "volume-rocker"} or
                 devices["gamepad"].get("name") != "TRIMUI Player1" or
-                devices["power-key"].get("name") != "axp20x-pek"):
+                devices["power-key"].get("name") != "axp20x-pek" or
+                devices["volume-rocker"].get("name") != "5070800.lradc"):
             raise RuntimeError(f"input-devices:{devices}")
-        if not all(item.get("ready") for item in devices.values()):
+        if not all(devices[name].get("ready")
+                   for name in ("gamepad", "power-key", "lid-switch")):
             raise RuntimeError(f"input-not-ready:{devices}")
+        if devices["volume-rocker"].get("ready"):
+            raise RuntimeError(f"producer-lradc-unexpectedly-ready:{devices}")
         expected_axes = {
             0: ("ABS_X", 0, 4095), 1: ("ABS_Y", 0, 4095),
             3: ("ABS_RX", 0, 4095), 4: ("ABS_RY", 0, 4095),
@@ -847,7 +852,8 @@ def main() -> int:
         if power_codes != {(0, 0), (1, 116)}:
             raise RuntimeError(f"power-key-caps:{power_codes}")
         print(
-            "QMP_INPUT abi=2.2 devices=gamepad,power-key ready=true",
+            "QMP_INPUT abi=2.4 devices=gamepad,power-key,lid-switch "
+            "ready=true volume-rocker-ready=false",
             flush=True,
         )
 

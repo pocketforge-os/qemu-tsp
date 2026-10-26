@@ -1,0 +1,601 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "pocketforge-agent[bot]"
+ <299760760+pocketforge-agent[bot]@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 23:20:00 -0400
+Subject: [PATCH] hw/input: model A133 LRADC volume rocker
+
+Replace the release guest's inert LRADC aperture with a driver-shaped
+model and expose its two volume buttons through PocketForge input ABI 2.4.
+Keep the disabled producer guest inert while covering registers, IRQs,
+validation, reset, migration, and the additive query response.
+
+Assisted-by: LLM
+---
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index b8b11a1fe2e19de15f1f8c0830651b08ef353e7b..360e9894837388656ee9cce8c375302c0e035a35 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -203,6 +203,7 @@ config POCKETFORGE_A133
+     select DW_APB_UART
+     select POCKETFORGE_A100_RTC
+     select POCKETFORGE_A133_INPUT
++    select POCKETFORGE_A133_LRADC
+     select POCKETFORGE_A133_CCU
+     select POCKETFORGE_A133_MMIO_STUB
+     select POCKETFORGE_A133_PIO
+diff --git a/hw/arm/pocketforge_a133.c b/hw/arm/pocketforge_a133.c
+index 3727536d54087ae475e83b3f97a0f38e3715ac97..6387b3e9c0984372208e81567097043b80000c68 100644
+--- a/hw/arm/pocketforge_a133.c
++++ b/hw/arm/pocketforge_a133.c
+@@ -111,6 +111,7 @@
+ #include "hw/i2c/allwinner-i2c.h"
+ #include "hw/i2c/i2c.h"
+ #include "hw/input/pocketforge_a133_input.h"
++#include "hw/input/pocketforge_a133_lradc.h"
+ #include "hw/misc/pocketforge_a100_r_pio.h"
+ #include "hw/misc/pocketforge_a133_ccu.h"
+ #include "hw/misc/pocketforge_a133_mmio_stub.h"
+@@ -185,6 +186,7 @@ struct PocketForgeA133MachineState {
+     bool initialized;
+     char *display;
+     PocketForgeA133Input *input_device;
++    PocketForgeA133Lradc *lradc;
+     DWApbUartState *gamepad_uart[2];
+     DeviceState *pmic;
+     PfA100RPioState *r_pio;
+@@ -243,6 +245,10 @@ static int pocketforge_a133_reject_extra_gpu(void *opaque, QemuOpts *opts,
+ #define PF_A133_UART4_BASE      0x05001000
+ #define PF_A133_UART4_IRQ       4 /* GIC_SPI 4 */
+ 
++/* lradc@5070800, exact base and GIC SPI from the B45 release DT. */
++#define PF_A133_LRADC_BASE      0x05070800
++#define PF_A133_LRADC_IRQ       22
++
+ /* rtc@7000000, exact reg range from sun50i-a100.dtsi. */
+ #define PF_A133_RTC_BASE        0x07000000
+ 
+@@ -566,7 +572,6 @@ static const PfA133StubRegion pf_a133_stub_regions[] = {
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+-    { "pocketforge-a133.lradc",             0x05070800, 0x400 },
+     { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+@@ -1198,6 +1203,9 @@ static void pocketforge_a133_init(MachineState *machine)
+ 
+     pocketforge_a100_rtc_create(PF_A133_RTC_BASE);
+ 
++    s->lradc = pocketforge_a133_lradc_create(PF_A133_LRADC_BASE,
++                                             pic[PF_A133_LRADC_IRQ]);
++
+     pocketforge_a133_create_sram(s, sysmem);
+     s->r_pio = POCKETFORGE_A100_R_PIO(pocketforge_a100_r_pio_create(
+         PF_A133_R_PIO_BASE, pic[111]));
+@@ -1335,7 +1343,7 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     device_tail = &info->devices;
+     info->abi_version = g_new0(PocketForgeAbiVersion, 1);
+     info->abi_version->major = 2;
+-    info->abi_version->minor = 3;
++    info->abi_version->minor = 4;
+     info->max_batch_events = PF_A133_INPUT_BATCH_MAX;
+     s = POCKETFORGE_A133_MACHINE(current_machine);
+     if (s->input_device) {
+@@ -1462,9 +1470,115 @@ PocketForgeInputInfo *pocketforge_a133_query_input(Error **errp)
+     }
+     QAPI_LIST_APPEND(caps_tail, cap);
+     QAPI_LIST_APPEND(device_tail, device);
++
++    device = g_new0(PocketForgeInputDeviceInfo, 1);
++    device->id = g_strdup("volume-rocker");
++    device->name = g_strdup("5070800.lradc");
++    device->bustype = BUS_HOST;
++    device->vendor = 0x0001;
++    device->product = 0x0001;
++    device->version = 0x0100;
++    device->ready = pocketforge_a133_lradc_is_ready(s->lradc);
++    caps_tail = &device->caps;
++
++    cap = g_new0(PocketForgeInputCaps, 1);
++    cap->type = EV_SYN;
++    cap->has_codes = true;
++    code_tail = &cap->codes;
++    {
++        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++        code->code = SYN_REPORT;
++        code->name = g_strdup("SYN_REPORT");
++        QAPI_LIST_APPEND(code_tail, code);
++    }
++    QAPI_LIST_APPEND(caps_tail, cap);
++
++    cap = g_new0(PocketForgeInputCaps, 1);
++    cap->type = EV_KEY;
++    cap->has_codes = true;
++    code_tail = &cap->codes;
++    {
++        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++        code->code = KEY_VOLUMEDOWN;
++        code->name = g_strdup("KEY_VOLUMEDOWN");
++        QAPI_LIST_APPEND(code_tail, code);
++    }
++    {
++        PocketForgeInputCode *code = g_new0(PocketForgeInputCode, 1);
++        code->code = KEY_VOLUMEUP;
++        code->name = g_strdup("KEY_VOLUMEUP");
++        QAPI_LIST_APPEND(code_tail, code);
++    }
++    QAPI_LIST_APPEND(caps_tail, cap);
++    QAPI_LIST_APPEND(device_tail, device);
+     return info;
+ }
+ 
++static void pocketforge_a133_volume_send(
++    PocketForgeA133MachineState *s, PocketForgeInputEventList *events,
++    Error **errp)
++{
++    PocketForgeInputEventList *second;
++    PocketForgeInputEvent *event;
++    int held;
++
++    if (!events || !(second = events->next) || second->next ||
++        second->value->type != EV_SYN ||
++        second->value->code != SYN_REPORT || second->value->value != 0 ||
++        events->value->type != EV_KEY) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter: "
++                   "volume-rocker batch must contain one EV_KEY transition "
++                   "followed by SYN_REPORT");
++        return;
++    }
++
++    event = events->value;
++    if (event->code != KEY_VOLUMEUP && event->code != KEY_VOLUMEDOWN) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                   "index=0: key code=%" PRId64 " is not advertised by "
++                   "volume-rocker", event->code);
++        return;
++    }
++    if (event->value != 0 && event->value != 1) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                   "index=0: unsupported value=%" PRId64 " code=%" PRId64,
++                   event->value, event->code);
++        return;
++    }
++    if (!pocketforge_a133_lradc_is_ready(s->lradc)) {
++        error_set(errp, ERROR_CLASS_DEVICE_NOT_ACTIVE,
++                  "PocketForge input device 'volume-rocker' is not active");
++        return;
++    }
++
++    held = pocketforge_a133_lradc_held_code(s->lradc);
++    if (event->value && held == event->code) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                   "index=0: duplicate press code=%" PRId64, event->code);
++        return;
++    }
++    if (event->value && held) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                   "index=0: cross-button press code=%" PRId64 " held=%d",
++                   event->code, held);
++        return;
++    }
++    if (!event->value && !held) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                   "index=0: release before press code=%" PRId64,
++                   event->code);
++        return;
++    }
++    if (!event->value && held != event->code) {
++        error_setg(errp, "pocketforge-input: reason=invalid-parameter "
++                   "index=0: cross-button release code=%" PRId64 " held=%d",
++                   event->code, held);
++        return;
++    }
++
++    pocketforge_a133_lradc_set_key(s->lradc, event->code, event->value);
++}
++
+ static void pocketforge_a133_power_key_send(
+     PocketForgeA133MachineState *s, PocketForgeInputEventList *events,
+     Error **errp)
+@@ -1603,7 +1717,7 @@ void pocketforge_a133_input_send_qmp(const char *device,
+     size_t i = 0;
+ 
+     if (strcmp(device, "gamepad") && strcmp(device, "power-key") &&
+-        strcmp(device, "lid-switch")) {
++        strcmp(device, "lid-switch") && strcmp(device, "volume-rocker")) {
+         error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
+                          "PocketForge input device '%s' was not found", device);
+         return;
+@@ -1615,6 +1729,10 @@ void pocketforge_a133_input_send_qmp(const char *device,
+         return;
+     }
+     s = POCKETFORGE_A133_MACHINE(current_machine);
++    if (!strcmp(device, "volume-rocker")) {
++        pocketforge_a133_volume_send(s, events, errp);
++        return;
++    }
+     if (!strcmp(device, "power-key")) {
+         pocketforge_a133_power_key_send(s, events, errp);
+         return;
+diff --git a/hw/input/Kconfig b/hw/input/Kconfig
+index 1365abbd3c0d775df442c1351ee8f74ed53ac78b..52cd6d5eee06ffcbc47a9e859f9d3e8acd685057 100644
+--- a/hw/input/Kconfig
++++ b/hw/input/Kconfig
+@@ -30,6 +30,9 @@ config POCKETFORGE_A133_INPUT
+     bool
+     depends on DW_APB_UART
+ 
++config POCKETFORGE_A133_LRADC
++    bool
++
+ config VHOST_USER_INPUT
+     bool
+     default y
+diff --git a/hw/input/meson.build b/hw/input/meson.build
+index 01e862ff67d9f670bad85a05d859096fec563ef0..e599fde57a1cfd97cee51d3ebf70b29386b67e9c 100644
+--- a/hw/input/meson.build
++++ b/hw/input/meson.build
+@@ -9,5 +9,6 @@ system_ss.add(when: 'CONFIG_VIRTIO_INPUT', if_true: files('virtio-input.c'))
+ system_ss.add(when: 'CONFIG_VIRTIO_INPUT', if_true: files('virtio-input-hid.c'))
+ system_ss.add(when: 'CONFIG_VIRTIO_INPUT_HOST', if_true: files('virtio-input-host.c'))
+ system_ss.add(when: 'CONFIG_POCKETFORGE_A133_INPUT', if_true: files('pocketforge_a133_input.c'))
++system_ss.add(when: 'CONFIG_POCKETFORGE_A133_LRADC', if_true: files('pocketforge_a133_lradc.c'))
+ 
+ system_ss.add(when: 'CONFIG_LASIPS2', if_true: files('lasips2.c'))
+diff --git a/hw/input/pocketforge_a133_lradc.c b/hw/input/pocketforge_a133_lradc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c90638b9174559349505932dbcd66be79a734a6a
+--- /dev/null
++++ b/hw/input/pocketforge_a133_lradc.c
+@@ -0,0 +1,253 @@
++/*
++ * PocketForge A133 LRADC volume-rocker model.
++ *
++ * The sun4i-lradc-keys driver uses channel 0 KEYDOWN/DATA/KEYUP interrupts.
++ * The A100-compatible filter needs two equal conversion samples, so a press
++ * reports KEYDOWN plus the first DATA sample immediately and schedules the
++ * second DATA sample after one eight-sample averaging interval.  Holding is
++ * otherwise quiet; the guest input core owns repeat policy.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "hw/input/pocketforge_a133_lradc.h"
++#include "hw/core/irq.h"
++#include "migration/vmstate.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "standard-headers/linux/input.h"
++
++#define LRADC_CTRL          0x00
++#define LRADC_INTC          0x04
++#define LRADC_INTS          0x08
++#define LRADC_DATA0         0x0c
++
++#define LRADC_CTRL_ENABLE   BIT(0)
++#define LRADC_IRQ_DATA      BIT(0)
++#define LRADC_IRQ_KEYDOWN   BIT(1)
++#define LRADC_IRQ_KEYUP     BIT(4)
++#define LRADC_DRIVER_IRQS   (LRADC_IRQ_DATA | LRADC_IRQ_KEYDOWN | \
++                             LRADC_IRQ_KEYUP)
++
++#define LRADC_CODE_VOLUMEUP    31
++#define LRADC_CODE_VOLUMEDOWN  43
++#define LRADC_SECOND_SAMPLE_NS (32 * SCALE_MS)
++
++struct PocketForgeA133Lradc {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    qemu_irq irq;
++    QEMUTimer *sample_timer;
++    uint32_t ctrl;
++    uint32_t intc;
++    uint32_t ints;
++    uint32_t data0;
++    int32_t held_code;
++};
++
++static void pocketforge_a133_lradc_update_irq(PocketForgeA133Lradc *s)
++{
++    qemu_set_irq(s->irq, (s->ints & s->intc) != 0);
++}
++
++bool pocketforge_a133_lradc_is_ready(PocketForgeA133Lradc *s)
++{
++    return s && (s->ctrl & LRADC_CTRL_ENABLE) &&
++           (s->intc & LRADC_DRIVER_IRQS) == LRADC_DRIVER_IRQS;
++}
++
++int pocketforge_a133_lradc_held_code(PocketForgeA133Lradc *s)
++{
++    return s ? s->held_code : 0;
++}
++
++static uint32_t pocketforge_a133_lradc_data_code(int code)
++{
++    return code == KEY_VOLUMEUP ? LRADC_CODE_VOLUMEUP :
++                                  LRADC_CODE_VOLUMEDOWN;
++}
++
++static void pocketforge_a133_lradc_second_sample(void *opaque)
++{
++    PocketForgeA133Lradc *s = opaque;
++
++    if (s->held_code && pocketforge_a133_lradc_is_ready(s)) {
++        s->ints |= LRADC_IRQ_DATA;
++        pocketforge_a133_lradc_update_irq(s);
++    }
++}
++
++void pocketforge_a133_lradc_set_key(PocketForgeA133Lradc *s,
++                                    int code, bool pressed)
++{
++    if (pressed) {
++        s->held_code = code;
++        s->data0 = pocketforge_a133_lradc_data_code(code);
++        s->ints |= LRADC_IRQ_KEYDOWN | LRADC_IRQ_DATA;
++        timer_mod(s->sample_timer,
++                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                  LRADC_SECOND_SAMPLE_NS);
++    } else {
++        timer_del(s->sample_timer);
++        s->held_code = 0;
++        s->ints |= LRADC_IRQ_KEYUP;
++    }
++    pocketforge_a133_lradc_update_irq(s);
++}
++
++static uint64_t pocketforge_a133_lradc_read(void *opaque, hwaddr offset,
++                                            unsigned size)
++{
++    PocketForgeA133Lradc *s = opaque;
++
++    switch (offset) {
++    case LRADC_CTRL:
++        return s->ctrl;
++    case LRADC_INTC:
++        return s->intc;
++    case LRADC_INTS:
++        return s->ints;
++    case LRADC_DATA0:
++        return s->data0 & 0x3f;
++    default:
++        return 0;
++    }
++}
++
++static void pocketforge_a133_lradc_write(void *opaque, hwaddr offset,
++                                         uint64_t value, unsigned size)
++{
++    PocketForgeA133Lradc *s = opaque;
++
++    switch (offset) {
++    case LRADC_CTRL:
++        s->ctrl = value;
++        if (!(s->ctrl & LRADC_CTRL_ENABLE)) {
++            timer_del(s->sample_timer);
++            s->held_code = 0;
++            s->ints = 0;
++        }
++        break;
++    case LRADC_INTC:
++        s->intc = value & 0x1fff;
++        if (!s->intc) {
++            timer_del(s->sample_timer);
++            s->held_code = 0;
++            s->ints = 0;
++        }
++        break;
++    case LRADC_INTS:
++        s->ints &= ~(value & 0x1fff);
++        break;
++    case LRADC_DATA0:
++        break;
++    default:
++        break;
++    }
++    pocketforge_a133_lradc_update_irq(s);
++}
++
++static const MemoryRegionOps pocketforge_a133_lradc_ops = {
++    .read = pocketforge_a133_lradc_read,
++    .write = pocketforge_a133_lradc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++static void pocketforge_a133_lradc_reset(DeviceState *dev)
++{
++    PocketForgeA133Lradc *s = POCKETFORGE_A133_LRADC(dev);
++
++    timer_del(s->sample_timer);
++    s->ctrl = 0;
++    s->intc = 0;
++    s->ints = 0;
++    s->data0 = 0;
++    s->held_code = 0;
++    qemu_set_irq(s->irq, 0);
++}
++
++static int pocketforge_a133_lradc_post_load(void *opaque, int version_id)
++{
++    PocketForgeA133Lradc *s = opaque;
++
++    pocketforge_a133_lradc_update_irq(s);
++    return 0;
++}
++
++static const VMStateDescription vmstate_pocketforge_a133_lradc = {
++    .name = TYPE_POCKETFORGE_A133_LRADC,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = pocketforge_a133_lradc_post_load,
++    .fields = (VMStateField[]) {
++        VMSTATE_UINT32(ctrl, PocketForgeA133Lradc),
++        VMSTATE_UINT32(intc, PocketForgeA133Lradc),
++        VMSTATE_UINT32(ints, PocketForgeA133Lradc),
++        VMSTATE_UINT32(data0, PocketForgeA133Lradc),
++        VMSTATE_INT32(held_code, PocketForgeA133Lradc),
++        VMSTATE_TIMER_PTR(sample_timer, PocketForgeA133Lradc),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void pocketforge_a133_lradc_init(Object *obj)
++{
++    PocketForgeA133Lradc *s = POCKETFORGE_A133_LRADC(obj);
++
++    memory_region_init_io(&s->iomem, obj, &pocketforge_a133_lradc_ops, s,
++                          "pocketforge-a133.lradc", PF_A133_LRADC_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
++    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
++    s->sample_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                   pocketforge_a133_lradc_second_sample, s);
++}
++
++static void pocketforge_a133_lradc_finalize(Object *obj)
++{
++    PocketForgeA133Lradc *s = POCKETFORGE_A133_LRADC(obj);
++
++    timer_free(s->sample_timer);
++}
++
++static void pocketforge_a133_lradc_class_init(ObjectClass *klass,
++                                              const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->desc = "PocketForge A133 LRADC volume rocker";
++    device_class_set_legacy_reset(dc, pocketforge_a133_lradc_reset);
++    dc->vmsd = &vmstate_pocketforge_a133_lradc;
++}
++
++static const TypeInfo pocketforge_a133_lradc_info = {
++    .name = TYPE_POCKETFORGE_A133_LRADC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(PocketForgeA133Lradc),
++    .instance_init = pocketforge_a133_lradc_init,
++    .instance_finalize = pocketforge_a133_lradc_finalize,
++    .class_init = pocketforge_a133_lradc_class_init,
++};
++
++static void pocketforge_a133_lradc_register_types(void)
++{
++    type_register_static(&pocketforge_a133_lradc_info);
++}
++
++type_init(pocketforge_a133_lradc_register_types)
++
++PocketForgeA133Lradc *pocketforge_a133_lradc_create(hwaddr addr,
++                                                    qemu_irq irq)
++{
++    DeviceState *dev = qdev_new(TYPE_POCKETFORGE_A133_LRADC);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, addr);
++    sysbus_connect_irq(sbd, 0, irq);
++    return POCKETFORGE_A133_LRADC(dev);
++}
+diff --git a/include/hw/input/pocketforge_a133_lradc.h b/include/hw/input/pocketforge_a133_lradc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..854ae605818f980e669afe1f3e33c537f512071d
+--- /dev/null
++++ b/include/hw/input/pocketforge_a133_lradc.h
+@@ -0,0 +1,26 @@
++/*
++ * PocketForge A133 LRADC volume-rocker model.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef HW_INPUT_POCKETFORGE_A133_LRADC_H
++#define HW_INPUT_POCKETFORGE_A133_LRADC_H
++
++#include "hw/core/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_POCKETFORGE_A133_LRADC "pocketforge-a133-lradc"
++OBJECT_DECLARE_SIMPLE_TYPE(PocketForgeA133Lradc,
++                           POCKETFORGE_A133_LRADC)
++
++#define PF_A133_LRADC_SIZE 0x400
++
++PocketForgeA133Lradc *pocketforge_a133_lradc_create(hwaddr addr,
++                                                    qemu_irq irq);
++bool pocketforge_a133_lradc_is_ready(PocketForgeA133Lradc *s);
++int pocketforge_a133_lradc_held_code(PocketForgeA133Lradc *s);
++void pocketforge_a133_lradc_set_key(PocketForgeA133Lradc *s,
++                                    int code, bool pressed);
++
++#endif
+diff --git a/tests/qtest/pocketforge-a133-input-test.c b/tests/qtest/pocketforge-a133-input-test.c
+index d6218e2efc0e14bd12d01a9fef5d203d5b09d9c1..3c5272dc396e3c4bbddefda89e3d9385d7b33ce2 100644
+--- a/tests/qtest/pocketforge-a133-input-test.c
++++ b/tests/qtest/pocketforge-a133-input-test.c
+@@ -196,7 +196,7 @@ static void test_query_and_transport(void)
+     int i;
+ 
+     g_assert_cmpint(qdict_get_int(version, "major"), ==, 2);
+-    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 3);
++    g_assert_cmpint(qdict_get_int(version, "minor"), ==, 4);
+     g_assert_cmpint(qdict_get_int(result, "max_batch_events"), ==, 256);
+     g_assert_cmpstr(qdict_get_str(device, "id"), ==, "gamepad");
+     g_assert_cmpstr(qdict_get_str(device, "name"), ==, "TRIMUI Player1");
+@@ -588,9 +588,10 @@ static void test_disabled_and_non_machine(void)
+     response = qtest_qmp(qts,
+         "{ 'execute': 'query-pocketforge-input' }");
+     result = qdict_get_qdict(response, "return");
+-    g_assert_cmpuint(qlist_size(qdict_get_qlist(result, "devices")), ==, 2);
++    g_assert_cmpuint(qlist_size(qdict_get_qlist(result, "devices")), ==, 3);
+     g_assert_nonnull(query_device_by_id(response, "power-key"));
+     g_assert_nonnull(query_device_by_id(response, "lid-switch"));
++    g_assert_nonnull(query_device_by_id(response, "volume-rocker"));
+     qobject_unref(response);
+     response = raw_send(qts, EV_KEY, BTN_SOUTH, 1);
+     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(response, "error"),
+diff --git a/tests/qtest/pocketforge-a133-lradc-test.c b/tests/qtest/pocketforge-a133-lradc-test.c
+index 3a3cbad9b1777b22cda3086e3bd2e10e18c12f44..5f6d2d55ebf10e008f030d488ab4e72c7cf03db5 100644
+--- a/tests/qtest/pocketforge-a133-lradc-test.c
++++ b/tests/qtest/pocketforge-a133-lradc-test.c
+@@ -24,6 +24,7 @@
+ #define LRADC_IRQ_KEYUP         (1u << 4)
+ #define LRADC_CODE_VOLUMEUP     31
+ #define LRADC_CODE_VOLUMEDOWN   43
++#define LRADC_SECOND_SAMPLE_NS  (32 * 1000 * 1000)
+ 
+ #define GIC_DIST_BASE           0x03021000
+ #define GICD_ISPENDR            0x200
+@@ -197,7 +198,14 @@ static void test_driver_sequence_and_errors(void)
+                  LRADC_IRQ_KEYDOWN | LRADC_IRQ_DATA);
+     g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==, 0);
+     g_assert_false(lradc_irq_pending(qts));
+-    /* Holding is quiet: no timer or repeat status is invented. */
++    /* A100 filtering consumes a second equal DATA sample after ~32 ms. */
++    qtest_clock_step(qts, LRADC_SECOND_SAMPLE_NS);
++    g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==,
++                    LRADC_IRQ_DATA);
++    g_assert_true(lradc_irq_pending(qts));
++    qtest_writel(qts, LRADC_BASE + LRADC_INTS, LRADC_IRQ_DATA);
++    /* Holding is quiet after the required second sample: no repeat IRQ. */
++    qtest_clock_step(qts, LRADC_SECOND_SAMPLE_NS * 2);
+     g_assert_cmphex(qtest_readl(qts, LRADC_BASE + LRADC_INTS), ==, 0);
+ 
+     assert_success(volume_send(qts, KEY_VOLUMEUP, 0));
+diff --git a/tests/qtest/pocketforge-a133-mmio-map-test.c b/tests/qtest/pocketforge-a133-mmio-map-test.c
+index ec5e552c07a60d2bae06494f7f8f7fbac11dfe06..b2cc0d4edda59c0ce4983fd7dea61e70367dd837 100644
+--- a/tests/qtest/pocketforge-a133-mmio-map-test.c
++++ b/tests/qtest/pocketforge-a133-mmio-map-test.c
+@@ -102,7 +102,6 @@ static const ExpectedRegion stub_regions[] = {
+     { "pocketforge-a133.mmc1",             0x04021000, 0x1000 },
+     { "pocketforge-a133.ledc",             0x05018000, 0x400 },
+     { "pocketforge-a133.ths",              0x05070400, 0x100 },
+-    { "pocketforge-a133.lradc",             0x05070800, 0x400 },
+     { "pocketforge-a133.codec",            0x05096000, 0x330 },
+     { "pocketforge-a133.musb",             0x05100000, 0x400 },
+     { "pocketforge-a133.usbphy_ctrl",      0x05100400, 0x100 },
+
