@@ -45,7 +45,7 @@ timeout 5m meson setup "$guest_build" "$guest_source" \
    -Dbuild-tests=false \
    -Dlibunwind=disabled \
    -Dvalgrind=disabled
-timeout 20m ninja -C "$guest_build" \
+timeout 20m ninja -C "$guest_build" -j4 \
    src/virtio/vulkan/libvulkan_virtio.so \
    src/virtio/vulkan/virtio_devenv_icd.x86_64.json
 

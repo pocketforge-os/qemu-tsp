@@ -5,6 +5,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 dockerfile="$root/ci/venus-host.Dockerfile"
 lockfile="$root/ci/venus-host.lock.json"
+validation_script="$root/ci/venus-validation/run-validation.sh"
 
 grep -Fqx 'ARG LLVM_PARALLEL_COMPILE_JOBS=16' "$dockerfile"
 grep -Fq 'test "$LLVM_PARALLEL_COMPILE_JOBS" -le 16' "$dockerfile"
@@ -69,10 +70,28 @@ assert harness == {
 PY
 
 sh -n "$root/ci/venus-validation/run-validation.sh"
+python3 - "$validation_script" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+script = Path(sys.argv[1]).read_text(encoding="utf-8")
+guest_build = 'timeout 20m ninja -C "$guest_build" -j4 \\'
+assert guest_build in script, "guest Mesa ninja call must use -j4"
+ninja_calls = [
+    line.strip()
+    for line in script.splitlines()
+    if re.search(r"(?:^|\s)ninja(?:\s|$)", line)
+]
+assert ninja_calls, "validation script has no ninja invocation"
+assert all(re.search(r"\s-j[1-9][0-9]*(?:\s|\\$)", line) for line in ninja_calls), (
+    f"unbounded ninja call(s): {ninja_calls}"
+)
+PY
 grep -Fq 'rev-parse HEAD:vtest' "$root/ci/venus-validation/run-validation.sh"
 grep -Fq 'runner=$harness_tests/run-venus-vtest-memory.sh' "$root/ci/venus-validation/run-validation.sh"
 grep -Fq 'venus_named_wall=VK_ERROR_OUT_OF_DEVICE_MEMORY' "$root/ci/venus-validation/run-validation.sh"
 grep -Fq 'tail -n 40 -- "$client_log"' "$root/ci/venus-validation/run-validation.sh"
 grep -Fq '^FAIL [^:]+: -2$' "$root/ci/venus-validation/run-validation.sh"
 
-printf '%s\n' 'venus_host_dockerfile_test=PASS llvm_parallel_compile_jobs=16 bound=16 validation_stage=present receipt_dependency=present exact_sha=verified production_flags=unchanged repository=lock harness=lock vtest_identity=checked'
+printf '%s\n' 'venus_host_dockerfile_test=PASS llvm_parallel_compile_jobs=16 bound=16 guest_ninja_jobs=4 validation_stage=present receipt_dependency=present exact_sha=verified production_flags=unchanged repository=lock harness=lock vtest_identity=checked'
