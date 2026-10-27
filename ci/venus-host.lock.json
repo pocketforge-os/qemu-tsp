@@ -28,8 +28,13 @@
   },
   "virglrenderer": {
     "version": "1.3.0",
-    "repository": "https://gitlab.freedesktop.org/virgl/virglrenderer.git",
-    "commit": "ca50e008863837e094747a69974dde3ae148aeaa",
+    "repository": "https://github.com/pocketforge-os/virglrenderer.git",
+    "commit": "7b9afc384c72a6f3f238ec20963620c1fa760bcb",
     "features": ["venus", "render-server"]
+  },
+  "virglrenderer_validation": {
+    "repository": "https://github.com/pocketforge-os/virglrenderer.git",
+    "commit": "7b9afc384c72a6f3f238ec20963620c1fa760bcb",
+    "paths": ["tests/venus"]
   }
 }
