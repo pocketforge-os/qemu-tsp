@@ -72,5 +72,7 @@ sh -n "$root/ci/venus-validation/run-validation.sh"
 grep -Fq 'rev-parse HEAD:vtest' "$root/ci/venus-validation/run-validation.sh"
 grep -Fq 'runner=$harness_tests/run-venus-vtest-memory.sh' "$root/ci/venus-validation/run-validation.sh"
 grep -Fq 'venus_named_wall=VK_ERROR_OUT_OF_DEVICE_MEMORY' "$root/ci/venus-validation/run-validation.sh"
+grep -Fq 'tail -n 40 -- "$client_log"' "$root/ci/venus-validation/run-validation.sh"
+grep -Fq '^FAIL [^:]+: -2$' "$root/ci/venus-validation/run-validation.sh"
 
 printf '%s\n' 'venus_host_dockerfile_test=PASS llvm_parallel_compile_jobs=16 bound=16 validation_stage=present receipt_dependency=present exact_sha=verified production_flags=unchanged repository=lock harness=lock vtest_identity=checked'
