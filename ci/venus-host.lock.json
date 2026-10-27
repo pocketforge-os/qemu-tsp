@@ -29,7 +29,7 @@
   "virglrenderer": {
     "version": "1.3.0",
     "repository": "https://github.com/pocketforge-os/virglrenderer.git",
-    "commit": "a6518a0b19388a145e91b4f13d23e6429a131ddf",
+    "commit": "7b9afc384c72a6f3f238ec20963620c1fa760bcb",
     "features": ["venus", "render-server"]
   },
   "virglrenderer_validation": {
